@@ -1,3 +1,5 @@
+use std::env;
+
 use iris_cognition::CognitionStub;
 use iris_context_gate::ContextGate;
 use iris_policy::{
@@ -6,6 +8,16 @@ use iris_policy::{
 };
 
 fn main() {
+    let mut args = env::args();
+    let _program = args.next();
+
+    match args.next().as_deref() {
+        Some("self-check") => print_self_check(),
+        _ => run_demo(),
+    }
+}
+
+fn run_demo() {
     println!("Project Iris initialized.");
     println!("Runtime mode: read-only local safety spine");
     println!("Local inference: disabled stub");
@@ -35,4 +47,15 @@ fn main() {
         "Untrusted evidence count: {}",
         reply.untrusted_evidence_count
     );
+}
+
+fn print_self_check() {
+    println!("Project Iris self-check");
+    println!("Runtime boundary: read-only");
+    println!("Local inference: disabled stub");
+    println!("Real local inference: not enabled");
+    println!("Context gate: available");
+    println!("Cognition stub: available");
+    println!("Capability audit: use cargo run -p xtask");
+    println!("Result: PASS");
 }

@@ -117,3 +117,16 @@ Before implementation, verify exact repo names, filenames, licenses, quantizatio
 Do not assume all Qwen models are abliterated.
 
 Do not assume any specific model file exists until verified.
+
+## Runtime CLI rule
+
+Runtime CLI modes may use std::env::args only.
+
+Do not use nonexistent Text or SharedContext types.
+
+Do not redefine AssistantReply in iris-runtime.
+
+Do not treat ContextGate::gate_user_text or CognitionStub::respond as Result.
+
+Self-check mode is invoked as:
+cargo run -p iris-runtime -- self-check
