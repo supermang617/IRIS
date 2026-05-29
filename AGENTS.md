@@ -435,3 +435,15 @@ ContextGate -> PromptBuilder -> OllamaLoopbackClient
 It may only call the selected model through 127.0.0.1 Ollama loopback.
 
 The default runtime remains disabled stub unless ask-local, chat-local, or ollama-test is explicitly used.
+
+## Roadmap tracking rule
+
+Use docs/roadmap-v0_1.md and docs/current-track.md to stay on plan.
+
+Current immediate next step:
+Panic Stop skeleton.
+
+Do not continue adding voice, TTS, ASR, HUD, OCR, screen capture, memory database, dashboard, or governor work until Panic Stop exists as a tested skeleton.
+
+The first milestone is basic text and voice response:
+typed/explicit voice input -> ContextGate -> PromptBuilder -> selected local model -> text response -> local speech output.
