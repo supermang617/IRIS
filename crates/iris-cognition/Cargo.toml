@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 iris-core-types = { path = "../iris-core-types" }
 iris-context-gate = { path = "../iris-context-gate" }
+iris-local-inference = { path = "../iris-local-inference" }
