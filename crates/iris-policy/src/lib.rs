@@ -18,6 +18,9 @@ mod tests {
         assert_eq!(CLIPBOARD_ACCESS, "Clipboard Access: Not present");
         assert_eq!(RUNTIME_NETWORK, "Runtime Network: Disabled");
         assert_eq!(PLUGINS, "Plugins: Unsupported");
-        assert_eq!(SCREEN_CONTENT_AUTHORITY, "Screen Content Authority: Evidence only");
+        assert_eq!(
+            SCREEN_CONTENT_AUTHORITY,
+            "Screen Content Authority: Evidence only"
+        );
     }
 }

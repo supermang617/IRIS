@@ -45,7 +45,10 @@ impl IrisRoots {
         Ok(self.root.join(relative_path))
     }
 
-    pub fn config_path(&self, relative_path: impl AsRef<Path>) -> Result<ConfigPath, IrisPathError> {
+    pub fn config_path(
+        &self,
+        relative_path: impl AsRef<Path>,
+    ) -> Result<ConfigPath, IrisPathError> {
         Ok(ConfigPath(self.resolve_child(relative_path)?))
     }
 
@@ -121,7 +124,9 @@ mod tests {
         let roots = IrisRoots::new(PathBuf::from("C:/IrisData"));
 
         #[cfg(windows)]
-        let err = roots.cache_path("C:/Windows/System32/file.bin").unwrap_err();
+        let err = roots
+            .cache_path("C:/Windows/System32/file.bin")
+            .unwrap_err();
 
         #[cfg(not(windows))]
         let err = roots.cache_path("/etc/passwd").unwrap_err();
