@@ -56,7 +56,6 @@ mod tests {
     fn cognition_uses_disabled_local_inference_stub() {
         let gate = ContextGate::new();
         let bundle = gate.gate_user_text("hello iris");
-
         let cognition = CognitionStub::new();
         let reply = cognition.respond(bundle);
 
@@ -67,7 +66,6 @@ mod tests {
     fn cognition_still_accepts_only_gated_context_bundle() {
         let gate = ContextGate::new();
         let bundle = gate.gate_user_text("manual input");
-
         let cognition = CognitionStub::new();
         let reply = cognition.respond(bundle);
 
@@ -79,7 +77,6 @@ mod tests {
         let gate = ContextGate::new();
         let bundle_a = gate.gate_user_text("first input");
         let bundle_b = gate.gate_user_text("second input");
-
         let cognition = CognitionStub::new();
 
         let reply_a = cognition.respond(bundle_a);
@@ -94,7 +91,6 @@ mod tests {
     fn cognition_preserves_redaction_count() {
         let gate = ContextGate::new();
         let bundle = gate.gate_user_text("contact@example.com password=secret");
-
         let cognition = CognitionStub::new();
         let reply = cognition.respond(bundle);
 

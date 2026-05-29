@@ -46,3 +46,19 @@ Real Ollama or LM Studio support must be added later behind an explicit 127.0.0.
 Do not add network crates without approval.
 
 Do not add runtime network behavior without approval.
+
+## Repeated Codex mistake rule
+
+Reject generated scripts before running if they contain:
+- ../crates/ inside sibling crate dependencies
+- Read-Host
+- members +=
+- [workspace] inside a crate Cargo.toml
+- nonexistent types like Text or SharedContext
+- fake AssistantReply structs outside iris-core-types
+- treating non-Result APIs as Result
+- optional cargo tests
+- apply_patch JSON
+- partial patch fragments
+
+Always provide one full clean PowerShell script, not a patch fragment.
