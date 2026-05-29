@@ -417,3 +417,21 @@ ContextGate -> PromptBuilder -> OllamaLoopbackClient
 It may only call the selected model through 127.0.0.1 Ollama loopback.
 
 The default runtime remains disabled stub unless ask-local or ollama-test is explicitly used.
+
+## Selected local chat command rule
+
+The first interactive local-thinking command is:
+cargo run -p iris-runtime -- chat-local
+
+PowerShell helper:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\chat_iris_local.ps1
+
+One-turn chat test:
+cargo run -p iris-runtime -- chat-local "hello iris"
+
+This command must route through:
+ContextGate -> PromptBuilder -> OllamaLoopbackClient
+
+It may only call the selected model through 127.0.0.1 Ollama loopback.
+
+The default runtime remains disabled stub unless ask-local, chat-local, or ollama-test is explicitly used.

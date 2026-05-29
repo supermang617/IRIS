@@ -1,4 +1,5 @@
 use std::env;
+use std::io::{self, Write};
 
 use iris_cognition::CognitionStub;
 use iris_context_gate::ContextGate;
@@ -24,6 +25,7 @@ fn main() {
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("ask-local") => run_selected_local_model_ask(args.collect()),
+        Some("chat-local") => run_selected_local_chat(args.collect()),
         Some("prompt-preview") => run_prompt_preview(args.collect()),
         Some("ollama-test") => run_ollama_test(args.collect()),
         _ => run_demo(),
@@ -66,6 +68,50 @@ fn run_selected_local_model_ask(parts: Vec<String>) {
     run_ollama_loopback_request(SELECTED_LOCAL_MODEL, &input);
 }
 
+fn run_selected_local_chat(parts: Vec<String>) {
+    if !parts.is_empty() {
+        run_selected_local_model_ask(parts);
+        return;
+    }
+
+    println!("Project Iris local chat test");
+    println!("Model: {SELECTED_LOCAL_MODEL}");
+    println!("Endpoint: {OLLAMA_LOOPBACK_ENDPOINT}");
+    println!("Runtime boundary: explicit local loopback test only");
+    println!("Type exit or quit to stop.");
+    println!("");
+
+    loop {
+        print!("iris> ");
+        io::stdout().flush().expect("failed to flush stdout");
+
+        let mut input = String::new();
+        let bytes_read = io::stdin()
+            .read_line(&mut input)
+            .expect("failed to read stdin");
+
+        if bytes_read == 0 {
+            println!("");
+            println!("Result: PASS");
+            return;
+        }
+
+        let trimmed = input.trim();
+
+        if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
+            println!("Result: PASS");
+            return;
+        }
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        run_ollama_loopback_request(SELECTED_LOCAL_MODEL, trimmed);
+        println!("");
+    }
+}
+
 fn run_prompt_preview(parts: Vec<String>) {
     let input = if parts.is_empty() {
         "hello iris contact@example.com password=secret".to_string()
@@ -94,6 +140,8 @@ fn run_ollama_test(parts: Vec<String>) {
         println!("cargo run -p iris-runtime -- ollama-test <ollama-model-name> \"hello iris\"");
         println!("Selected model shortcut:");
         println!("cargo run -p iris-runtime -- ask-local \"hello iris\"");
+        println!("Local chat:");
+        println!("cargo run -p iris-runtime -- chat-local");
         println!("Endpoint: {OLLAMA_LOOPBACK_ENDPOINT}");
         println!("Result: PASS");
         return;
@@ -182,6 +230,7 @@ fn print_self_check() {
     println!(
         "Selected local model test: use cargo run -p iris-runtime -- ask-local \"hello iris\""
     );
+    println!("Selected local chat: use cargo run -p iris-runtime -- chat-local");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
@@ -201,6 +250,7 @@ fn print_model_plan() {
     println!("Default selected model: {SELECTED_LOCAL_MODEL}");
     println!("Real local inference default path: not enabled");
     println!("Explicit local test command: cargo run -p iris-runtime -- ask-local \"hello iris\"");
+    println!("Interactive local chat: cargo run -p iris-runtime -- chat-local");
     println!("Downloads: not enabled by runtime");
     println!("Filesystem scan: not enabled");
     println!("Hardware profile: {}", profile.os_label);
