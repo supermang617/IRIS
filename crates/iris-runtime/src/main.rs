@@ -13,6 +13,7 @@ use iris_policy::{
     SCREEN_CONTENT_AUTHORITY, SYSTEM_CONTROL,
 };
 use iris_prompt::PromptBuilder;
+use iris_response_check::ResponsePostChecker;
 
 const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
@@ -24,6 +25,7 @@ fn main() {
     match args.next().as_deref() {
         Some("self-check") => print_self_check(),
         Some("panic-stop-test") => run_panic_stop_test(),
+        Some("response-check-test") => run_response_check_test(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("ask-local") => run_selected_local_model_ask(args.collect()),
@@ -177,8 +179,10 @@ fn run_ollama_loopback_request(model: &str, input: &str) {
         .infer(LocalInferenceRequest::new(prompt))
         .expect("Ollama loopback test failed");
 
-    println!("Model response:");
-    println!("{}", response.text);
+    if !print_checked_response(&response.text) {
+        return;
+    }
+
     println!("Backend: {:?}", response.backend);
     println!("Result: PASS");
 }
@@ -211,13 +215,36 @@ fn run_safety_spine(input: &str) {
     let cognition = CognitionStub::new();
     let reply = cognition.respond(bundle);
 
-    println!("Cognition response text: {}", reply.text);
+    print_checked_response(&reply.text);
+
     println!("Observed item count: {}", reply.observed_item_count);
     println!("Redaction finding count: {}", reply.redaction_finding_count);
     println!(
         "Untrusted evidence count: {}",
         reply.untrusted_evidence_count
     );
+}
+
+fn print_checked_response(response_text: &str) -> bool {
+    let checker = ResponsePostChecker::new();
+    let report = checker.check(response_text);
+
+    if !report.approved {
+        println!("Response post-check: BLOCKED");
+        for finding in report.findings {
+            println!(
+                "Finding: {:?} matched {:?}",
+                finding.risk, finding.matched_phrase
+            );
+        }
+        println!("Result: BLOCKED");
+        return false;
+    }
+
+    println!("Response post-check: PASS");
+    println!("Model response:");
+    println!("{response_text}");
+    true
 }
 
 fn print_self_check() {
@@ -229,6 +256,7 @@ fn print_self_check() {
     println!("Real local inference: not enabled");
     println!("Panic Stop: available");
     println!("Panic Stop status: {:?}", panic_stop.status());
+    println!("Response post-check: available");
     println!("Context gate: available");
     println!("Cognition stub: available");
     println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
@@ -238,6 +266,7 @@ fn print_self_check() {
     );
     println!("Selected local chat: use cargo run -p iris-runtime -- chat-local");
     println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
+    println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
@@ -266,6 +295,28 @@ fn run_panic_stop_test() {
 
     if panic_stop.status() != PanicStopStatus::Clear {
         panic!("Panic Stop should be clear after clear");
+    }
+
+    println!("Result: PASS");
+}
+
+fn run_response_check_test() {
+    let checker = ResponsePostChecker::new();
+
+    let safe = checker.check("I can explain what is visible and help you decide what to do.");
+    let unsafe_text = "I will click allow for you.";
+    let unsafe_report = checker.check(unsafe_text);
+
+    println!("Project Iris response post-check test");
+    println!("Safe response approved: {}", safe.approved);
+    println!("Unsafe response approved: {}", unsafe_report.approved);
+
+    if !safe.approved {
+        panic!("Safe response should pass");
+    }
+
+    if unsafe_report.approved {
+        panic!("Unsafe response should be blocked");
     }
 
     println!("Result: PASS");

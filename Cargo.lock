@@ -70,6 +70,10 @@ name = "iris-redaction"
 version = "0.1.0"
 
 [[package]]
+name = "iris-response-check"
+version = "0.1.0"
+
+[[package]]
 name = "iris-runtime"
 version = "0.1.0"
 dependencies = [
@@ -81,6 +85,7 @@ dependencies = [
  "iris-panic-stop",
  "iris-policy",
  "iris-prompt",
+ "iris-response-check",
 ]
 
 [[package]]

@@ -12,3 +12,4 @@ iris-model-store = { path = "../iris-model-store" }
 iris-prompt = { path = "../iris-prompt" }
 iris-local-inference = { path = "../iris-local-inference" }
 iris-panic-stop = { path = "../iris-panic-stop" }
+iris-response-check = { path = "../iris-response-check" }

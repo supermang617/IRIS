@@ -458,3 +458,16 @@ cargo run -p iris-runtime -- panic-stop-test
 Panic Stop must remain available before adding ASR, TTS, voice input, voice output, or long-running model generation.
 
 Future ASR, TTS, and model streaming must check Panic Stop or accept a cancellation boundary.
+
+## Response post-check rule
+
+Response post-check is implemented in iris-response-check.
+
+Current runtime test command:
+cargo run -p iris-runtime -- response-check-test
+
+All local model response paths should pass through ResponsePostChecker before displaying or speaking output.
+
+The post-check blocks unsafe assistant capability claims and unsafe instructions.
+
+Do not speak blocked model output.
