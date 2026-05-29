@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/iris-core-types",
+    "crates/iris-policy",
+    "crates/iris-runtime",
+    "xtask"
+]
+resolver = "2"
