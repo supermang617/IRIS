@@ -4,6 +4,7 @@ members = [
     "crates/iris-policy",
     "crates/iris-runtime",
     "crates/iris-paths",
+    "crates/iris-redaction",
     "xtask"
 ]
 resolver = "2"
