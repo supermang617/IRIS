@@ -103,3 +103,17 @@ For iris-runtime integration:
 - CognitionStub::respond returns AssistantReply directly, not Result.
 - AssistantReply lives in iris-core-types and must not be redefined in runtime.
 - iris-runtime should coordinate existing crates, not invent local replacement structs.
+
+## Default future model target rule
+
+Future model bootstrapping currently targets abliterated or uncensored Qwen-family GGUF builds from bartowski on Hugging Face as the default candidate source.
+
+This is a design target only.
+
+Do not implement Hugging Face access, model downloading, llama.cpp bindings, hardware probing, Ollama calls, LM Studio calls, or real local inference until explicitly approved.
+
+Before implementation, verify exact repo names, filenames, licenses, quantization, SHA256 hashes, and hardware fit.
+
+Do not assume all Qwen models are abliterated.
+
+Do not assume any specific model file exists until verified.
