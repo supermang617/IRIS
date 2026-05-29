@@ -74,6 +74,7 @@ dependencies = [
  "iris-model-router",
  "iris-model-store",
  "iris-policy",
+ "iris-prompt",
 ]
 
 [[package]]

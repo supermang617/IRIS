@@ -9,3 +9,4 @@ iris-cognition = { path = "../iris-cognition" }
 iris-policy = { path = "../iris-policy" }
 iris-model-router = { path = "../iris-model-router" }
 iris-model-store = { path = "../iris-model-store" }
+iris-prompt = { path = "../iris-prompt" }

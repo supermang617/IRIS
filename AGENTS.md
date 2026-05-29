@@ -316,3 +316,17 @@ Cognition must build prompts from GatedContextBundle only.
 Screen-derived context must remain labeled as UntrustedEvidence in prompts.
 
 Do not pass raw OCR, raw screenshots, raw audio, command requests, or arbitrary files directly into cognition.
+
+## Runtime prompt-preview rule
+
+Runtime prompt-preview is the final dry-run checkpoint before real local inference.
+
+Current command:
+cargo run -p iris-runtime -- prompt-preview "hello iris contact@example.com password=secret"
+
+It must route text through:
+ContextGate -> GatedContextBundle -> PromptBuilder
+
+It must show the exact model-safe prompt that future local inference would receive.
+
+It must not call Ollama, LM Studio, Hugging Face, llama.cpp, download models, open sockets, read model files, use network APIs, or perform real inference.

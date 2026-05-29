@@ -8,6 +8,7 @@ use iris_policy::{
     CLIPBOARD_ACCESS, EXECUTOR, INPUT_SIMULATION, PLUGINS, RUNTIME_NETWORK,
     SCREEN_CONTENT_AUTHORITY, SYSTEM_CONTROL,
 };
+use iris_prompt::PromptBuilder;
 
 fn main() {
     let mut args = env::args();
@@ -17,6 +18,7 @@ fn main() {
         Some("self-check") => print_self_check(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
+        Some("prompt-preview") => run_prompt_preview(args.collect()),
         _ => run_demo(),
     }
 }
@@ -39,6 +41,28 @@ fn run_ask_mode(parts: Vec<String>) {
     println!("Real local inference: not enabled");
 
     run_safety_spine(&input);
+}
+
+fn run_prompt_preview(parts: Vec<String>) {
+    let input = if parts.is_empty() {
+        "hello iris contact@example.com password=secret".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    let gate = ContextGate::new();
+    let bundle = gate.gate_user_text(&input);
+
+    let prompt = PromptBuilder::new().build(&bundle);
+
+    println!("Project Iris prompt-preview");
+    println!("Status: local prompt construction only");
+    println!("Real local inference: not enabled");
+    println!("Input routed through: ContextGate -> GatedContextBundle -> PromptBuilder");
+    println!("--- PROMPT START ---");
+    println!("{}", prompt.text);
+    println!("--- PROMPT END ---");
+    println!("Result: PASS");
 }
 
 fn run_safety_spine(input: &str) {
@@ -78,6 +102,7 @@ fn print_self_check() {
     println!("Real local inference: not enabled");
     println!("Context gate: available");
     println!("Cognition stub: available");
+    println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
     println!("Ask mode: use cargo run -p iris-runtime -- ask \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
