@@ -38,6 +38,8 @@ version = "0.1.0"
 name = "iris-runtime"
 version = "0.1.0"
 dependencies = [
+ "iris-cognition",
+ "iris-context-gate",
  "iris-core-types",
  "iris-policy",
 ]
