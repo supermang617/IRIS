@@ -290,3 +290,19 @@ Ask mode must remain read-only and must route text through:
 ContextGate -> CognitionStub -> LocalInferenceStub
 
 It must not add UI, OCR, voice, TTS, memory DB, screen capture, networking, shell/process execution, clipboard access, or automation.
+
+## Verification script rule
+
+Use scripts/verify_iris_safety_spine.ps1 as the main local verification command.
+
+It must run:
+- cargo fmt --all
+- cargo build --workspace
+- cargo test --workspace
+- cargo run -p xtask
+- cargo run -p iris-runtime
+- cargo run -p iris-runtime -- self-check
+- cargo run -p iris-runtime -- model-plan
+- cargo run -p iris-runtime -- ask "hello iris contact@example.com password=secret"
+
+The script is for development verification only. It does not grant runtime shell/process capability.
