@@ -225,3 +225,19 @@ It must not call Ollama or LM Studio.
 It must not use networking, HTTP crates, std::net, shell execution, process spawning, or filesystem scanning.
 
 Exact model filenames, SHA256 hashes, licenses, and hardware requirements must be verified before real model use.
+
+## Model router rule
+
+iris-model-router is deterministic metadata routing only.
+
+It must not probe hardware.
+
+It must not read files.
+
+It must not download models.
+
+It must not call Hugging Face, Ollama, LM Studio, llama.cpp, or any network API.
+
+It must not use std::net, std::process, shell execution, clipboard access, UI automation, or filesystem scanning.
+
+Current routing targets are placeholders until exact model names, filenames, licenses, SHA256 hashes, and hardware fit are verified.

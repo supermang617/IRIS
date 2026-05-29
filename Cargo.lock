@@ -32,6 +32,13 @@ name = "iris-model-manifest"
 version = "0.1.0"
 
 [[package]]
+name = "iris-model-router"
+version = "0.1.0"
+dependencies = [
+ "iris-model-manifest",
+]
+
+[[package]]
 name = "iris-paths"
 version = "0.1.0"
 
