@@ -55,8 +55,16 @@ Invoke-IrisStep "Runtime model-plan" {
     cargo run -p iris-runtime -- model-plan
 }
 
+Invoke-IrisStep "Runtime prompt-preview" {
+    cargo run -p iris-runtime -- prompt-preview "hello iris contact@example.com password=secret"
+}
+
 Invoke-IrisStep "Runtime ask mode" {
     cargo run -p iris-runtime -- ask "hello iris contact@example.com password=secret"
+}
+
+Invoke-IrisStep "Runtime Ollama test readiness" {
+    cargo run -p iris-runtime -- ollama-test
 }
 
 Invoke-IrisStep "Git status after verification" {

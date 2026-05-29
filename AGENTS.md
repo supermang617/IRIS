@@ -356,3 +356,16 @@ It must not use reqwest, hyper, tokio::net, cloud URLs, non-loopback hosts, shel
 It must not be enabled by default.
 
 Runtime remains disabled stub unless an explicit test command opts into loopback later.
+
+## Runtime Ollama test rule
+
+Runtime Ollama test command:
+cargo run -p iris-runtime -- ollama-test <ollama-model-name> "hello iris"
+
+If no model is provided, the command must print usage and make no network call.
+
+If a model is provided, it may call only the explicit 127.0.0.1:11434 Ollama loopback endpoint through iris-local-inference.
+
+This is the first manual local-thinking test surface.
+
+Do not make this the default runtime path yet.

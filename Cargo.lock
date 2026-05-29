@@ -71,6 +71,7 @@ version = "0.1.0"
 dependencies = [
  "iris-cognition",
  "iris-context-gate",
+ "iris-local-inference",
  "iris-model-router",
  "iris-model-store",
  "iris-policy",

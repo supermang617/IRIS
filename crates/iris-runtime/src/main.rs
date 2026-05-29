@@ -2,6 +2,8 @@ use std::env;
 
 use iris_cognition::CognitionStub;
 use iris_context_gate::ContextGate;
+use iris_local_inference::LocalInferenceRequest;
+use iris_local_inference::loopback::{OllamaLoopbackClient, OllamaLoopbackConfig};
 use iris_model_router::{HardwareProfile, route_model};
 use iris_model_store::ModelStoreRoot;
 use iris_policy::{
@@ -19,6 +21,7 @@ fn main() {
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("prompt-preview") => run_prompt_preview(args.collect()),
+        Some("ollama-test") => run_ollama_test(args.collect()),
         _ => run_demo(),
     }
 }
@@ -50,19 +53,66 @@ fn run_prompt_preview(parts: Vec<String>) {
         parts.join(" ")
     };
 
-    let gate = ContextGate::new();
-    let bundle = gate.gate_user_text(&input);
-
-    let prompt = PromptBuilder::new().build(&bundle);
+    let prompt = build_prompt_from_input(&input);
 
     println!("Project Iris prompt-preview");
     println!("Status: local prompt construction only");
     println!("Real local inference: not enabled");
     println!("Input routed through: ContextGate -> GatedContextBundle -> PromptBuilder");
     println!("--- PROMPT START ---");
-    println!("{}", prompt.text);
+    println!("{prompt}");
     println!("--- PROMPT END ---");
     println!("Result: PASS");
+}
+
+fn run_ollama_test(parts: Vec<String>) {
+    if parts.is_empty() {
+        println!("Project Iris Ollama loopback test");
+        println!("Status: ready");
+        println!("No network call was made because no model was provided.");
+        println!("Usage:");
+        println!("cargo run -p iris-runtime -- ollama-test <ollama-model-name> \"hello iris\"");
+        println!("Example:");
+        println!("cargo run -p iris-runtime -- ollama-test qwen3:8b \"hello iris\"");
+        println!("Endpoint: 127.0.0.1:11434");
+        println!("Result: PASS");
+        return;
+    }
+
+    let model = parts[0].clone();
+    let input = if parts.len() > 1 {
+        parts[1..].join(" ")
+    } else {
+        "hello iris".to_string()
+    };
+
+    let prompt = build_prompt_from_input(&input);
+
+    let config = OllamaLoopbackConfig::new("127.0.0.1:11434", model)
+        .expect("static Ollama loopback config should be valid");
+
+    let client = OllamaLoopbackClient::new(config);
+
+    println!("Project Iris Ollama loopback test");
+    println!("Endpoint: 127.0.0.1:11434");
+    println!("Runtime boundary: explicit local loopback test only");
+    println!("Input routed through: ContextGate -> PromptBuilder -> OllamaLoopbackClient");
+
+    let response = client
+        .infer(LocalInferenceRequest::new(prompt))
+        .expect("Ollama loopback test failed");
+
+    println!("Model response:");
+    println!("{}", response.text);
+    println!("Backend: {:?}", response.backend);
+    println!("Result: PASS");
+}
+
+fn build_prompt_from_input(input: &str) -> String {
+    let gate = ContextGate::new();
+    let bundle = gate.gate_user_text(input);
+
+    PromptBuilder::new().build(&bundle).text
 }
 
 fn run_safety_spine(input: &str) {
@@ -104,6 +154,7 @@ fn print_self_check() {
     println!("Cognition stub: available");
     println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
     println!("Ask mode: use cargo run -p iris-runtime -- ask \"hello iris\"");
+    println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
     println!("Result: PASS");
