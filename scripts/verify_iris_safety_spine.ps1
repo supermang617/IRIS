@@ -75,6 +75,10 @@ Invoke-IrisStep "Runtime Ollama test readiness" {
     cargo run -p iris-runtime -- ollama-test
 }
 
+Invoke-IrisStep "Local text-to-voice helper dry-run" {
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -DryRun
+}
+
 Invoke-IrisStep "Git status after verification" {
     git status --short
 }

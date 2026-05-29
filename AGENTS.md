@@ -471,3 +471,18 @@ All local model response paths should pass through ResponsePostChecker before di
 The post-check blocks unsafe assistant capability claims and unsafe instructions.
 
 Do not speak blocked model output.
+
+## Text-to-voice response rule
+
+Use scripts/test_iris_text_voice_response.ps1 for the first text prompt plus spoken response test.
+
+This helper must require:
+Response post-check: PASS
+
+It must refuse to speak blocked output.
+
+It uses local Windows speech synthesis as a development helper.
+
+It does not make TTS the default runtime path.
+
+It does not add voice input yet.
