@@ -7,3 +7,4 @@ edition = "2024"
 iris-context-gate = { path = "../iris-context-gate" }
 iris-cognition = { path = "../iris-cognition" }
 iris-policy = { path = "../iris-policy" }
+iris-model-router = { path = "../iris-model-router" }

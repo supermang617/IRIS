@@ -241,3 +241,14 @@ It must not call Hugging Face, Ollama, LM Studio, llama.cpp, or any network API.
 It must not use std::net, std::process, shell execution, clipboard access, UI automation, or filesystem scanning.
 
 Current routing targets are placeholders until exact model names, filenames, licenses, SHA256 hashes, and hardware fit are verified.
+
+## Runtime model-plan rule
+
+Runtime model-plan mode is metadata-only.
+
+Current command:
+cargo run -p iris-runtime -- model-plan
+
+It may display the future routed Qwen GGUF target for the Windows RTX 4060 class profile.
+
+It must not download models, call Hugging Face, call Ollama, call LM Studio, open sockets, scan hardware, or perform real inference.

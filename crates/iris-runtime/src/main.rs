@@ -2,6 +2,7 @@ use std::env;
 
 use iris_cognition::CognitionStub;
 use iris_context_gate::ContextGate;
+use iris_model_router::{HardwareProfile, route_model};
 use iris_policy::{
     CLIPBOARD_ACCESS, EXECUTOR, INPUT_SIMULATION, PLUGINS, RUNTIME_NETWORK,
     SCREEN_CONTENT_AUTHORITY, SYSTEM_CONTROL,
@@ -13,6 +14,7 @@ fn main() {
 
     match args.next().as_deref() {
         Some("self-check") => print_self_check(),
+        Some("model-plan") => print_model_plan(),
         _ => run_demo(),
     }
 }
@@ -57,5 +59,29 @@ fn print_self_check() {
     println!("Context gate: available");
     println!("Cognition stub: available");
     println!("Capability audit: use cargo run -p xtask");
+    println!("Model plan: use cargo run -p iris-runtime -- model-plan");
+    println!("Result: PASS");
+}
+
+fn print_model_plan() {
+    let profile = HardwareProfile::windows_rtx_4060_class();
+    let routed = route_model(&profile).expect("static placeholder model route should be valid");
+
+    println!("Project Iris future model plan");
+    println!("Status: design metadata only");
+    println!("Real local inference: not enabled");
+    println!("Downloads: not enabled");
+    println!("Hardware profile: {}", profile.os_label);
+    println!("Total RAM GB: {}", profile.total_ram_gb);
+    println!("Dedicated VRAM GB: {}", profile.dedicated_vram_gb);
+    println!("Selected tier: {:?}", routed.tier);
+    println!("Model family: {:?}", routed.manifest.family);
+    println!("Model variant: {:?}", routed.manifest.variant);
+    println!("Model format: {:?}", routed.manifest.format);
+    println!("Quantization: {:?}", routed.manifest.quantization);
+    println!("Source: {:?}", routed.manifest.source);
+    println!("Placeholder filename: {}", routed.manifest.filename);
+    println!("Minimum RAM GB: {}", routed.manifest.minimum_ram_gb);
+    println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
     println!("Result: PASS");
 }
