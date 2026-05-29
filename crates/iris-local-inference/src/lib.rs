@@ -2,6 +2,7 @@
 pub enum LocalInferenceBackend {
     Disabled,
     FutureLoopback,
+    OllamaLoopback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +129,8 @@ impl Default for LocalInferenceStub {
         Self::new_disabled()
     }
 }
+
+pub mod loopback;
 
 #[cfg(test)]
 mod tests {

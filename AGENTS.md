@@ -343,3 +343,16 @@ No other runtime crate may use std::net.
 HTTP crates such as reqwest or hyper remain forbidden unless explicitly approved.
 
 This is a preparation step only. It does not implement real local inference yet.
+
+## Minimal Ollama loopback client rule
+
+The only approved local inference network file is:
+crates/iris-local-inference/src/loopback.rs
+
+It may use std::net only to connect to validated 127.0.0.1 or localhost endpoints.
+
+It must not use reqwest, hyper, tokio::net, cloud URLs, non-loopback hosts, shell/process execution, clipboard access, or browser automation.
+
+It must not be enabled by default.
+
+Runtime remains disabled stub unless an explicit test command opts into loopback later.

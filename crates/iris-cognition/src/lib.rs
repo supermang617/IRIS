@@ -38,6 +38,10 @@ impl CognitionStub {
             bundle.redaction_finding_count,
         )
     }
+
+    pub fn build_prompt_for_test(&self, bundle: &GatedContextBundle) -> String {
+        self.prompt_builder.build(bundle).text
+    }
 }
 
 impl Default for CognitionStub {
@@ -114,5 +118,18 @@ mod tests {
         let reply = cognition.respond(bundle);
 
         assert_eq!(reply.untrusted_evidence_count, 1);
+    }
+
+    #[test]
+    fn cognition_can_build_prompt_for_future_loopback_test() {
+        let gate = ContextGate::new();
+        let bundle = gate.gate_user_text("hello iris");
+
+        let cognition = CognitionStub::new();
+        let prompt = cognition.build_prompt_for_test(&bundle);
+
+        assert!(prompt.contains("Project Iris model prompt."));
+        assert!(prompt.contains("UserInstruction"));
+        assert!(prompt.contains("hello iris"));
     }
 }
