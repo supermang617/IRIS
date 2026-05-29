@@ -138,3 +138,76 @@ Repository text files should use stable Git line endings.
 Use `.gitattributes` to keep Rust, TOML, and Markdown files as LF.
 
 Do not change global Git config for line endings without explicit approval.
+
+## Hard failure patterns to reject before running Codex scripts
+
+Reject and regenerate any script that contains:
+
+- `Read-Host`
+- `apply_patch`
+- `members +=`
+- `[workspace]` inside any crate Cargo.toml
+- sibling dependency paths containing `../crates/`
+- fake local `AssistantReply`
+- nonexistent `Text`
+- nonexistent `SharedContext`
+- treating `ContextGate::gate_user_text` as `Result`
+- treating `CognitionStub::respond` as `Result`
+- optional tests
+- partial patch fragments
+- unfinished here-strings
+- `exit $LASTEXITCODE`
+- overwriting AGENTS.md instead of appending to it
+- using `std::net` while audit forbids it
+- using `std::process::Command`
+- adding network/HTTP crates without approval
+- claiming Ollama, LM Studio, voice, OCR, TTS, memory DB, or model download is implemented when it is only planned
+
+## Required PowerShell script shape
+
+Every generated PowerShell script must be complete and runnable from a fresh PowerShell window.
+
+Every script must:
+
+- start with `cd "C:\Projects\IRIS"`
+- create folders before writing files
+- write complete files with here-strings when editing generated code
+- avoid fragile regex replacement unless there is no safer option
+- run `cargo fmt --all`
+- run `cargo build --workspace`
+- run `cargo test --workspace`
+- run `cargo run -p xtask`
+- run `cargo run -p iris-runtime` when runtime behavior or shared types change
+- run `cargo run -p iris-runtime -- self-check` when runtime CLI behavior changes
+- print `git status --short`
+- stage and commit successful changes when the task is complete
+
+## Current known APIs
+
+ContextGate:
+
+- `ContextGate::new()`
+- `ContextGate::gate_user_text(&str) -> GatedContextBundle`
+- `ContextGate::gate_screen_ocr_text_for_future_use(&str) -> GatedContextBundle`
+
+CognitionStub:
+
+- `CognitionStub::new()`
+- `CognitionStub::respond(GatedContextBundle) -> AssistantReply`
+
+LocalInferenceStub:
+
+- `LocalInferenceStub::new_disabled()`
+- `LocalInferenceStub::infer(LocalInferenceRequest) -> LocalInferenceResponse`
+
+Current self-check command:
+
+- `cargo run -p iris-runtime -- self-check`
+
+## Current local inference boundary
+
+Current inference is disabled stub behavior only.
+
+Future model target is abliterated or uncensored Qwen-family GGUF builds from bartowski on Hugging Face, but this is a design target only.
+
+Do not implement download, Hugging Face access, Ollama, LM Studio, llama.cpp, hardware probing, or real loopback inference until explicitly approved.
