@@ -3,6 +3,7 @@ members = [
     "crates/iris-core-types",
     "crates/iris-policy",
     "crates/iris-runtime",
+    "crates/iris-paths",
     "xtask"
 ]
 resolver = "2"
