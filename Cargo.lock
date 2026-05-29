@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "iris-cognition"
+version = "0.1.0"
+dependencies = [
+ "iris-context-gate",
+ "iris-core-types",
+]
+
+[[package]]
 name = "iris-context-gate"
 version = "0.1.0"
 dependencies = [

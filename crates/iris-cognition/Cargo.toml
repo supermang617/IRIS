@@ -1,0 +1,8 @@
+[package]
+name = "iris-cognition"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iris-core-types = { path = "../iris-core-types" }
+iris-context-gate = { path = "../iris-context-gate" }

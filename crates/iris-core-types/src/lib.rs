@@ -55,3 +55,27 @@ impl GatedContextBundle {
         self.items.len()
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantReply {
+    pub text: String,
+    pub observed_item_count: usize,
+    pub untrusted_evidence_count: usize,
+    pub redaction_finding_count: usize,
+}
+
+impl AssistantReply {
+    pub fn new(
+        text: impl Into<String>,
+        observed_item_count: usize,
+        untrusted_evidence_count: usize,
+        redaction_finding_count: usize,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            observed_item_count,
+            untrusted_evidence_count,
+            redaction_finding_count,
+        }
+    }
+}

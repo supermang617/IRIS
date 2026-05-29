@@ -6,6 +6,7 @@ members = [
     "crates/iris-paths",
     "crates/iris-redaction",
     "crates/iris-context-gate",
+    "crates/iris-cognition",
     "xtask"
 ]
 resolver = "2"
