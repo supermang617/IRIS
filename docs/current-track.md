@@ -16,6 +16,8 @@ Response post-check is implemented and blocks unsafe assistant capability claims
 
 Text prompt to spoken local response helper is hardened and requires Response post-check: PASS before speaking.
 
+One-shot explicit voice input helper is scaffolded through local Windows speech recognition.
+
 Useful commands:
 
 cargo run -p iris-runtime -- self-check
@@ -29,14 +31,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loo
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ask_iris_local.ps1 "hello iris"
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\chat_iris_local.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 "hello iris"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_voice_text_response.ps1
 
 ## Do next
 
-Voice input transcript helper.
+Run the first explicit voice input plus spoken response test.
 
 Reason:
 
-The next milestone needs explicit speech input routed as text through the same safe ask-local path.
+This is the first basic voice milestone checkpoint.
 
 ## Do not do yet
 

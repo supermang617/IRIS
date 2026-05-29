@@ -79,6 +79,10 @@ Invoke-IrisStep "Local text-to-voice helper dry-run" {
     powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -DryRun
 }
 
+Invoke-IrisStep "Local voice input helper dry-run" {
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\listen_iris_local_speak.ps1" -DryRun
+}
+
 Invoke-IrisStep "Git status after verification" {
     git status --short
 }

@@ -486,3 +486,22 @@ It uses local Windows speech synthesis as a development helper.
 It does not make TTS the default runtime path.
 
 It does not add voice input yet.
+
+## One-shot voice input rule
+
+Use scripts/test_iris_voice_text_response.ps1 for the first explicit voice input plus spoken response milestone test.
+
+This helper must:
+- listen only when explicitly run
+- use one-shot microphone recognition
+- route the recognized transcript through Iris ask-local
+- require Response post-check: PASS before speech output
+- refuse to speak blocked output
+
+No always-listening mode.
+
+No wake word yet.
+
+No background audio loop.
+
+This is a development helper, not the default runtime path.
