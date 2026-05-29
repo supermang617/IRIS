@@ -211,3 +211,17 @@ Current inference is disabled stub behavior only.
 Future model target is abliterated or uncensored Qwen-family GGUF builds from bartowski on Hugging Face, but this is a design target only.
 
 Do not implement download, Hugging Face access, Ollama, LM Studio, llama.cpp, hardware probing, or real loopback inference until explicitly approved.
+
+## Model manifest rule
+
+iris-model-manifest is metadata-only.
+
+It must not download models.
+
+It must not call Hugging Face.
+
+It must not call Ollama or LM Studio.
+
+It must not use networking, HTTP crates, std::net, shell execution, process spawning, or filesystem scanning.
+
+Exact model filenames, SHA256 hashes, licenses, and hardware requirements must be verified before real model use.

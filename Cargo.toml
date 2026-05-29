@@ -8,6 +8,7 @@ members = [
     "crates/iris-context-gate",
     "crates/iris-cognition",
     "crates/iris-local-inference",
+    "crates/iris-model-manifest",
     "xtask"
 ]
 resolver = "2"
