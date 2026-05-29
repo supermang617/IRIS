@@ -330,3 +330,16 @@ ContextGate -> GatedContextBundle -> PromptBuilder
 It must show the exact model-safe prompt that future local inference would receive.
 
 It must not call Ollama, LM Studio, Hugging Face, llama.cpp, download models, open sockets, read model files, use network APIs, or perform real inference.
+
+## Loopback inference audit boundary rule
+
+The only future file allowed to use std::net for local inference is:
+crates/iris-local-inference/src/loopback.rs
+
+That future file may only connect to validated 127.0.0.1 or localhost endpoints.
+
+No other runtime crate may use std::net.
+
+HTTP crates such as reqwest or hyper remain forbidden unless explicitly approved.
+
+This is a preparation step only. It does not implement real local inference yet.

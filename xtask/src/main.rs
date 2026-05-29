@@ -26,6 +26,7 @@ fn main() {
     if findings.is_empty() {
         println!("Project Iris xtask audit passed.");
         println!("Capability ledger found.");
+        println!("Loopback-only future inference boundary is documented.");
         return;
     }
 
@@ -60,7 +61,7 @@ fn scan_dir(root: &Path, dir: &Path, findings: &mut Vec<Finding>) {
         if path.is_dir() {
             scan_dir(root, &path, findings);
         } else if should_scan_file(&path) {
-            scan_file(&path, findings);
+            scan_file(root, &path, findings);
         }
     }
 }
@@ -91,12 +92,12 @@ fn should_scan_file(path: &Path) -> bool {
     )
 }
 
-fn scan_file(path: &Path, findings: &mut Vec<Finding>) {
+fn scan_file(root: &Path, path: &Path, findings: &mut Vec<Finding>) {
     let Ok(content) = fs::read_to_string(path) else {
         return;
     };
 
-    for needle in forbidden_needles() {
+    for needle in forbidden_needles_for_path(root, path) {
         if content.contains(&needle) {
             findings.push(Finding {
                 path: path.to_path_buf(),
@@ -104,6 +105,26 @@ fn scan_file(path: &Path, findings: &mut Vec<Finding>) {
             });
         }
     }
+}
+
+fn forbidden_needles_for_path(root: &Path, path: &Path) -> Vec<String> {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+
+    let mut needles = forbidden_needles();
+
+    if is_local_inference_loopback_boundary(relative) {
+        needles.retain(|needle| needle != "std::net");
+    }
+
+    needles
+}
+
+fn is_local_inference_loopback_boundary(relative: &Path) -> bool {
+    relative
+        == Path::new("crates")
+            .join("iris-local-inference")
+            .join("src")
+            .join("loopback.rs")
 }
 
 fn forbidden_needles() -> Vec<String> {
@@ -176,5 +197,27 @@ mod tests {
             root,
             Path::new("C:/Projects/IRIS/xtask/src/main.rs")
         ));
+    }
+
+    #[test]
+    fn local_inference_loopback_boundary_may_use_std_net_string() {
+        let root = Path::new("C:/Projects/IRIS");
+        let path = Path::new("C:/Projects/IRIS/crates/iris-local-inference/src/loopback.rs");
+
+        let needles = forbidden_needles_for_path(root, path);
+
+        assert!(!needles.iter().any(|needle| needle == "std::net"));
+        assert!(needles.iter().any(|needle| needle == "reqwest"));
+        assert!(needles.iter().any(|needle| needle == "hyper"));
+    }
+
+    #[test]
+    fn normal_runtime_files_may_not_use_std_net_string() {
+        let root = Path::new("C:/Projects/IRIS");
+        let path = Path::new("C:/Projects/IRIS/crates/iris-runtime/src/main.rs");
+
+        let needles = forbidden_needles_for_path(root, path);
+
+        assert!(needles.iter().any(|needle| needle == "std::net"));
     }
 }
