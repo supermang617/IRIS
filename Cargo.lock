@@ -47,6 +47,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "iris-panic-stop"
+version = "0.1.0"
+
+[[package]]
 name = "iris-paths"
 version = "0.1.0"
 
@@ -74,6 +78,7 @@ dependencies = [
  "iris-local-inference",
  "iris-model-router",
  "iris-model-store",
+ "iris-panic-stop",
  "iris-policy",
  "iris-prompt",
 ]

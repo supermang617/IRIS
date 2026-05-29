@@ -12,6 +12,7 @@ members = [
     "crates/iris-model-router",
     "crates/iris-model-store",
     "crates/iris-prompt",
+    "crates/iris-panic-stop",
     "xtask"
 ]
 resolver = "2"

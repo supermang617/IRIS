@@ -447,3 +447,14 @@ Do not continue adding voice, TTS, ASR, HUD, OCR, screen capture, memory databas
 
 The first milestone is basic text and voice response:
 typed/explicit voice input -> ContextGate -> PromptBuilder -> selected local model -> text response -> local speech output.
+
+## Panic Stop skeleton rule
+
+Panic Stop is implemented in iris-panic-stop.
+
+Current runtime test command:
+cargo run -p iris-runtime -- panic-stop-test
+
+Panic Stop must remain available before adding ASR, TTS, voice input, voice output, or long-running model generation.
+
+Future ASR, TTS, and model streaming must check Panic Stop or accept a cancellation boundary.

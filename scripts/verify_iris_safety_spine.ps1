@@ -51,6 +51,10 @@ Invoke-IrisStep "Runtime self-check" {
     cargo run -p iris-runtime -- self-check
 }
 
+Invoke-IrisStep "Runtime Panic Stop test" {
+    cargo run -p iris-runtime -- panic-stop-test
+}
+
 Invoke-IrisStep "Runtime model-plan" {
     cargo run -p iris-runtime -- model-plan
 }

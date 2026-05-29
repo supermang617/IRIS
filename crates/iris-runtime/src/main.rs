@@ -7,6 +7,7 @@ use iris_local_inference::LocalInferenceRequest;
 use iris_local_inference::loopback::{OllamaLoopbackClient, OllamaLoopbackConfig};
 use iris_model_router::{HardwareProfile, route_model};
 use iris_model_store::ModelStoreRoot;
+use iris_panic_stop::{PanicStopFlag, PanicStopStatus};
 use iris_policy::{
     CLIPBOARD_ACCESS, EXECUTOR, INPUT_SIMULATION, PLUGINS, RUNTIME_NETWORK,
     SCREEN_CONTENT_AUTHORITY, SYSTEM_CONTROL,
@@ -22,6 +23,7 @@ fn main() {
 
     match args.next().as_deref() {
         Some("self-check") => print_self_check(),
+        Some("panic-stop-test") => run_panic_stop_test(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("ask-local") => run_selected_local_model_ask(args.collect()),
@@ -219,10 +221,14 @@ fn run_safety_spine(input: &str) {
 }
 
 fn print_self_check() {
+    let panic_stop = PanicStopFlag::new_clear();
+
     println!("Project Iris self-check");
     println!("Runtime boundary: read-only");
     println!("Local inference: disabled stub");
     println!("Real local inference: not enabled");
+    println!("Panic Stop: available");
+    println!("Panic Stop status: {:?}", panic_stop.status());
     println!("Context gate: available");
     println!("Cognition stub: available");
     println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
@@ -231,9 +237,37 @@ fn print_self_check() {
         "Selected local model test: use cargo run -p iris-runtime -- ask-local \"hello iris\""
     );
     println!("Selected local chat: use cargo run -p iris-runtime -- chat-local");
+    println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
+    println!("Result: PASS");
+}
+
+fn run_panic_stop_test() {
+    let panic_stop = PanicStopFlag::new_clear();
+
+    println!("Project Iris Panic Stop test");
+    println!("Initial status: {:?}", panic_stop.status());
+
+    if panic_stop.status() != PanicStopStatus::Clear {
+        panic!("Panic Stop should start clear");
+    }
+
+    panic_stop.request_stop();
+    println!("After request: {:?}", panic_stop.status());
+
+    if panic_stop.status() != PanicStopStatus::Requested {
+        panic!("Panic Stop should be requested after request_stop");
+    }
+
+    panic_stop.clear();
+    println!("After clear: {:?}", panic_stop.status());
+
+    if panic_stop.status() != PanicStopStatus::Clear {
+        panic!("Panic Stop should be clear after clear");
+    }
+
     println!("Result: PASS");
 }
 
