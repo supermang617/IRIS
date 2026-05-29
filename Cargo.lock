@@ -9,6 +9,7 @@ dependencies = [
  "iris-context-gate",
  "iris-core-types",
  "iris-local-inference",
+ "iris-prompt",
 ]
 
 [[package]]
@@ -52,6 +53,13 @@ version = "0.1.0"
 [[package]]
 name = "iris-policy"
 version = "0.1.0"
+
+[[package]]
+name = "iris-prompt"
+version = "0.1.0"
+dependencies = [
+ "iris-core-types",
+]
 
 [[package]]
 name = "iris-redaction"

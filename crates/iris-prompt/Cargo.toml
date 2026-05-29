@@ -1,0 +1,7 @@
+[package]
+name = "iris-prompt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iris-core-types = { path = "../iris-core-types" }

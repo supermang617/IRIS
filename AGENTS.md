@@ -306,3 +306,13 @@ It must run:
 - cargo run -p iris-runtime -- ask "hello iris contact@example.com password=secret"
 
 The script is for development verification only. It does not grant runtime shell/process capability.
+
+## Prompt builder rule
+
+iris-prompt owns model prompt construction.
+
+Cognition must build prompts from GatedContextBundle only.
+
+Screen-derived context must remain labeled as UntrustedEvidence in prompts.
+
+Do not pass raw OCR, raw screenshots, raw audio, command requests, or arbitrary files directly into cognition.

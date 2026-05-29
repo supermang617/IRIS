@@ -1,15 +1,18 @@
 use iris_core_types::{AssistantReply, AuthorityClass, GatedContextBundle};
 use iris_local_inference::{LocalInferenceRequest, LocalInferenceStub};
+use iris_prompt::PromptBuilder;
 
 #[derive(Debug, Clone)]
 pub struct CognitionStub {
     local_inference: LocalInferenceStub,
+    prompt_builder: PromptBuilder,
 }
 
 impl CognitionStub {
     pub fn new() -> Self {
         Self {
             local_inference: LocalInferenceStub::new_disabled(),
+            prompt_builder: PromptBuilder::new(),
         }
     }
 
@@ -22,14 +25,11 @@ impl CognitionStub {
             .filter(|item| item.authority == AuthorityClass::UntrustedEvidence)
             .count();
 
-        let safe_prompt = format!(
-            "items={} untrusted={} redactions={}",
-            observed_item_count, untrusted_evidence_count, bundle.redaction_finding_count
-        );
+        let prompt = self.prompt_builder.build(&bundle);
 
         let inference_response = self
             .local_inference
-            .infer(LocalInferenceRequest::new(safe_prompt));
+            .infer(LocalInferenceRequest::new(prompt.text));
 
         AssistantReply::new(
             inference_response.text,
@@ -56,6 +56,7 @@ mod tests {
     fn cognition_uses_disabled_local_inference_stub() {
         let gate = ContextGate::new();
         let bundle = gate.gate_user_text("hello iris");
+
         let cognition = CognitionStub::new();
         let reply = cognition.respond(bundle);
 
@@ -66,6 +67,7 @@ mod tests {
     fn cognition_still_accepts_only_gated_context_bundle() {
         let gate = ContextGate::new();
         let bundle = gate.gate_user_text("manual input");
+
         let cognition = CognitionStub::new();
         let reply = cognition.respond(bundle);
 
@@ -77,6 +79,7 @@ mod tests {
         let gate = ContextGate::new();
         let bundle_a = gate.gate_user_text("first input");
         let bundle_b = gate.gate_user_text("second input");
+
         let cognition = CognitionStub::new();
 
         let reply_a = cognition.respond(bundle_a);
@@ -91,6 +94,7 @@ mod tests {
     fn cognition_preserves_redaction_count() {
         let gate = ContextGate::new();
         let bundle = gate.gate_user_text("contact@example.com password=secret");
+
         let cognition = CognitionStub::new();
         let reply = cognition.respond(bundle);
 

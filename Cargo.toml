@@ -11,6 +11,7 @@ members = [
     "crates/iris-model-manifest",
     "crates/iris-model-router",
     "crates/iris-model-store",
+    "crates/iris-prompt",
     "xtask"
 ]
 resolver = "2"
