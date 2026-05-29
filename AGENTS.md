@@ -72,3 +72,17 @@ Do not claim Ollama or LM Studio is implemented until real code exists and tests
 Do not add network crates without approval.
 
 Do not use Read-Host, optional tests, partial patches, or sibling dependency paths containing ../crates/.
+
+## Local inference config rule
+
+Local inference config may define future loopback endpoint strings only.
+
+Current allowed future endpoint examples:
+- 127.0.0.1:<port>
+- localhost:<port>
+
+Current local inference behavior remains disabled stub only.
+
+Do not add network crates or perform network calls without explicit approval.
+
+Do not use std::net in runtime crates while the forbidden API audit rejects std::net.
