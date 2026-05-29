@@ -16,16 +16,37 @@ fn main() {
     match args.next().as_deref() {
         Some("self-check") => print_self_check(),
         Some("model-plan") => print_model_plan(),
+        Some("ask") => run_ask_mode(args.collect()),
         _ => run_demo(),
     }
 }
 
 fn run_demo() {
+    run_safety_spine("hello iris contact@example.com password=secret");
+}
+
+fn run_ask_mode(parts: Vec<String>) {
+    let input = if parts.is_empty() {
+        "hello iris".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    println!("Project Iris ask-mode test");
+    println!("Input source: command argument");
+    println!("Runtime boundary: read-only");
+    println!("Local inference: disabled stub");
+    println!("Real local inference: not enabled");
+
+    run_safety_spine(&input);
+}
+
+fn run_safety_spine(input: &str) {
     println!("Project Iris initialized.");
     println!("Runtime mode: read-only local safety spine");
     println!("Local inference: disabled stub");
     println!("Real local inference: not enabled");
-    println!("Context flow: demo input -> ContextGate -> CognitionStub -> LocalInferenceStub");
+    println!("Context flow: input -> ContextGate -> CognitionStub -> LocalInferenceStub");
 
     println!("{}", SYSTEM_CONTROL);
     println!("{}", EXECUTOR);
@@ -34,8 +55,6 @@ fn run_demo() {
     println!("{}", RUNTIME_NETWORK);
     println!("{}", PLUGINS);
     println!("{}", SCREEN_CONTENT_AUTHORITY);
-
-    let input = "hello iris contact@example.com password=secret";
 
     let gate = ContextGate::new();
     let bundle = gate.gate_user_text(input);
@@ -59,6 +78,7 @@ fn print_self_check() {
     println!("Real local inference: not enabled");
     println!("Context gate: available");
     println!("Cognition stub: available");
+    println!("Ask mode: use cargo run -p iris-runtime -- ask \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
     println!("Result: PASS");

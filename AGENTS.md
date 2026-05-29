@@ -278,3 +278,15 @@ It must not read model files.
 It must not download models.
 
 It must not call Hugging Face, Ollama, LM Studio, llama.cpp, or any network API.
+
+## Runtime ask-mode rule
+
+Runtime ask mode is the first command-line testing surface.
+
+Current command:
+cargo run -p iris-runtime -- ask "hello iris"
+
+Ask mode must remain read-only and must route text through:
+ContextGate -> CognitionStub -> LocalInferenceStub
+
+It must not add UI, OCR, voice, TTS, memory DB, screen capture, networking, shell/process execution, clipboard access, or automation.
