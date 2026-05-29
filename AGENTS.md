@@ -402,3 +402,18 @@ Selected model:
 huihui_ai/qwen2.5-vl-abliterated:3b
 
 This is the first repeatable local-thinking smoke test.
+
+## Selected local ask command rule
+
+The first direct local-thinking command is:
+cargo run -p iris-runtime -- ask-local "hello iris"
+
+PowerShell helper:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ask_iris_local.ps1 "hello iris"
+
+This command must route through:
+ContextGate -> PromptBuilder -> OllamaLoopbackClient
+
+It may only call the selected model through 127.0.0.1 Ollama loopback.
+
+The default runtime remains disabled stub unless ask-local or ollama-test is explicitly used.

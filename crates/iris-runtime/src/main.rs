@@ -12,6 +12,9 @@ use iris_policy::{
 };
 use iris_prompt::PromptBuilder;
 
+const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
+const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
+
 fn main() {
     let mut args = env::args();
     let _program = args.next();
@@ -20,6 +23,7 @@ fn main() {
         Some("self-check") => print_self_check(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
+        Some("ask-local") => run_selected_local_model_ask(args.collect()),
         Some("prompt-preview") => run_prompt_preview(args.collect()),
         Some("ollama-test") => run_ollama_test(args.collect()),
         _ => run_demo(),
@@ -44,6 +48,22 @@ fn run_ask_mode(parts: Vec<String>) {
     println!("Real local inference: not enabled");
 
     run_safety_spine(&input);
+}
+
+fn run_selected_local_model_ask(parts: Vec<String>) {
+    let input = if parts.is_empty() {
+        "In one sentence, say hello as Iris and confirm you are running locally.".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    println!("Project Iris selected local model test");
+    println!("Model: {SELECTED_LOCAL_MODEL}");
+    println!("Endpoint: {OLLAMA_LOOPBACK_ENDPOINT}");
+    println!("Runtime boundary: explicit local loopback test only");
+    println!("Input routed through: ContextGate -> PromptBuilder -> OllamaLoopbackClient");
+
+    run_ollama_loopback_request(SELECTED_LOCAL_MODEL, &input);
 }
 
 fn run_prompt_preview(parts: Vec<String>) {
@@ -72,9 +92,9 @@ fn run_ollama_test(parts: Vec<String>) {
         println!("No network call was made because no model was provided.");
         println!("Usage:");
         println!("cargo run -p iris-runtime -- ollama-test <ollama-model-name> \"hello iris\"");
-        println!("Example:");
-        println!("cargo run -p iris-runtime -- ollama-test qwen3:8b \"hello iris\"");
-        println!("Endpoint: 127.0.0.1:11434");
+        println!("Selected model shortcut:");
+        println!("cargo run -p iris-runtime -- ask-local \"hello iris\"");
+        println!("Endpoint: {OLLAMA_LOOPBACK_ENDPOINT}");
         println!("Result: PASS");
         return;
     }
@@ -86,17 +106,22 @@ fn run_ollama_test(parts: Vec<String>) {
         "hello iris".to_string()
     };
 
-    let prompt = build_prompt_from_input(&input);
+    println!("Project Iris Ollama loopback test");
+    println!("Model: {model}");
+    println!("Endpoint: {OLLAMA_LOOPBACK_ENDPOINT}");
+    println!("Runtime boundary: explicit local loopback test only");
+    println!("Input routed through: ContextGate -> PromptBuilder -> OllamaLoopbackClient");
 
-    let config = OllamaLoopbackConfig::new("127.0.0.1:11434", model)
+    run_ollama_loopback_request(&model, &input);
+}
+
+fn run_ollama_loopback_request(model: &str, input: &str) {
+    let prompt = build_prompt_from_input(input);
+
+    let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, model)
         .expect("static Ollama loopback config should be valid");
 
     let client = OllamaLoopbackClient::new(config);
-
-    println!("Project Iris Ollama loopback test");
-    println!("Endpoint: 127.0.0.1:11434");
-    println!("Runtime boundary: explicit local loopback test only");
-    println!("Input routed through: ContextGate -> PromptBuilder -> OllamaLoopbackClient");
 
     let response = client
         .infer(LocalInferenceRequest::new(prompt))
@@ -154,6 +179,9 @@ fn print_self_check() {
     println!("Cognition stub: available");
     println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
     println!("Ask mode: use cargo run -p iris-runtime -- ask \"hello iris\"");
+    println!(
+        "Selected local model test: use cargo run -p iris-runtime -- ask-local \"hello iris\""
+    );
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
@@ -169,9 +197,11 @@ fn print_model_plan() {
         .expect("static placeholder model filename should be valid");
 
     println!("Project Iris future model plan");
-    println!("Status: design metadata only");
-    println!("Real local inference: not enabled");
-    println!("Downloads: not enabled");
+    println!("Status: selected local test target");
+    println!("Default selected model: {SELECTED_LOCAL_MODEL}");
+    println!("Real local inference default path: not enabled");
+    println!("Explicit local test command: cargo run -p iris-runtime -- ask-local \"hello iris\"");
+    println!("Downloads: not enabled by runtime");
     println!("Filesystem scan: not enabled");
     println!("Hardware profile: {}", profile.os_label);
     println!("Total RAM GB: {}", profile.total_ram_gb);
@@ -182,7 +212,7 @@ fn print_model_plan() {
     println!("Model format: {:?}", routed.manifest.format);
     println!("Quantization: {:?}", routed.manifest.quantization);
     println!("Source: {:?}", routed.manifest.source);
-    println!("Placeholder filename: {}", routed.manifest.filename);
+    println!("Model id: {}", routed.manifest.model_id);
     println!("Planned model store root: {}", model_store.as_str());
     println!("Planned model path: {}", model_path.as_str());
     println!("Minimum RAM GB: {}", routed.manifest.minimum_ram_gb);
