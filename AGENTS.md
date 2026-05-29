@@ -94,3 +94,12 @@ Do not use std::net, HTTP/network crates, or real Ollama/LM Studio calls until e
 Local inference config may define future 127.0.0.1 or localhost endpoint strings only.
 
 Current inference behavior remains disabled stub unless real loopback integration is explicitly approved.
+
+## Runtime integration rule
+
+For iris-runtime integration:
+- Do not import nonexistent Text or SharedContext types.
+- ContextGate::gate_user_text returns GatedContextBundle directly, not Result.
+- CognitionStub::respond returns AssistantReply directly, not Result.
+- AssistantReply lives in iris-core-types and must not be redefined in runtime.
+- iris-runtime should coordinate existing crates, not invent local replacement structs.

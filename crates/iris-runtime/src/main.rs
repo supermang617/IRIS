@@ -6,7 +6,11 @@ use iris_policy::{
 };
 
 fn main() {
-    println!("Project Iris v0.1 initialized.");
+    println!("Project Iris initialized.");
+    println!("Runtime mode: read-only local safety spine");
+    println!("Local inference: disabled stub");
+    println!("Real local inference: not enabled");
+    println!("Context flow: demo input -> ContextGate -> CognitionStub -> LocalInferenceStub");
 
     println!("{}", SYSTEM_CONTROL);
     println!("{}", EXECUTOR);
@@ -24,7 +28,7 @@ fn main() {
     let cognition = CognitionStub::new();
     let reply = cognition.respond(bundle);
 
-    println!("Cognition response: {}", reply.text);
+    println!("Cognition response text: {}", reply.text);
     println!("Observed item count: {}", reply.observed_item_count);
     println!("Redaction finding count: {}", reply.redaction_finding_count);
     println!(
