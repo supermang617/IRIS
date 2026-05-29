@@ -23,6 +23,10 @@ name = "iris-core-types"
 version = "0.1.0"
 
 [[package]]
+name = "iris-local-inference"
+version = "0.1.0"
+
+[[package]]
 name = "iris-paths"
 version = "0.1.0"
 

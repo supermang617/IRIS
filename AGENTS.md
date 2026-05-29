@@ -36,3 +36,13 @@ Skip:
 - xtask/src/main.rs
 
 Reason: those files intentionally contain forbidden words for documentation or audit implementation.
+
+## Local inference rule
+
+Local inference must start as a stub.
+
+Real Ollama or LM Studio support must be added later behind an explicit 127.0.0.1-only boundary.
+
+Do not add network crates without approval.
+
+Do not add runtime network behavior without approval.
