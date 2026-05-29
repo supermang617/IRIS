@@ -369,3 +369,14 @@ If a model is provided, it may call only the explicit 127.0.0.1:11434 Ollama loo
 This is the first manual local-thinking test surface.
 
 Do not make this the default runtime path yet.
+
+## Local thinking test script rule
+
+Use scripts/test_iris_ollama_loopback.ps1 as the manual local model test command.
+
+It runs the safety checks first, then tests only 127.0.0.1 Ollama loopback.
+
+Example:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loopback.ps1 qwen-model-name "hello iris"
+
+This script is a development test helper. It does not make Ollama the default runtime path.
