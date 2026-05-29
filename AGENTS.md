@@ -513,3 +513,20 @@ Do not capture Cargo/native command output with `2>&1` while `$ErrorActionPrefer
 Cargo writes normal build status to stderr, and PowerShell may treat it as an error record.
 
 Use separate temporary stdout/stderr files when a script needs to parse runtime output.
+
+## Text and voice milestone verification rule
+
+Use scripts/verify_iris_text_voice_milestone.ps1 to validate the first basic text and voice response milestone.
+
+This command must verify:
+- cargo fmt
+- cargo build
+- cargo test
+- xtask audit
+- runtime self-check
+- Panic Stop test
+- response post-check test
+- typed prompt to checked spoken response
+- one-shot voice input to checked spoken response
+
+Do not move to screen capture, OCR, memory database, full UI, dashboard, or always-listening voice until this milestone is stable.

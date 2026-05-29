@@ -4,19 +4,19 @@ Use this file to avoid drifting from the roadmap.
 
 ## Current goal
 
-Reach the first basic text and voice response milestone without weakening the safety boundary.
+Validate and harden the first basic text and voice response milestone.
 
 ## Current status
 
-Iris can already be tested by text through local model loopback when the selected Ollama model is installed.
+Iris supports:
 
-Panic Stop skeleton is implemented as a tested runtime-safe flag.
-
-Response post-check is implemented and blocks unsafe assistant capability claims.
-
-Text prompt to spoken local response helper is hardened and requires Response post-check: PASS before speaking.
-
-One-shot explicit voice input helper is scaffolded through local Windows speech recognition.
+- typed prompt through ask-local
+- explicit one-shot voice input helper
+- local model response through Ollama loopback
+- response post-check before displaying or speaking output
+- local spoken response through Windows speech synthesis
+- Panic Stop skeleton
+- safety spine verification
 
 Useful commands:
 
@@ -27,19 +27,15 @@ cargo run -p iris-runtime -- model-plan
 cargo run -p iris-runtime -- prompt-preview "hello iris"
 cargo run -p iris-runtime -- ask-local "hello iris"
 cargo run -p iris-runtime -- chat-local
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loopback.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ask_iris_local.ps1 "hello iris"
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\chat_iris_local.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 "hello iris"
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_voice_text_response.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_voice_milestone.ps1
 
 ## Do next
 
-Run the first explicit voice input plus spoken response test.
+If milestone verification passes cleanly, improve voice reliability and cancellation boundaries.
 
-Reason:
-
-This is the first basic voice milestone checkpoint.
+If it fails, fix the smallest failing helper first.
 
 ## Do not do yet
 
