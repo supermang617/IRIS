@@ -505,3 +505,11 @@ No wake word yet.
 No background audio loop.
 
 This is a development helper, not the default runtime path.
+
+## PowerShell native command capture rule
+
+Do not capture Cargo/native command output with `2>&1` while `$ErrorActionPreference = "Stop"`.
+
+Cargo writes normal build status to stderr, and PowerShell may treat it as an error record.
+
+Use separate temporary stdout/stderr files when a script needs to parse runtime output.
