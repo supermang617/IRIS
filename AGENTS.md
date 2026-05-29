@@ -393,3 +393,12 @@ Use scripts/test_iris_ollama_loopback.ps1 for repeat tests.
 Do not make this model path the default runtime behavior yet.
 
 The default runtime remains disabled stub unless an explicit test command opts into Ollama loopback.
+
+## Selected model smoke test rule
+
+Use scripts/smoke_test_selected_qwen_model.ps1 after the selected Qwen2.5-VL model is installed.
+
+Selected model:
+huihui_ai/qwen2.5-vl-abliterated:3b
+
+This is the first repeatable local-thinking smoke test.

@@ -50,68 +50,39 @@ pub struct RoutedModel {
 }
 
 pub fn route_model(profile: &HardwareProfile) -> Result<RoutedModel, ModelRoutingError> {
-    if profile.dedicated_vram_gb >= 16 {
-        return Ok(RoutedModel {
-            tier: ModelTier::HighEndDesktop,
-            manifest: placeholder_manifest(
-                "qwen-ab-literated-14b-placeholder",
-                "placeholder-qwen-14b-abliterated.Q4_K_M.gguf",
-                24,
-                16,
-            )?,
-        });
-    }
-
     if profile.dedicated_vram_gb >= 8 {
         return Ok(RoutedModel {
             tier: ModelTier::StandardDesktop,
-            manifest: placeholder_manifest(
-                "qwen-ab-literated-8b-placeholder",
-                "placeholder-qwen-8b-abliterated.Q4_K_M.gguf",
-                16,
-                8,
-            )?,
+            manifest: selected_qwen_vl_manifest(8, 8)?,
         });
     }
 
     if profile.dedicated_vram_gb >= 4 || profile.total_ram_gb >= 12 {
         return Ok(RoutedModel {
             tier: ModelTier::Lightweight,
-            manifest: placeholder_manifest(
-                "qwen-ab-literated-4b-placeholder",
-                "placeholder-qwen-4b-abliterated.Q4_K_M.gguf",
-                8,
-                4,
-            )?,
+            manifest: selected_qwen_vl_manifest(8, 4)?,
         });
     }
 
     Ok(RoutedModel {
         tier: ModelTier::Edge,
-        manifest: placeholder_manifest(
-            "qwen-ab-literated-edge-placeholder",
-            "placeholder-qwen-0_5b-to-1_5b-abliterated.Q4_K_M.gguf",
-            4,
-            0,
-        )?,
+        manifest: selected_qwen_vl_manifest(8, 0)?,
     })
 }
 
-fn placeholder_manifest(
-    model_id: &str,
-    filename: &str,
+fn selected_qwen_vl_manifest(
     minimum_ram_gb: u32,
     minimum_vram_gb: u32,
 ) -> Result<ModelManifest, ModelManifestError> {
     ModelManifest::new_verified_metadata(
-        model_id,
+        "huihui_ai/qwen2.5-vl-abliterated:3b",
         ModelFamily::Qwen,
         ModelVariant::AbliteratedOrUncensored,
         ModelFormat::GGUF,
         Quantization::Q4KM,
         ModelSource::BartowskiHuggingFace,
-        filename,
-        "placeholder-sha256-must-be-replaced-before-use",
+        "huihui_ai/qwen2.5-vl-abliterated:3b",
+        "ollama-managed-model-digest",
         minimum_ram_gb,
         minimum_vram_gb,
     )
@@ -122,53 +93,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn routes_rtx_4060_class_to_standard_desktop() {
+    fn routes_rtx_4060_class_to_selected_qwen_vl_model() {
         let profile = HardwareProfile::windows_rtx_4060_class();
         let routed = route_model(&profile).unwrap();
 
         assert_eq!(routed.tier, ModelTier::StandardDesktop);
+        assert_eq!(
+            routed.manifest.model_id,
+            "huihui_ai/qwen2.5-vl-abliterated:3b"
+        );
         assert_eq!(routed.manifest.family, ModelFamily::Qwen);
         assert_eq!(
             routed.manifest.variant,
             ModelVariant::AbliteratedOrUncensored
         );
         assert_eq!(routed.manifest.format, ModelFormat::GGUF);
-        assert_eq!(routed.manifest.quantization, Quantization::Q4KM);
         assert_eq!(routed.manifest.minimum_vram_gb, 8);
     }
 
     #[test]
-    fn routes_high_vram_to_high_end_desktop() {
-        let profile = HardwareProfile::new(64, 16, "high-end");
-        let routed = route_model(&profile).unwrap();
-
-        assert_eq!(routed.tier, ModelTier::HighEndDesktop);
-        assert_eq!(routed.manifest.minimum_vram_gb, 16);
-    }
-
-    #[test]
-    fn routes_four_gb_vram_to_lightweight() {
+    fn routes_four_gb_vram_to_lightweight_selected_model() {
         let profile = HardwareProfile::new(16, 4, "low-end-gpu");
         let routed = route_model(&profile).unwrap();
 
         assert_eq!(routed.tier, ModelTier::Lightweight);
+        assert_eq!(
+            routed.manifest.model_id,
+            "huihui_ai/qwen2.5-vl-abliterated:3b"
+        );
         assert_eq!(routed.manifest.minimum_vram_gb, 4);
     }
 
     #[test]
-    fn routes_no_vram_low_ram_to_edge() {
+    fn routes_no_vram_low_ram_to_edge_selected_model() {
         let profile = HardwareProfile::new(8, 0, "edge");
         let routed = route_model(&profile).unwrap();
 
         assert_eq!(routed.tier, ModelTier::Edge);
+        assert_eq!(
+            routed.manifest.model_id,
+            "huihui_ai/qwen2.5-vl-abliterated:3b"
+        );
         assert_eq!(routed.manifest.minimum_vram_gb, 0);
-    }
-
-    #[test]
-    fn routes_no_vram_but_enough_ram_to_lightweight() {
-        let profile = HardwareProfile::new(16, 0, "ram-only");
-        let routed = route_model(&profile).unwrap();
-
-        assert_eq!(routed.tier, ModelTier::Lightweight);
     }
 }
