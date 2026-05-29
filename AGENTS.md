@@ -25,3 +25,14 @@ If unsure, inspect the repo first with:
 git status --short
 cargo build --workspace
 cargo test --workspace
+
+## Audit-file skip rule
+
+The forbidden API audit must not scan files that intentionally document forbidden strings.
+
+Skip:
+- AGENTS.md
+- capabilities/v0_1_capability_ledger.toml
+- xtask/src/main.rs
+
+Reason: those files intentionally contain forbidden words for documentation or audit implementation.

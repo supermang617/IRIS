@@ -10,10 +10,22 @@ struct Finding {
 
 fn main() {
     let root = env::current_dir().expect("failed to read current directory");
+
+    if !root
+        .join("capabilities")
+        .join("v0_1_capability_ledger.toml")
+        .exists()
+    {
+        eprintln!("Project Iris xtask audit failed.");
+        eprintln!("Missing capabilities/v0_1_capability_ledger.toml");
+        std::process::exit(1);
+    }
+
     let findings = audit_repo(&root);
 
     if findings.is_empty() {
         println!("Project Iris xtask audit passed.");
+        println!("Capability ledger found.");
         return;
     }
 
@@ -57,6 +69,10 @@ fn should_skip_path(root: &Path, path: &Path) -> bool {
     let relative = path.strip_prefix(root).unwrap_or(path);
 
     if relative == Path::new("AGENTS.md") {
+        return true;
+    }
+
+    if relative == Path::new("capabilities").join("v0_1_capability_ledger.toml") {
         return true;
     }
 
@@ -136,12 +152,16 @@ mod tests {
     }
 
     #[test]
-    fn skips_agent_instruction_file_and_self() {
+    fn skips_policy_agent_and_self_files() {
         let root = Path::new("C:/Projects/IRIS");
 
         assert!(should_skip_path(
             root,
             Path::new("C:/Projects/IRIS/AGENTS.md")
+        ));
+        assert!(should_skip_path(
+            root,
+            Path::new("C:/Projects/IRIS/capabilities/v0_1_capability_ledger.toml")
         ));
         assert!(should_skip_path(
             root,
