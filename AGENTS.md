@@ -86,3 +86,11 @@ Current local inference behavior remains disabled stub only.
 Do not add network crates or perform network calls without explicit approval.
 
 Do not use std::net in runtime crates while the forbidden API audit rejects std::net.
+
+## Network/config boundary rule
+
+Do not use std::net, HTTP/network crates, or real Ollama/LM Studio calls until explicitly approved.
+
+Local inference config may define future 127.0.0.1 or localhost endpoint strings only.
+
+Current inference behavior remains disabled stub unless real loopback integration is explicitly approved.
