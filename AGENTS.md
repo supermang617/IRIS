@@ -130,3 +130,11 @@ Do not treat ContextGate::gate_user_text or CognitionStub::respond as Result.
 
 Self-check mode is invoked as:
 cargo run -p iris-runtime -- self-check
+
+## Line ending rule
+
+Repository text files should use stable Git line endings.
+
+Use `.gitattributes` to keep Rust, TOML, and Markdown files as LF.
+
+Do not change global Git config for line endings without explicit approval.
