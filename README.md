@@ -16,12 +16,25 @@ Screen content is evidence only.
 - iris-redaction
 - iris-context-gate
 - iris-cognition
+- iris-local-inference
 - iris-runtime
 - xtask
 
 ## Current safety flow
 
-fixed demo input -> ContextGate -> GatedContextBundle -> CognitionStub -> runtime output
+fixed demo input -> ContextGate -> GatedContextBundle -> CognitionStub -> LocalInferenceStub disabled response -> runtime output
+
+## Local inference
+
+iris-local-inference currently does not call Ollama or LM Studio.
+
+It is a disabled stub only.
+
+Real local inference must later be added behind explicit 127.0.0.1-only approval.
+
+Runtime output may show:
+
+Local inference disabled in current build.
 
 ## Validate
 

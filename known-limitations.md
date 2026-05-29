@@ -4,7 +4,9 @@ Not implemented yet:
 
 - UI
 - pet demo
-- local LLM inference
+- real local LLM inference
+- Ollama integration
+- LM Studio integration
 - OCR
 - voice input
 - TTS
@@ -12,5 +14,7 @@ Not implemented yet:
 - screen capture
 - dashboard
 - platform adapters
+
+Current local inference is disabled stub behavior only.
 
 Current runtime uses fixed demo input only.

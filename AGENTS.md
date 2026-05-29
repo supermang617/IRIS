@@ -62,3 +62,13 @@ Reject generated scripts before running if they contain:
 - partial patch fragments
 
 Always provide one full clean PowerShell script, not a patch fragment.
+
+## Local inference documentation rule
+
+iris-local-inference is currently a disabled stub only.
+
+Do not claim Ollama or LM Studio is implemented until real code exists and tests pass.
+
+Do not add network crates without approval.
+
+Do not use Read-Host, optional tests, partial patches, or sibling dependency paths containing ../crates/.
