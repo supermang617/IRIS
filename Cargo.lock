@@ -39,6 +39,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "iris-model-store"
+version = "0.1.0"
+dependencies = [
+ "iris-model-manifest",
+]
+
+[[package]]
 name = "iris-paths"
 version = "0.1.0"
 

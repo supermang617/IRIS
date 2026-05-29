@@ -252,3 +252,17 @@ cargo run -p iris-runtime -- model-plan
 It may display the future routed Qwen GGUF target for the Windows RTX 4060 class profile.
 
 It must not download models, call Hugging Face, call Ollama, call LM Studio, open sockets, scan hardware, or perform real inference.
+
+## Model store rule
+
+iris-model-store defines safe model path metadata only.
+
+It must not scan the filesystem.
+
+It must not download models.
+
+It must not call Hugging Face, Ollama, LM Studio, llama.cpp, or any network API.
+
+It must reject parent traversal, absolute model filenames, and backslash paths.
+
+Actual model presence checks and file reads must be explicitly approved later.
