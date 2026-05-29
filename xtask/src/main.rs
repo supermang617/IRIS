@@ -68,21 +68,19 @@ fn scan_dir(root: &Path, dir: &Path, findings: &mut Vec<Finding>) {
 fn should_skip_path(root: &Path, path: &Path) -> bool {
     let relative = path.strip_prefix(root).unwrap_or(path);
 
-    if relative == Path::new("AGENTS.md") {
-        return true;
-    }
-
-    if relative == Path::new("capabilities").join("v0_1_capability_ledger.toml") {
-        return true;
-    }
-
-    if relative == Path::new("xtask").join("src").join("main.rs") {
+    if relative == Path::new("AGENTS.md")
+        || relative == Path::new("README.md")
+        || relative == Path::new("SECURITY.md")
+        || relative == Path::new("known-limitations.md")
+        || relative == Path::new("capabilities").join("v0_1_capability_ledger.toml")
+        || relative == Path::new("xtask").join("src").join("main.rs")
+    {
         return true;
     }
 
     relative.components().any(|component| {
         let text = component.as_os_str().to_string_lossy();
-        matches!(text.as_ref(), ".git" | "target" | ".vs" | ".codex")
+        matches!(text.as_ref(), ".git" | "target" | ".vs" | ".codex" | "docs")
     })
 }
 
@@ -148,11 +146,10 @@ mod tests {
         assert!(should_scan_file(Path::new("src/main.rs")));
         assert!(should_scan_file(Path::new("Cargo.toml")));
         assert!(!should_scan_file(Path::new("README.md")));
-        assert!(!should_scan_file(Path::new("image.png")));
     }
 
     #[test]
-    fn skips_policy_agent_and_self_files() {
+    fn skips_policy_docs_agent_and_self_files() {
         let root = Path::new("C:/Projects/IRIS");
 
         assert!(should_skip_path(
@@ -161,7 +158,19 @@ mod tests {
         ));
         assert!(should_skip_path(
             root,
-            Path::new("C:/Projects/IRIS/capabilities/v0_1_capability_ledger.toml")
+            Path::new("C:/Projects/IRIS/README.md")
+        ));
+        assert!(should_skip_path(
+            root,
+            Path::new("C:/Projects/IRIS/SECURITY.md")
+        ));
+        assert!(should_skip_path(
+            root,
+            Path::new("C:/Projects/IRIS/known-limitations.md")
+        ));
+        assert!(should_skip_path(
+            root,
+            Path::new("C:/Projects/IRIS/docs/architecture.md")
         ));
         assert!(should_skip_path(
             root,
