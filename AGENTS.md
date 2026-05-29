@@ -380,3 +380,16 @@ Example:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loopback.ps1 qwen-model-name "hello iris"
 
 This script is a development test helper. It does not make Ollama the default runtime path.
+
+## Selected Qwen2.5-VL test model rule
+
+The selected local test model is:
+huihui_ai/qwen2.5-vl-abliterated:3b
+
+Use scripts/setup_iris_qwen_vl_ollama.ps1 to pull it through Ollama and run the first Iris local-thinking test.
+
+Use scripts/test_iris_ollama_loopback.ps1 for repeat tests.
+
+Do not make this model path the default runtime behavior yet.
+
+The default runtime remains disabled stub unless an explicit test command opts into Ollama loopback.

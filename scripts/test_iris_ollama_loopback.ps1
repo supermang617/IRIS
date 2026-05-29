@@ -2,7 +2,9 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
+$defaultModel = "huihui_ai/qwen2.5-vl-abliterated:3b"
 $model = $args[0]
+
 $prompt = if ($args.Count -gt 1) {
     ($args[1..($args.Count - 1)] -join " ")
 } else {
@@ -58,8 +60,8 @@ Write-Host "=== Installed Ollama models ==="
 
 if ($null -eq $tags.models -or $tags.models.Count -eq 0) {
     Write-Host "No Ollama models installed."
-    Write-Host "Usage once installed:"
-    Write-Host 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loopback.ps1 <model-name> "hello iris"'
+    Write-Host "Run:"
+    Write-Host "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_qwen_vl_ollama.ps1"
     git status --short
     exit 0
 }
@@ -69,19 +71,28 @@ $tags.models | ForEach-Object {
 }
 
 if ([string]::IsNullOrWhiteSpace($model)) {
-    $candidate = $tags.models |
-        Where-Object { $_.name -match "qwen|qwq" } |
+    $exact = $tags.models |
+        Where-Object { $_.name -eq $defaultModel } |
         Select-Object -First 1
 
-    if ($null -eq $candidate) {
-        Write-Host ""
-        Write-Host "No Qwen-family model detected."
-        Write-Host "Pass an installed model name manually if needed."
-        git status --short
-        exit 0
-    }
+    if ($null -ne $exact) {
+        $model = $defaultModel
+    } else {
+        $candidate = $tags.models |
+            Where-Object { $_.name -match "qwen|qwq" } |
+            Select-Object -First 1
 
-    $model = $candidate.name
+        if ($null -eq $candidate) {
+            Write-Host ""
+            Write-Host "No Qwen-family model detected."
+            Write-Host "Run:"
+            Write-Host "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_qwen_vl_ollama.ps1"
+            git status --short
+            exit 0
+        }
+
+        $model = $candidate.name
+    }
 }
 
 Write-Host ""
