@@ -1,3 +1,6 @@
 target/
 .vs/
 .codex/
+.codex_backup*/
+*.tmp
+*.log
