@@ -64,6 +64,7 @@ dependencies = [
  "iris-cognition",
  "iris-context-gate",
  "iris-model-router",
+ "iris-model-store",
  "iris-policy",
 ]
 

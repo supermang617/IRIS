@@ -3,6 +3,7 @@ use std::env;
 use iris_cognition::CognitionStub;
 use iris_context_gate::ContextGate;
 use iris_model_router::{HardwareProfile, route_model};
+use iris_model_store::ModelStoreRoot;
 use iris_policy::{
     CLIPBOARD_ACCESS, EXECUTOR, INPUT_SIMULATION, PLUGINS, RUNTIME_NETWORK,
     SCREEN_CONTENT_AUTHORITY, SYSTEM_CONTROL,
@@ -66,11 +67,16 @@ fn print_self_check() {
 fn print_model_plan() {
     let profile = HardwareProfile::windows_rtx_4060_class();
     let routed = route_model(&profile).expect("static placeholder model route should be valid");
+    let model_store = ModelStoreRoot::iris_user_models();
+    let model_path = model_store
+        .model_path_for_manifest(&routed.manifest)
+        .expect("static placeholder model filename should be valid");
 
     println!("Project Iris future model plan");
     println!("Status: design metadata only");
     println!("Real local inference: not enabled");
     println!("Downloads: not enabled");
+    println!("Filesystem scan: not enabled");
     println!("Hardware profile: {}", profile.os_label);
     println!("Total RAM GB: {}", profile.total_ram_gb);
     println!("Dedicated VRAM GB: {}", profile.dedicated_vram_gb);
@@ -81,6 +87,8 @@ fn print_model_plan() {
     println!("Quantization: {:?}", routed.manifest.quantization);
     println!("Source: {:?}", routed.manifest.source);
     println!("Placeholder filename: {}", routed.manifest.filename);
+    println!("Planned model store root: {}", model_store.as_str());
+    println!("Planned model path: {}", model_path.as_str());
     println!("Minimum RAM GB: {}", routed.manifest.minimum_ram_gb);
     println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
     println!("Result: PASS");

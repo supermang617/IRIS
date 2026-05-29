@@ -266,3 +266,15 @@ It must not call Hugging Face, Ollama, LM Studio, llama.cpp, or any network API.
 It must reject parent traversal, absolute model filenames, and backslash paths.
 
 Actual model presence checks and file reads must be explicitly approved later.
+
+## Runtime model-store display rule
+
+Runtime model-plan may display planned model storage metadata.
+
+It must not scan the filesystem.
+
+It must not read model files.
+
+It must not download models.
+
+It must not call Hugging Face, Ollama, LM Studio, llama.cpp, or any network API.
