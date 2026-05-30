@@ -1,23 +1,20 @@
 # Voice To Spoken Turn Milestone
 
-Status: active milestone verification.
-
-## Purpose
-
-This verifies the first full spoken Iris turn.
+Status: active branch-off milestone.
 
 ## Command
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_to_spoken_turn.ps1
 
-Dry run without playback:
+## Test phrase
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_to_spoken_turn.ps1 -NoPlay
+Testing now, Iris local voice test.
 
 ## Verified path
 
 Voice input
--> transcript
+-> soft transcript quality gate
+-> transcript file
 -> checked Iris response
 -> role repair
 -> natural speech rendering
@@ -25,8 +22,6 @@ Voice input
 -> dev Kokoro speech boundary
 -> audible Iris response
 
-## Boundary
+## Branch point
 
-This is still a development speech boundary.
-
-The Rust runtime does not spawn shell, PowerShell, Python, or external playback processes.
+After this passes cleanly, branch the conversation.

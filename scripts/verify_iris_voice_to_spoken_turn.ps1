@@ -1,5 +1,6 @@
 param(
-    [int] $TimeoutSeconds = 10,
+    [int] $TimeoutSeconds = 15,
+    [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
     [switch] $NoPlay
 )
 
@@ -24,18 +25,20 @@ function Write-ReportLine {
 Write-Host ""
 Write-Host "=== Project Iris voice-to-spoken turn milestone ==="
 Write-Host "Timeout seconds: $TimeoutSeconds"
+Write-Host "Expected phrase: $ExpectedPhrase"
 Write-Host "NoPlay: $NoPlay"
 Write-Host ""
-Write-Host "When prompted, say:"
-Write-Host "Iris, your voice sounds awesome."
+Write-Host "When prompted, say clearly:"
+Write-Host $ExpectedPhrase
 Write-Host ""
 
 Write-ReportLine "Project Iris voice-to-spoken turn milestone"
 Write-ReportLine "Timestamp: $timestamp"
 Write-ReportLine "Timeout seconds: $TimeoutSeconds"
+Write-ReportLine "Expected phrase: $ExpectedPhrase"
 Write-ReportLine "NoPlay: $NoPlay"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\verify_iris_voice_input_boundary.ps1" -TimeoutSeconds $TimeoutSeconds
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\verify_iris_voice_input_boundary.ps1" -TimeoutSeconds $TimeoutSeconds -ExpectedPhrase $ExpectedPhrase
 if ($LASTEXITCODE -ne 0) {
     throw "Voice input boundary failed"
 }
@@ -77,7 +80,7 @@ if ($NoPlay) {
 }
 
 Write-Host ""
-Write-Host "=== Speaking Iris response ==="
+Write-Host "=== Iris checked response to spoken prompt ==="
 
 powershell @speechArgs
 if ($LASTEXITCODE -ne 0) {
