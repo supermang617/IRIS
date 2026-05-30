@@ -1360,3 +1360,13 @@ Examples:
 Do not alter direct user input.
 
 Do not confuse this with profanity marker normalization. Profanity marker normalization happens before natural speech rendering.
+
+## Natural speech rendering test-data rule
+
+Rust arrays require every element to have the same length.
+
+For natural speech rendering examples, use:
+
+Vec<(&str, &str, Vec<&str>)>
+
+Do not use tuple arrays where the forbidden-word list has different lengths per example.
