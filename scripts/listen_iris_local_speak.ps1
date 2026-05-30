@@ -4,7 +4,8 @@ param(
     [string] $AnchorWordsCsv = "testing,voice,test",
     [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
-    [switch] $NoResponse
+    [switch] $NoResponse,
+    [string] $SimulatedTranscript = ""
 )
 
 Set-StrictMode -Version Latest
@@ -33,16 +34,45 @@ function Add-Diag {
     $Text | Add-Content -Encoding UTF8 $diagPath
 }
 
+function Save-Transcript {
+    param([string] $Text)
+
+    $clean = ($Text -replace "`0", "").Trim()
+
+    if ([string]::IsNullOrWhiteSpace($clean)) {
+        throw "Transcript was empty."
+    }
+
+    $clean | Set-Content -Encoding UTF8 $transcriptPath
+    Add-Diag ("Final transcript: " + $clean)
+    Add-Diag ("Transcript file: " + $transcriptPath)
+
+    Write-Host ""
+    Write-Host "=== Extracted transcript ==="
+    Write-Host $clean
+    Write-Host ("Transcript file: " + $transcriptPath)
+    Write-Host "Result: PASS"
+}
+
 Write-Host "=== Project Iris one-shot voice input ==="
 Write-Host ("Expected phrase: " + $ExpectedPhrase)
 Write-Host ("Anchor words: " + ($anchorWords -join ", "))
 Write-Host ("Timeout seconds: " + $TimeoutSeconds)
 Write-Host ("Max attempts: " + $MaxAttempts)
-Write-Host "Speak only after: Listening now..."
+Write-Host "Mode: explicit bounded voice input"
 
 Add-Diag "Project Iris voice input diagnostic"
 Add-Diag ("Expected phrase: " + $ExpectedPhrase)
 Add-Diag ("Anchor words: " + ($anchorWords -join ", "))
+
+if (-not [string]::IsNullOrWhiteSpace($SimulatedTranscript)) {
+    Write-Host "Mode: simulated transcript"
+    Add-Diag "Mode: simulated transcript"
+    Save-Transcript $SimulatedTranscript
+    exit 0
+}
+
+Write-Host "Speak only after: Listening now..."
 
 try {
     Add-Type -AssemblyName System.Speech
@@ -97,16 +127,7 @@ try {
         throw "No speech was recognized. Check Windows default input device, microphone privacy permission, and microphone gain."
     }
 
-    $acceptedTranscript | Set-Content -Encoding UTF8 $transcriptPath
-
-    Add-Diag ("Final transcript: " + $acceptedTranscript)
-    Add-Diag ("Transcript file: " + $transcriptPath)
-
-    Write-Host ""
-    Write-Host "=== Extracted transcript ==="
-    Write-Host $acceptedTranscript
-    Write-Host ("Transcript file: " + $transcriptPath)
-    Write-Host "Result: PASS"
+    Save-Transcript $acceptedTranscript
 }
 finally {
     if ($null -ne $recognizer) {

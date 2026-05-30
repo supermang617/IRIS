@@ -3,7 +3,8 @@ param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
     [string[]] $AnchorWords = @("testing", "voice", "test"),
     [int] $TimeoutSeconds = 30,
-    [int] $MaxAttempts = 3
+    [int] $MaxAttempts = 3,
+    [string] $SimulatedTranscript = ""
 )
 
 Set-StrictMode -Version Latest
@@ -32,10 +33,15 @@ $powershellArgs = @(
     "-File", $listener,
     "-ExpectedPhrase", $ExpectedPhrase,
     "-AnchorWordsCsv", $anchorWordsCsv,
-    "-TimeoutSeconds", "$TimeoutSeconds",
-    "-MaxAttempts", "$MaxAttempts",`r`n    "-NoResponse"
+    "-TimeoutSeconds", $TimeoutSeconds.ToString(),
+    "-MaxAttempts", $MaxAttempts.ToString(),
+    "-NoResponse"
 )
 
+if (-not [string]::IsNullOrWhiteSpace($SimulatedTranscript)) {
+    $powershellArgs += "-SimulatedTranscript"
+    $powershellArgs += $SimulatedTranscript
+}
 
 powershell @powershellArgs
 

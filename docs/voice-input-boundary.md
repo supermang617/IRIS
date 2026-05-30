@@ -12,10 +12,12 @@ Canonical scripts:
 
 Boundary contract:
 
-- External/nested PowerShell calls pass anchor words as one CSV string.
-- Do not pass a raw `string[]` through a nested `powershell -File` call.
-- This avoids PowerShell treating words after the first one as invalid positional arguments.
+- Nested PowerShell calls pass anchor words as one CSV string.
+- Do not pass a raw `string[]` through nested `powershell -File`.
+- The verifier supports `-SimulatedTranscript` so script syntax and argument contracts can be tested without microphone input.
 
-Expected phrase for current milestone:
+Expected phrase for the current milestone:
 
 `Testing now, Iris local voice test.`
+
+If the simulated boundary test passes but live capture fails, the remaining issue is Windows microphone input or Windows Speech recognition, not Qwen or Kokoro.
