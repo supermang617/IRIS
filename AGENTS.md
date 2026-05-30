@@ -1021,3 +1021,20 @@ The first HUD slice must not add:
 
 The HUD command is:
 cargo run -p iris-runtime -- hud
+
+## UI material/backdrop rule
+
+Do not switch Iris to Tauri unless explicitly approved as a full UI architecture change.
+
+Current v0.1 HUD path:
+- egui
+- eframe
+- native Rust HUD
+
+Future visual polish may use native platform materials:
+- Windows: Mica first
+- macOS: Vibrancy
+- Android: Material You
+- iOS: System Materials
+
+Do not implement native material/backdrop effects until the minimal HUD is functionally wired to typed prompt, checked response display, Kokoro speech path, visible voice state, and Panic Stop status.
