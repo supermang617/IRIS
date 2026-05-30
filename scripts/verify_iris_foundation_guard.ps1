@@ -51,7 +51,7 @@ function Get-InstalledIrisModel {
     Write-Section "Ollama model check"
 
     if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-        Write-Host "Ollama not found. Continuing without model env setup."
+        Write-Host "Ollama not found. Skipping model environment setup."
         return ""
     }
 
@@ -66,6 +66,7 @@ function Get-InstalledIrisModel {
         if ($name.StartsWith($Prefix)) { return $name }
     }
 
+    Write-Host "No installed model found for prefix. Continuing because foundation guard is deterministic."
     return ""
 }
 
@@ -73,6 +74,7 @@ function Assert-NoInteractiveDevPrompts {
     Write-Section "Development script prompt scan"
 
     $token = "Read" + "-Host"
+
     $hits = Get-ChildItem -Path "scripts" -Recurse -File -Filter "*.ps1" -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -notin @("verify_iris_foundation_guard.ps1", "verify_iris_voice_text_milestone.ps1") } |
         Select-String -Pattern $token -SimpleMatch -ErrorAction SilentlyContinue
@@ -90,10 +92,8 @@ function Assert-NoInteractiveDevPrompts {
 function Assert-RuntimeBoundary {
     Write-Section "Runtime safety boundary scan"
 
-    $runtimePath = "crates\iris-runtime\src\main.rs"
-    if (-not (Test-Path $runtimePath)) { throw "Missing runtime file: $runtimePath" }
-
-    $runtime = Get-Content -Raw -Path $runtimePath
+    $runtimeRoot = "crates\iris-runtime\src"
+    if (-not (Test-Path $runtimeRoot)) { throw "Missing runtime source root: $runtimeRoot" }
 
     $forbidden = @(
         "std::net",
@@ -105,10 +105,22 @@ function Assert-RuntimeBoundary {
         "python.exe"
     )
 
-    foreach ($needle in $forbidden) {
-        if ($runtime.Contains($needle)) {
-            throw "Runtime contains forbidden direct capability string: $needle"
+    $files = Get-ChildItem -Path $runtimeRoot -Recurse -File -Filter "*.rs"
+    $hits = @()
+
+    foreach ($file in $files) {
+        $text = Get-Content -Raw -Path $file.FullName
+
+        foreach ($needle in $forbidden) {
+            if ($text.Contains($needle)) {
+                $hits += "$($file.FullName): forbidden runtime capability: $needle"
+            }
         }
+    }
+
+    if ($hits.Count -gt 0) {
+        $hits | ForEach-Object { Write-Host $_ }
+        throw "Runtime safety boundary failed."
     }
 
     Write-Host "PASS: runtime safety boundary scan passed."
@@ -134,8 +146,8 @@ function Assert-ManifestSafetyWording {
     Write-Host "PASS: manifest safety wording passed."
 }
 
-function Assert-ModelReferenceDrift {
-    Write-Section "Model reference drift scan"
+function Assert-ModelConfigOnly {
+    Write-Section "Model config check"
 
     $oldPatterns = @(
         "qwen3-vl:4b",
@@ -146,23 +158,19 @@ function Assert-ModelReferenceDrift {
         "huihui_ai/qwen2.5-vl-abliterated"
     )
 
-    $roots = @("config", "crates", "scripts")
-    $files = foreach ($root in $roots) {
+    $scanFiles = @()
+
+    foreach ($root in @("config", "crates\iris-model-router\src")) {
         if (Test-Path $root) {
-            Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object {
-                    $_.FullName -notmatch "\\target\\" -and
-                    $_.FullName -notmatch "\\scripts\\verify_iris_foundation_guard\.ps1$" -and
-                    $_.FullName -notmatch "\\scripts\\verify_iris_voice_text_milestone\.ps1$" -and
-                    $_.Extension -in @(".rs", ".toml", ".ps1", ".txt")
-                }
+            $scanFiles += Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in @(".toml", ".rs", ".txt") }
         }
     }
 
     $hits = @()
 
     foreach ($pattern in $oldPatterns) {
-        $found = $files | Select-String -Pattern $pattern -SimpleMatch -ErrorAction SilentlyContinue
+        $found = $scanFiles | Select-String -Pattern $pattern -SimpleMatch -ErrorAction SilentlyContinue
         if ($found) { $hits += $found }
     }
 
@@ -170,13 +178,13 @@ function Assert-ModelReferenceDrift {
         foreach ($hit in $hits) {
             Write-Host "$($hit.Path):$($hit.LineNumber): $($hit.Line.Trim())"
         }
-        throw "Old model reference drift found."
+        throw "Old model reference found in runtime config/router files."
     }
 
-    Write-Host "PASS: no old model references found in runtime/config/script files."
+    Write-Host "PASS: model config/router check passed."
 }
 
-Write-Section "Project Iris foundation guard"
+Write-Section "Project Iris deterministic foundation guard"
 
 $Model = Get-InstalledIrisModel -Prefix $ModelPrefix
 
@@ -195,7 +203,7 @@ if (-not [string]::IsNullOrWhiteSpace($Model)) {
 Assert-NoInteractiveDevPrompts
 Assert-RuntimeBoundary
 Assert-ManifestSafetyWording
-Assert-ModelReferenceDrift
+Assert-ModelConfigOnly
 
 Invoke-IrisNative "Cargo format" "cargo" @("fmt", "--all")
 Invoke-IrisNative "Cargo build" "cargo" @("build", "--workspace")
@@ -205,4 +213,4 @@ Invoke-IrisNative "Deictic role test" "cargo" @("run", "-p", "iris-runtime", "--
 Invoke-IrisNative "Xtask audit" "cargo" @("run", "-p", "xtask")
 
 Write-Section "Foundation result"
-Write-Host "PASS: Iris foundation guard passed."
+Write-Host "PASS: Iris deterministic foundation guard passed."

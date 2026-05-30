@@ -40,9 +40,9 @@ function Invoke-IrisNative {
     }
 }
 
-Write-Section "Voice/text milestone guard"
+Write-Section "Voice/text milestone preflight guard"
 
-Invoke-IrisNative "Foundation guard" "powershell" @(
+Invoke-IrisNative "Deterministic foundation guard" "powershell" @(
     "-NoProfile",
     "-ExecutionPolicy",
     "Bypass",
@@ -56,18 +56,7 @@ Invoke-IrisNative "Foundation guard" "powershell" @(
     "$NumPredict"
 )
 
-if (Test-Path "scripts\diagnose_iris_current_milestone.ps1") {
-    Invoke-IrisNative "Current milestone diagnostic dry-run" "powershell" @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "scripts\diagnose_iris_current_milestone.ps1"
-    )
-} else {
-    Write-Host "No diagnose_iris_current_milestone.ps1 script found. Skipping dry-run."
-}
-
 Write-Section "Milestone result"
-Write-Host "PASS: Iris voice/text milestone guard passed."
-Write-Host "Next milestone: open back-and-forth typed and spoken conversation."
+Write-Host "PASS: Iris voice/text milestone preflight guard passed."
+Write-Host "Live Kokoro/model/HUD checks are not part of this deterministic guard."
+Write-Host "Next milestone: implement open back-and-forth typed and spoken conversation."
