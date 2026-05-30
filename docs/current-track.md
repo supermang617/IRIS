@@ -2,34 +2,26 @@
 
 ## Current checkpoint
 
-Iris now uses a foundation guard before moving to the next feature slice.
+HUD speech-plan gate.
 
 Command:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_foundation_guard.ps1
+cargo run -p iris-runtime -- hud-speech-plan-test "Iris, your voice sounds awesome."
 
-## Working rule
+## Why this is next
 
-Prefer clean canonical rewrites over stacked patch chains when a file becomes unstable.
+Before HUD Kokoro audio, Iris must prove that the exact text sent to speech is:
 
-No suffixed helper chains for HUD behavior.
+- checked
+- role-repaired
+- free of censor-marker asterisks
+- speakable by policy
 
-Canonical HUD function:
+## Next after this passes
 
-checked_local_response_for_hud
+Choose the actual HUD speech boundary:
 
-## Next feature after this passes
+1. dev-only PowerShell wrapper around existing Kokoro scripts, or
+2. Rust-native local TTS backend with explicitly approved dependencies.
 
-Add HUD Kokoro speech output.
-
-Only after:
-
-- foundation guard passes
-- HUD role handling remains stable
-- user input is preserved
-- assistant output has no censor-marker asterisks
-- diagnostics remain clean
-
-## Do not do yet
-
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.
+Do not make the Rust runtime spawn shell/process commands.

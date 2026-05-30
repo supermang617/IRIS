@@ -73,6 +73,7 @@ fn main() {
         Some("ollama-test") => run_ollama_test(args.collect()),
         Some("hud") => run_hud(),
         Some("hud-submit-test") => run_hud_submit_test(args.collect()),
+        Some("hud-speech-plan-test") => run_hud_speech_plan_test(args.collect()),
         _ => run_demo(),
     }
 }
@@ -627,6 +628,9 @@ fn print_self_check() {
     println!("UI status: use cargo run -p iris-runtime -- ui-status");
     println!("HUD: use cargo run -p iris-runtime -- hud");
     println!("HUD submit test: use cargo run -p iris-runtime -- hud-submit-test <prompt>");
+    println!(
+        "HUD speech plan test: use cargo run -p iris-runtime -- hud-speech-plan-test <prompt>"
+    );
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
     println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");

@@ -1276,3 +1276,15 @@ captured native process output
 
 Reason:
 A guard should not fail because it finds its own warning text.
+
+## HUD speech plan rule
+
+Before adding actual HUD audio playback, run:
+
+cargo run -p iris-runtime -- hud-speech-plan-test "Iris, your voice sounds awesome."
+
+The speech plan must use checked and repaired assistant text.
+
+Runtime may create a VoiceOutputPlan.
+
+Runtime must not spawn PowerShell, Python, shell, or external processes to speak.
