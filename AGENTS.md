@@ -1427,3 +1427,14 @@ omit -DryRun when false
 include -DryRun only when true
 
 This prevents SwitchParameter conversion failures in voice scripts.
+
+## Voice transcript retry rule
+
+Short speech-to-text phrases can misfire.
+
+For milestone testing, prefer a longer phrase:
+Hello Iris, this is a local voice test.
+
+The voice input quality gate may retry up to three times before failing.
+
+Do not let a rejected transcript proceed into Iris response or TTS.

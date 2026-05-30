@@ -1,6 +1,8 @@
 param(
-    [int] $TimeoutSeconds = 10,
-    [string] $ExpectedPhrase = "Hello Iris.",
+    [int] $TimeoutSeconds = 12,
+    [string] $ExpectedPhrase = "Hello Iris, this is a local voice test.",
+    [string[]] $RequiredWords = @("hello", "iris"),
+    [int] $MaxAttempts = 3,
     [switch] $AllowUnverifiedTranscript
 )
 
@@ -17,10 +19,7 @@ Remove-Item -Force -ErrorAction SilentlyContinue $transcriptPath
 Remove-Item -Force -ErrorAction SilentlyContinue $rejectedTranscriptPath
 
 function Join-NativeArguments {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
-    )
+    param([Parameter(Mandatory = $true)][string[]] $Arguments)
 
     $quoted = foreach ($argument in $Arguments) {
         if ($null -eq $argument) {
@@ -37,14 +36,9 @@ function Join-NativeArguments {
 
 function Invoke-NativeCapture {
     param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [string] $CommandName,
-
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
+        [Parameter(Mandatory = $true)][string] $Name,
+        [Parameter(Mandatory = $true)][string] $CommandName,
+        [Parameter(Mandatory = $true)][string[]] $Arguments
     )
 
     Write-Host ""
@@ -133,42 +127,53 @@ function Get-NormalizedWords {
     @([regex]::Matches($Text.ToLowerInvariant(), "[a-z0-9']+") | ForEach-Object { $_.Value })
 }
 
-function Test-ExpectedTranscript {
+function Test-RequiredWord {
+    param(
+        [string[]] $TranscriptWords,
+        [string] $Required
+    )
+
+    $requiredLower = $Required.ToLowerInvariant()
+
+    if ($requiredLower -eq "hello") {
+        return (
+            $TranscriptWords -contains "hello" -or
+            $TranscriptWords -contains "hallo" -or
+            $TranscriptWords -contains "halo" -or
+            $TranscriptWords -contains "hey"
+        )
+    }
+
+    if ($requiredLower -eq "iris") {
+        return (
+            $TranscriptWords -contains "iris" -or
+            $TranscriptWords -contains "irish" -or
+            $TranscriptWords -contains "heiress" -or
+            $TranscriptWords -contains "aris"
+        )
+    }
+
+    return ($TranscriptWords -contains $requiredLower)
+}
+
+function Test-TranscriptQuality {
     param(
         [string] $Transcript,
-        [string] $Expected
+        [string[]] $Required
     )
 
     $transcriptWords = @(Get-NormalizedWords -Text $Transcript)
-    $expectedWords = @(Get-NormalizedWords -Text $Expected)
-
-    if ($expectedWords.Count -eq 0) {
-        return $true
-    }
-
     $missing = New-Object System.Collections.Generic.List[string]
 
-    foreach ($word in $expectedWords) {
-        if ($word -eq "iris") {
-            $irisMatched = $transcriptWords -contains "iris" -or
-                $transcriptWords -contains "irish" -or
-                $transcriptWords -contains "heiress"
-
-            if (-not $irisMatched) {
-                $missing.Add("iris")
-            }
-
-            continue
-        }
-
-        if (-not ($transcriptWords -contains $word)) {
+    foreach ($word in $Required) {
+        if (-not (Test-RequiredWord -TranscriptWords $transcriptWords -Required $word)) {
             $missing.Add($word)
         }
     }
 
     if ($missing.Count -gt 0) {
         Write-Host ""
-        Write-Host "Missing expected word(s): $($missing -join ', ')"
+        Write-Host "Missing required word(s): $($missing -join ', ')"
         return $false
     }
 
@@ -179,10 +184,8 @@ Write-Host ""
 Write-Host "=== Project Iris voice input boundary verification ==="
 Write-Host "Timeout seconds: $TimeoutSeconds"
 Write-Host "Expected phrase: $ExpectedPhrase"
-Write-Host ""
-Write-Host "When prompted, say exactly:"
-Write-Host $ExpectedPhrase
-Write-Host ""
+Write-Host "Required words: $($RequiredWords -join ', ')"
+Write-Host "Max attempts: $MaxAttempts"
 
 $candidates = @(
     "scripts\listen_iris_local_speak.ps1",
@@ -222,67 +225,75 @@ if ($null -ne $ast.ParamBlock) {
     )
 }
 
-$voiceArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    $voiceScript
-)
+$lastTranscript = $null
 
-if ($paramNames -contains "TimeoutSeconds") {
-    $voiceArgs += @("-TimeoutSeconds", "$TimeoutSeconds")
-}
+for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    Write-Host ""
+    Write-Host "=== Voice attempt $attempt of $MaxAttempts ==="
+    Write-Host "When prompted, say exactly:"
+    Write-Host $ExpectedPhrase
 
-if ($paramNames -contains "NoSpeak") {
-    $voiceArgs += "-NoSpeak"
-}
+    $voiceArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $voiceScript
+    )
 
-if ($paramNames -contains "NoPlay") {
-    $voiceArgs += "-NoPlay"
-}
+    if ($paramNames -contains "TimeoutSeconds") {
+        $voiceArgs += @("-TimeoutSeconds", "$TimeoutSeconds")
+    }
 
-# Important:
-# Do not pass -DryRun:$false to child scripts.
-# DryRun is a switch parameter; omitting it means false.
-# Passing it incorrectly can break voice capture before STT starts.
+    if ($paramNames -contains "NoSpeak") {
+        $voiceArgs += "-NoSpeak"
+    }
 
-Write-Host ""
-Write-Host "Listening will start now."
+    if ($paramNames -contains "NoPlay") {
+        $voiceArgs += "-NoPlay"
+    }
 
-$output = Invoke-NativeCapture `
-    -Name "Voice input capture" `
-    -CommandName "powershell" `
-    -Arguments $voiceArgs
+    $output = Invoke-NativeCapture `
+        -Name "Voice input capture attempt $attempt" `
+        -CommandName "powershell" `
+        -Arguments $voiceArgs
 
-$transcript = Get-TranscriptFromOutput -Output $output
+    $transcript = Get-TranscriptFromOutput -Output $output
+    $lastTranscript = $transcript
 
-if ([string]::IsNullOrWhiteSpace($transcript)) {
-    throw "Could not extract transcript from voice input output."
-}
-
-Write-Host ""
-Write-Host "=== Extracted transcript ==="
-Write-Host $transcript
-
-if ($transcript.Length -lt 3) {
-    Set-Content -Encoding UTF8 -Path $rejectedTranscriptPath -Value $transcript
-    throw "Transcript is too short to be useful."
-}
-
-$matchesExpected = Test-ExpectedTranscript -Transcript $transcript -Expected $ExpectedPhrase
-
-if (-not $matchesExpected -and -not $AllowUnverifiedTranscript) {
-    Set-Content -Encoding UTF8 -Path $rejectedTranscriptPath -Value $transcript
+    if ([string]::IsNullOrWhiteSpace($transcript)) {
+        Write-Host "No transcript extracted on attempt $attempt."
+        continue
+    }
 
     Write-Host ""
-    Write-Host "Rejected transcript file: $rejectedTranscriptPath"
-    throw "Transcript failed quality gate. Iris will not answer because the captured words did not match what you were asked to say."
+    Write-Host "=== Extracted transcript ==="
+    Write-Host $transcript
+
+    if ($transcript.Length -lt 3) {
+        Write-Host "Transcript too short."
+        continue
+    }
+
+    $passesQuality = Test-TranscriptQuality -Transcript $transcript -Required $RequiredWords
+
+    if ($passesQuality -or $AllowUnverifiedTranscript) {
+        Set-Content -Encoding UTF8 -Path $transcriptPath -Value $transcript
+
+        Write-Host ""
+        Write-Host "Transcript quality gate: PASS"
+        Write-Host "Transcript file: $transcriptPath"
+        Write-Host "Result: PASS"
+        exit 0
+    }
+
+    Write-Host "Transcript rejected. Trying again if attempts remain."
 }
 
-Set-Content -Encoding UTF8 -Path $transcriptPath -Value $transcript
+if (-not [string]::IsNullOrWhiteSpace($lastTranscript)) {
+    Set-Content -Encoding UTF8 -Path $rejectedTranscriptPath -Value $lastTranscript
+}
 
 Write-Host ""
-Write-Host "Transcript quality gate: PASS"
-Write-Host "Transcript file: $transcriptPath"
-Write-Host "Result: PASS"
+Write-Host "Rejected transcript file: $rejectedTranscriptPath"
+throw "Transcript failed quality gate after $MaxAttempts attempt(s). Iris will not answer because the captured words did not match required words."

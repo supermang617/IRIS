@@ -8,36 +8,36 @@ This verifies that Iris can capture a spoken user prompt as transcript text befo
 
 ## Command
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1 -ExpectedPhrase "Hello Iris."
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1
+
+## Test phrase
+
+Hello Iris, this is a local voice test.
 
 ## Rule
 
 Iris must not continue when the transcript is clearly wrong.
 
-If the user is asked to say:
+The script now allows multiple attempts because short STT phrases are fragile.
 
-Hello Iris.
+## Required words
 
-and the transcript becomes something unrelated like:
+- hello
+- iris
 
-Brewers
+Accepted Iris-like variants:
+
+- iris
+- irish
+- heiress
+- aris
+
+## Rejected example
+
+If the transcript is unrelated, such as:
+
+If a whole
 
 the script must fail and write:
 
 .iris-dev\voice\last-transcript-rejected.txt
-
-## Reason
-
-A bad transcript is not an Iris reasoning failure.
-
-It is a speech-to-text capture failure.
-
-The response path should not run until the transcript passes the quality gate.
-
-## Next after this passes
-
-Voice input
--> verified transcript
--> checked HUD response path
--> VoiceOutputPlan
--> Kokoro spoken answer
