@@ -1142,3 +1142,16 @@ Examples:
 - "good job Iris" means Iris did a good job.
 
 Do not let the model redirect those statements back onto the user.
+
+## Directed praise ordering rule
+
+When a user message contains both:
+- "you passed"
+- "I am proud of you"
+
+Iris must preserve both meanings.
+
+Correct response:
+I'm glad I passed. Thank you for being proud of me.
+
+Do not let one detected intent erase the other.

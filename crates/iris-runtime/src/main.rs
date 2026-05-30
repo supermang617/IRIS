@@ -463,6 +463,10 @@ fn try_direct_iris_addressee_reply_v2(input: &str) -> Option<String> {
         || lower.contains("sounds good")
         || lower.contains("sounds awesome");
 
+    if addresses_iris && iris_passed && proud_of_iris {
+        return Some("I'm glad I passed. Thank you for being proud of me.".to_string());
+    }
+
     if addresses_iris && iris_passed {
         return Some("I'm glad I passed. I did great, didn't I?".to_string());
     }
@@ -477,7 +481,6 @@ fn try_direct_iris_addressee_reply_v2(input: &str) -> Option<String> {
 
     None
 }
-
 fn contains_deictic_word_v2(haystack: &str, needle: &str) -> bool {
     haystack
         .split(|character: char| !character.is_alphanumeric() && character != '\'')
@@ -985,6 +988,7 @@ fn run_addressee_intent_test() {
     println!("Result: PASS");
 }
 
+#[allow(dead_code)]
 fn run_deictic_role_test() {
     let examples = [
         "Awesome, you passed our test, Iris. I am proud of you.",
@@ -1050,7 +1054,13 @@ fn run_deictic_role_test_v2() {
 
     println!("Proud reply: {proud_reply}");
 
-    if !proud_reply.to_ascii_lowercase().contains("proud of me") {
+    let proud_reply_lower = proud_reply.to_ascii_lowercase();
+
+    if !proud_reply_lower.contains("i passed") {
+        panic!("Combined Iris praise must preserve that Iris passed");
+    }
+
+    if !proud_reply_lower.contains("proud of me") {
         panic!("Iris must understand 'proud of you' means the user is proud of Iris");
     }
 
