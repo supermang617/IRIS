@@ -50,6 +50,71 @@ Preserve the user's original language, including profanity, slang, humor, grief,
 Respond naturally as Iris.
 "#;
 
+fn run_chat_local() {
+    use std::io::Write;
+
+    println!("Project Iris local chat test");
+
+    let model = std::env::var("IRIS_MODEL_ID")
+        .or_else(|_| std::env::var("IRIS_OLLAMA_MODEL"))
+        .or_else(|_| std::env::var("IRIS_LOCAL_MODEL"))
+        .unwrap_or_else(|_| "not configured".to_string());
+
+    println!("Model: {model}");
+    println!("Endpoint: 127.0.0.1:11434");
+    println!("Runtime boundary: explicit local loopback test only");
+    println!("Type exit or quit to stop.");
+
+    let stdin = std::io::stdin();
+
+    loop {
+        let mut stdout = std::io::stdout();
+        let _ = write!(stdout, "\niris> ");
+        let _ = stdout.flush();
+
+        let mut input = String::new();
+
+        match stdin.read_line(&mut input) {
+            Ok(0) => {
+                println!("\nEnd of input.");
+                break;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("Input read failed: {error}");
+                break;
+            }
+        }
+
+        let prompt = input.trim();
+
+        if prompt.is_empty() {
+            continue;
+        }
+
+        if prompt.eq_ignore_ascii_case("exit") || prompt.eq_ignore_ascii_case("quit") {
+            println!("Goodbye.");
+            break;
+        }
+
+        match checked_local_response_for_hud(prompt) {
+            Ok(response) => {
+                let clean = response.trim();
+
+                if clean.is_empty() {
+                    println!("I could not get a clean local response yet.");
+                } else {
+                    println!("{clean}");
+                }
+            }
+            Err(error) => {
+                eprintln!("Local response failed: {error}");
+                println!("I could not get a clean local response yet.");
+            }
+        }
+    }
+}
+
 fn main() {
     let mut args = env::args();
     let _program = args.next();
