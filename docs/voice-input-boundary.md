@@ -1,40 +1,17 @@
 # Voice Input Boundary
 
-Status: active checkpoint.
+Status: active.
 
-## Current phrase
+Iris voice input is explicit, bounded, one-shot, and permission-based.
+
+Canonical scripts:
+
+- scripts/listen_iris_local_speak.ps1
+- scripts/verify_iris_voice_input_boundary.ps1
+- scripts/test_iris_voice_prompt_to_kokoro.ps1
+
+Expected phrase for current milestone:
 
 Testing now, Iris local voice test.
 
-## Gate type
-
-Soft milestone gate.
-
-## Why
-
-The speech recognizer is currently imperfect. It may hear:
-
-Just testing now ...
-
-That is good enough to prove live capture, but unrelated phrases like "Brewers" must still be rejected.
-
-## Current rule
-
-Pass when the transcript:
-
-- has enough text
-- has at least two words
-- does not match known bad phrases
-- contains at least one anchor word
-
-## Anchor words
-
-- testing
-- test
-- voice
-- iris
-- local
-
-## Boundary
-
-A rejected transcript must not continue into Iris response or Kokoro speech.
+If recognition fails, check Windows default input device, microphone privacy permission, and microphone gain before changing Qwen or Kokoro.

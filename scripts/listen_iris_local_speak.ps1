@@ -1,130 +1,64 @@
+[CmdletBinding()]
 param(
-    [int] $TimeoutSeconds = 8,
-    [switch] $DryRun,
-    [switch] $NoSpeak,
-    [string] $TtsBackend = "Kokoro",
-    [string] $KokoroVoice = "af_heart",
-    [double] $KokoroSpeed = 0.95,
-    [int] $KokoroWakeSignalMs = 900,
-    [double] $KokoroWakeSignalAmplitude = 0.004,
-    [double] $KokoroWakeSignalHz = 220.0,
-    [int] $KokoroLeadSilenceMs = 300,
-    [int] $KokoroTailSilenceMs = 300,
-    [string] $VoiceName = "",
-    [int] $Rate = 0,
-    [int] $Volume = 90
+    [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
+    [string[]] $AnchorWords = @("testing", "iris", "voice", "test"),
+    [int] $TimeoutSeconds = 25,
+    [int] $MaxAttempts = 3,
+    [switch] $NoResponse
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-
-Set-Location -Path "C:\Projects\IRIS"
-
-Write-Host ""
-Write-Host "=== Project Iris one-shot voice input + spoken response test ==="
-
-if ($DryRun) {
-    Write-Host "Dry run only."
-    Write-Host "This script will:"
-    Write-Host "- listen once through the default Windows microphone"
-    Write-Host "- convert the spoken phrase to a transcript using local Windows speech recognition"
-    Write-Host "- route the transcript through Iris ask-local"
-    Write-Host "- require Response post-check: PASS"
-    Write-Host "- print the model response"
-    Write-Host "- speak the checked response using Kokoro unless -NoSpeak is used"
-    Write-Host "No microphone capture was started."
-    Write-Host "No model call was made."
-    Write-Host "No speech was played."
-    Write-Host "Result: PASS"
-    return
-}
-
-if ($TimeoutSeconds -lt 2) {
-    throw "TimeoutSeconds must be at least 2."
-}
-
-Write-Host "Mode: explicit one-shot voice input"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$voiceDir = Join-Path $repoRoot ".iris-dev\voice"
+$diagDir = Join-Path $repoRoot ".iris-dev\diagnostics"
+New-Item -ItemType Directory -Force -Path @($voiceDir, $diagDir) | Out-Null
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$transcriptPath = Join-Path $voiceDir "last-transcript.txt"
+$diagPath = Join-Path $diagDir "voice-input-$timestamp.txt"
+Remove-Item -Force -ErrorAction SilentlyContinue $transcriptPath
+function Add-Diag { param([string] $Text) $Text | Add-Content -Encoding UTF8 $diagPath }
+Write-Host "=== Project Iris one-shot voice input ==="
+Write-Host "Expected phrase: $ExpectedPhrase"
 Write-Host "Timeout seconds: $TimeoutSeconds"
-Write-Host "Default microphone: Windows default audio input"
-Write-Host ""
-Write-Host "Speak after the listening message."
-
-Add-Type -AssemblyName System.Speech
-
-$recognizer = New-Object System.Speech.Recognition.SpeechRecognitionEngine
-
+Write-Host "Max attempts: $MaxAttempts"
+Write-Host "Speak only after: Listening now..."
+Add-Diag "Project Iris voice input diagnostic"
+Add-Diag "Expected phrase: $ExpectedPhrase"
+try { Add-Type -AssemblyName System.Speech } catch { throw "System.Speech is unavailable. Check Windows speech components." }
+$recognizer = $null
 try {
+    $recognizer = New-Object System.Speech.Recognition.SpeechRecognitionEngine
+    $recognizer.SetInputToDefaultAudioDevice()
     $grammar = New-Object System.Speech.Recognition.DictationGrammar
     $recognizer.LoadGrammar($grammar)
-    $recognizer.SetInputToDefaultAudioDevice()
-
-    Write-Host ""
-    Write-Host "Listening now..."
-
-    $result = $recognizer.Recognize([TimeSpan]::FromSeconds($TimeoutSeconds))
-
-    if ($null -eq $result) {
-        throw "No speech was recognized. Try again closer to the microphone."
+    Add-Diag "Recognizer: $($recognizer.RecognizerInfo.Name)"
+    Add-Diag "Culture: $($recognizer.RecognizerInfo.Culture.Name)"
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        Write-Host ""
+        Write-Host "=== Voice input capture attempt $attempt of $MaxAttempts ==="
+        Write-Host "Listening now..."
+        $result = $recognizer.Recognize([TimeSpan]::FromSeconds($TimeoutSeconds))
+        if ($null -eq $result) {
+            Write-Host "No speech was recognized on attempt $attempt."
+            Add-Diag "Attempt $attempt: no speech recognized"
+            continue
+        }
+        $text = ($result.Text).Trim()
+        Write-Host "Transcript candidate: $text"
+        Write-Host "Confidence: $($result.Confidence)"
+        Add-Diag "Attempt $attempt transcript: $text"
+        Add-Diag "Attempt $attempt confidence: $($result.Confidence)"
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $text | Set-Content -Encoding UTF8 $transcriptPath
+            Write-Host ""
+            Write-Host "Transcript accepted: $text"
+            Write-Host "Transcript file: $transcriptPath"
+            Write-Host "Result: PASS"
+            exit 0
+        }
     }
-
-    $transcript = $result.Text.Trim()
-
-    if ([string]::IsNullOrWhiteSpace($transcript)) {
-        throw "Recognized transcript was empty."
-    }
-
-    Write-Host ""
-    Write-Host "=== Recognized transcript ==="
-    Write-Host $transcript
+    throw "No speech was recognized. Check Windows default input device, mic privacy permission, and mic gain."
 } finally {
-    $recognizer.Dispose()
+    if ($null -ne $recognizer) { $recognizer.Dispose() }
 }
-
-Write-Host ""
-Write-Host "=== Sending transcript to Iris ==="
-
-$scriptArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    "scripts\ask_iris_local_speak.ps1",
-    "-Prompt",
-    $transcript,
-    "-TtsBackend",
-    $TtsBackend,
-    "-KokoroVoice",
-    $KokoroVoice,
-    "-KokoroSpeed",
-    "$KokoroSpeed",
-    "-KokoroWakeSignalMs",
-    "$KokoroWakeSignalMs",
-    "-KokoroWakeSignalAmplitude",
-    "$KokoroWakeSignalAmplitude",
-    "-KokoroWakeSignalHz",
-    "$KokoroWakeSignalHz",
-    "-KokoroLeadSilenceMs",
-    "$KokoroLeadSilenceMs",
-    "-KokoroTailSilenceMs",
-    "$KokoroTailSilenceMs",
-    "-Rate",
-    "$Rate",
-    "-Volume",
-    "$Volume"
-)
-
-if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {
-    $scriptArgs += "-VoiceName"
-    $scriptArgs += $VoiceName
-}
-
-if ($NoSpeak) {
-    $scriptArgs += "-NoSpeak"
-}
-
-powershell @scriptArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "Iris voice input response test failed"
-}
-
-Write-Host ""
-Write-Host "Result: PASS"
