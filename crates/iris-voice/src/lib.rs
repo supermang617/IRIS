@@ -153,143 +153,127 @@ impl VoiceInputPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VoiceSessionState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceListenState {
     Idle,
     Armed,
-    Listening,
-    Transcribing,
-    Thinking,
+    Recording,
+    ProcessingTranscript,
     Speaking,
     Stopped,
 }
 
-impl VoiceSessionState {
-    pub fn is_visible_active_state(&self) -> bool {
-        matches!(
-            self,
-            Self::Armed | Self::Listening | Self::Transcribing | Self::Thinking | Self::Speaking
-        )
+impl VoiceListenState {
+    pub fn microphone_is_active(&self) -> bool {
+        matches!(self, Self::Recording)
     }
 
-    pub fn accepts_audio_capture(&self) -> bool {
-        matches!(self, Self::Listening)
+    pub fn visible_status_required(&self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "Voice idle",
+            Self::Armed => "Voice armed",
+            Self::Recording => "Recording",
+            Self::ProcessingTranscript => "Processing transcript",
+            Self::Speaking => "Speaking",
+            Self::Stopped => "Stopped",
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VoiceStopReason {
-    Completed,
-    PanicStop,
-    Timeout,
-    UserCancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoiceSessionSnapshot {
-    pub state: VoiceSessionState,
+pub struct VoiceStatusSnapshot {
     pub activation_mode: VoiceActivationMode,
-    pub visible_to_user: bool,
+    pub listen_state: VoiceListenState,
+    pub label: String,
+    pub microphone_active: bool,
+    pub visible_status_required: bool,
     pub bounded_capture_seconds: u32,
-    pub transcript_must_enter_context_gate: bool,
-    pub stop_reason: Option<VoiceStopReason>,
-}
-
-impl VoiceSessionSnapshot {
-    pub fn idle() -> Self {
-        Self {
-            state: VoiceSessionState::Idle,
-            activation_mode: VoiceActivationMode::TypedPrompt,
-            visible_to_user: false,
-            bounded_capture_seconds: 0,
-            transcript_must_enter_context_gate: true,
-            stop_reason: None,
-        }
-    }
-
-    pub fn from_policy(policy: VoiceInputPolicy) -> Self {
-        Self {
-            state: VoiceSessionState::Armed,
-            activation_mode: policy.activation_mode,
-            visible_to_user: true,
-            bounded_capture_seconds: policy.bounded_capture_seconds,
-            transcript_must_enter_context_gate: policy.transcript_must_enter_context_gate,
-            stop_reason: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VoiceSessionController {
-    snapshot: VoiceSessionSnapshot,
+pub struct PushToTalkStateMachine {
+    activation_mode: VoiceActivationMode,
+    listen_state: VoiceListenState,
+    bounded_capture_seconds: u32,
 }
 
-impl Default for VoiceSessionController {
-    fn default() -> Self {
-        Self::new_idle()
-    }
-}
-
-impl VoiceSessionController {
-    pub fn new_idle() -> Self {
+impl PushToTalkStateMachine {
+    pub fn new_push_to_talk() -> Self {
         Self {
-            snapshot: VoiceSessionSnapshot::idle(),
+            activation_mode: VoiceActivationMode::PushToTalk,
+            listen_state: VoiceListenState::Idle,
+            bounded_capture_seconds: 30,
         }
     }
 
-    pub fn snapshot(&self) -> &VoiceSessionSnapshot {
-        &self.snapshot
+    pub fn state(&self) -> VoiceListenState {
+        self.listen_state
     }
 
-    pub fn arm(&mut self, policy: VoiceInputPolicy) {
-        self.snapshot = VoiceSessionSnapshot::from_policy(policy);
+    pub fn arm(&mut self) {
+        self.listen_state = VoiceListenState::Armed;
     }
 
-    pub fn start_listening(&mut self) {
-        if self.snapshot.state == VoiceSessionState::Armed {
-            self.snapshot.state = VoiceSessionState::Listening;
-            self.snapshot.visible_to_user = true;
+    pub fn start_recording(&mut self) -> Result<(), &'static str> {
+        match self.listen_state {
+            VoiceListenState::Idle | VoiceListenState::Armed => {
+                self.listen_state = VoiceListenState::Recording;
+                Ok(())
+            }
+            VoiceListenState::Recording => Ok(()),
+            VoiceListenState::ProcessingTranscript
+            | VoiceListenState::Speaking
+            | VoiceListenState::Stopped => {
+                Err("push-to-talk recording cannot start from current state")
+            }
         }
     }
 
-    pub fn start_transcribing(&mut self) {
-        if self.snapshot.state == VoiceSessionState::Listening {
-            self.snapshot.state = VoiceSessionState::Transcribing;
-            self.snapshot.visible_to_user = true;
+    pub fn stop_recording(&mut self) -> Result<(), &'static str> {
+        match self.listen_state {
+            VoiceListenState::Recording => {
+                self.listen_state = VoiceListenState::ProcessingTranscript;
+                Ok(())
+            }
+            _ => Err("push-to-talk recording is not active"),
         }
     }
 
-    pub fn start_thinking(&mut self) {
-        if matches!(
-            self.snapshot.state,
-            VoiceSessionState::Transcribing | VoiceSessionState::Armed
-        ) {
-            self.snapshot.state = VoiceSessionState::Thinking;
-            self.snapshot.visible_to_user = true;
+    pub fn begin_speaking(&mut self) -> Result<(), &'static str> {
+        match self.listen_state {
+            VoiceListenState::ProcessingTranscript | VoiceListenState::Idle => {
+                self.listen_state = VoiceListenState::Speaking;
+                Ok(())
+            }
+            _ => Err("speech output cannot begin from current state"),
         }
     }
 
-    pub fn start_speaking(&mut self) {
-        if self.snapshot.state == VoiceSessionState::Thinking {
-            self.snapshot.state = VoiceSessionState::Speaking;
-            self.snapshot.visible_to_user = true;
+    pub fn finish_speaking(&mut self) {
+        self.listen_state = VoiceListenState::Idle;
+    }
+
+    pub fn panic_stop(&mut self) {
+        self.listen_state = VoiceListenState::Stopped;
+    }
+
+    pub fn reset(&mut self) {
+        self.listen_state = VoiceListenState::Idle;
+    }
+
+    pub fn snapshot(&self) -> VoiceStatusSnapshot {
+        VoiceStatusSnapshot {
+            activation_mode: self.activation_mode.clone(),
+            listen_state: self.listen_state,
+            label: self.listen_state.label().to_string(),
+            microphone_active: self.listen_state.microphone_is_active(),
+            visible_status_required: self.listen_state.visible_status_required(),
+            bounded_capture_seconds: self.bounded_capture_seconds,
         }
-    }
-
-    pub fn complete(&mut self) {
-        self.snapshot.state = VoiceSessionState::Idle;
-        self.snapshot.visible_to_user = false;
-        self.snapshot.stop_reason = Some(VoiceStopReason::Completed);
-    }
-
-    pub fn stop(&mut self, reason: VoiceStopReason) {
-        self.snapshot.state = VoiceSessionState::Stopped;
-        self.snapshot.visible_to_user = true;
-        self.snapshot.stop_reason = Some(reason);
-    }
-
-    pub fn reset_idle(&mut self) {
-        self.snapshot = VoiceSessionSnapshot::idle();
     }
 }
 
@@ -303,7 +287,7 @@ mod tests {
 
         assert_eq!(profile.backend, VoiceBackend::KokoroOnnx);
         assert_eq!(profile.kokoro.voice, "af_heart");
-        assert_eq!(profile.kokoro.speed, 0.95);
+        assert!((profile.kokoro.speed - 0.95).abs() < f32::EPSILON);
         assert_eq!(profile.kokoro.wake_signal_ms, 900);
         assert_eq!(profile.kokoro.lead_silence_ms, 300);
         assert_eq!(profile.kokoro.tail_silence_ms, 300);
@@ -380,98 +364,82 @@ mod tests {
     }
 
     #[test]
-    fn voice_session_starts_idle_and_invisible() {
-        let controller = VoiceSessionController::new_idle();
-        let snapshot = controller.snapshot();
+    fn push_to_talk_starts_idle() {
+        let ptt = PushToTalkStateMachine::new_push_to_talk();
 
-        assert_eq!(snapshot.state, VoiceSessionState::Idle);
-        assert!(!snapshot.visible_to_user);
-        assert!(!snapshot.state.is_visible_active_state());
-        assert!(!snapshot.state.accepts_audio_capture());
+        assert_eq!(ptt.state(), VoiceListenState::Idle);
+        assert!(!ptt.snapshot().microphone_active);
+        assert!(!ptt.snapshot().visible_status_required);
     }
 
     #[test]
-    fn one_shot_voice_session_has_visible_bounded_capture() {
-        let mut controller = VoiceSessionController::new_idle();
+    fn push_to_talk_records_with_visible_status() {
+        let mut ptt = PushToTalkStateMachine::new_push_to_talk();
 
-        controller.arm(VoiceInputPolicy::one_shot_default());
-        controller.start_listening();
+        ptt.arm();
+        assert_eq!(ptt.state(), VoiceListenState::Armed);
+        assert!(ptt.snapshot().visible_status_required);
 
-        let snapshot = controller.snapshot();
+        ptt.start_recording().expect("recording should start");
+        let snapshot = ptt.snapshot();
 
-        assert_eq!(snapshot.activation_mode, VoiceActivationMode::OneShotVoice);
-        assert_eq!(snapshot.state, VoiceSessionState::Listening);
-        assert!(snapshot.visible_to_user);
-        assert_eq!(snapshot.bounded_capture_seconds, 10);
-        assert!(snapshot.transcript_must_enter_context_gate);
-        assert!(snapshot.state.accepts_audio_capture());
-    }
-
-    #[test]
-    fn push_to_talk_session_has_visible_bounded_capture() {
-        let mut controller = VoiceSessionController::new_idle();
-
-        controller.arm(VoiceInputPolicy::push_to_talk_default());
-        controller.start_listening();
-
-        let snapshot = controller.snapshot();
-
-        assert_eq!(snapshot.activation_mode, VoiceActivationMode::PushToTalk);
-        assert_eq!(snapshot.state, VoiceSessionState::Listening);
-        assert!(snapshot.visible_to_user);
+        assert_eq!(snapshot.listen_state, VoiceListenState::Recording);
+        assert!(snapshot.microphone_active);
+        assert!(snapshot.visible_status_required);
         assert_eq!(snapshot.bounded_capture_seconds, 30);
-        assert!(snapshot.transcript_must_enter_context_gate);
     }
 
     #[test]
-    fn session_progresses_to_speaking_then_idle() {
-        let mut controller = VoiceSessionController::new_idle();
+    fn push_to_talk_transitions_to_processing_after_stop() {
+        let mut ptt = PushToTalkStateMachine::new_push_to_talk();
 
-        controller.arm(VoiceInputPolicy::one_shot_default());
-        controller.start_listening();
-        controller.start_transcribing();
-        controller.start_thinking();
-        controller.start_speaking();
+        ptt.start_recording().expect("recording should start");
+        ptt.stop_recording().expect("recording should stop");
 
-        assert_eq!(controller.snapshot().state, VoiceSessionState::Speaking);
-        assert!(controller.snapshot().visible_to_user);
-
-        controller.complete();
-
-        assert_eq!(controller.snapshot().state, VoiceSessionState::Idle);
-        assert!(!controller.snapshot().visible_to_user);
-        assert_eq!(
-            controller.snapshot().stop_reason,
-            Some(VoiceStopReason::Completed)
-        );
+        assert_eq!(ptt.state(), VoiceListenState::ProcessingTranscript);
+        assert!(!ptt.snapshot().microphone_active);
+        assert!(ptt.snapshot().visible_status_required);
     }
 
     #[test]
-    fn panic_stop_sets_stopped_visible_state() {
-        let mut controller = VoiceSessionController::new_idle();
+    fn push_to_talk_speaking_returns_to_idle() {
+        let mut ptt = PushToTalkStateMachine::new_push_to_talk();
 
-        controller.arm(VoiceInputPolicy::one_shot_default());
-        controller.start_listening();
-        controller.stop(VoiceStopReason::PanicStop);
+        ptt.start_recording().expect("recording should start");
+        ptt.stop_recording().expect("recording should stop");
+        ptt.begin_speaking().expect("speaking should begin");
 
-        assert_eq!(controller.snapshot().state, VoiceSessionState::Stopped);
-        assert!(controller.snapshot().visible_to_user);
-        assert_eq!(
-            controller.snapshot().stop_reason,
-            Some(VoiceStopReason::PanicStop)
-        );
-        assert!(!controller.snapshot().state.accepts_audio_capture());
+        assert_eq!(ptt.state(), VoiceListenState::Speaking);
+        assert!(ptt.snapshot().visible_status_required);
+
+        ptt.finish_speaking();
+
+        assert_eq!(ptt.state(), VoiceListenState::Idle);
+        assert!(!ptt.snapshot().visible_status_required);
     }
 
     #[test]
-    fn reset_returns_to_idle_after_stop() {
-        let mut controller = VoiceSessionController::new_idle();
+    fn panic_stop_forces_stopped_state() {
+        let mut ptt = PushToTalkStateMachine::new_push_to_talk();
 
-        controller.arm(VoiceInputPolicy::one_shot_default());
-        controller.start_listening();
-        controller.stop(VoiceStopReason::UserCancelled);
-        controller.reset_idle();
+        ptt.start_recording().expect("recording should start");
+        ptt.panic_stop();
 
-        assert_eq!(controller.snapshot(), &VoiceSessionSnapshot::idle());
+        assert_eq!(ptt.state(), VoiceListenState::Stopped);
+        assert!(!ptt.snapshot().microphone_active);
+        assert!(ptt.snapshot().visible_status_required);
+    }
+
+    #[test]
+    fn stopped_state_cannot_start_recording_until_reset() {
+        let mut ptt = PushToTalkStateMachine::new_push_to_talk();
+
+        ptt.panic_stop();
+
+        assert!(ptt.start_recording().is_err());
+
+        ptt.reset();
+        assert!(ptt.start_recording().is_ok());
+        assert_eq!(ptt.state(), VoiceListenState::Recording);
     }
 }

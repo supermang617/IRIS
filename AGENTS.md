@@ -808,3 +808,21 @@ Voice capture must be:
 - cancellable by Panic Stop
 
 Do not add real push-to-talk hotkeys, wake word runtime, or always-listening behavior until this state model is wired into runtime diagnostics.
+
+## Push-to-talk visible state rule
+
+Before implementing wake word, `iris-voice` must define and test push-to-talk visible listening states.
+
+Required states:
+- Idle
+- Armed
+- Recording
+- ProcessingTranscript
+- Speaking
+- Stopped
+
+Only Recording means the microphone is active.
+
+Every non-idle state must be visible to the user in the future UI.
+
+Do not implement always-listening voice as the default runtime path.

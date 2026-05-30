@@ -18,22 +18,31 @@ Iris has reached:
 
 ## Current architecture step
 
-iris-voice now owns:
+The `iris-voice` crate now owns push-to-talk and visible listening state metadata.
 
-- voice backend metadata
-- checked-response speech permission
-- one-shot voice policy
-- push-to-talk policy
-- future wake-word disabled policy
-- visible voice session state
-- bounded capture metadata
-- Panic Stop stopped-state metadata
+## Wake word requirement
+
+Wake word is a required future feature.
+
+Preferred wake phrase:
+
+Iris
+
+Do not implement wake word as default yet.
+
+Correct order:
+
+1. typed prompt
+2. explicit one-shot voice
+3. push-to-talk
+4. visible listening state
+5. optional local wake word while Iris is open
 
 ## Do next
 
-Wire the voice session state into runtime diagnostics.
+Wire push-to-talk visible-state metadata into runtime voice-status.
 
-Then scaffold push-to-talk as a visible state transition before adding real hotkey/audio capture.
+Then rerun Kokoro voice milestone verification.
 
 ## Do not do yet
 
