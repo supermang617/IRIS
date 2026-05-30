@@ -25,7 +25,7 @@ may_not_receive = ["RawFrame", "RawAudio", "CommandRequest"]
 [crate.iris-context-gate]
 allowed = ["context_gating", "provenance_labeling", "authority_assignment", "redaction_before_cognition"]
 forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["direct_user_text", "future_screen_ocr_text_as_untrusted_evidence"]
+may_receive = ["direct_user_text", "future_screen_ocr_text_as_untrusted_evidence", "future_asr_transcript"]
 may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
 
 [crate.iris-cognition]
@@ -39,6 +39,24 @@ allowed = ["disabled_inference_stub", "future_loopback_boundary_definition", "de
 forbidden = ["cloud_api", "telemetry", "process_execution", "shell_execution", "browser_automation", "plugin_loading", "non_loopback_network"]
 may_receive = ["LocalInferenceRequest"]
 may_not_receive = ["RawAudio", "RawFrame", "ClipboardText", "CommandRequest", "ShellCommand"]
+
+[crate.iris-panic-stop]
+allowed = ["cancellation_flag", "stop_requested_state"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
+may_receive = ["stop_request"]
+may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
+
+[crate.iris-response-check]
+allowed = ["assistant_response_post_check", "unsafe_response_blocking"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
+may_receive = ["AssistantResponseText"]
+may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
+
+[crate.iris-voice]
+allowed = ["voice_activation_metadata", "tts_backend_metadata", "checked_response_speech_contract", "future_push_to_talk_metadata", "future_wake_word_metadata_disabled_by_default"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use", "always_listening_default"]
+may_receive = ["CheckedAssistantResponseText", "AsrTranscriptMetadata"]
+may_not_receive = ["RawFrame", "ClipboardText", "CommandRequest", "ShellCommand"]
 
 [crate.iris-runtime]
 allowed = ["safe_local_flow_coordination", "startup", "policy_status_printing", "runtime_cli_test_modes"]

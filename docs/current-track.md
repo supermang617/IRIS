@@ -2,64 +2,49 @@
 
 Use this file to avoid drifting from the roadmap.
 
-## Current goal
+## Current milestone
 
-Stabilize the first basic text and voice response milestone.
+Iris has reached:
 
-## Voice direction
+- local model response
+- response post-check
+- Kokoro ONNX voice output
+- default voice: af_heart
+- default speed: 0.95
+- explicit one-shot voice input helper
+- typed prompt helper
+- Panic Stop skeleton
 
-Current open-source local TTS backend:
+## Current next step
 
-Kokoro ONNX
+The smallest iris-voice abstraction crate now owns voice policy metadata.
 
-Current default voice:
+This keeps voice architecture from living only in PowerShell scripts.
 
-af_heart
+## Wake word requirement
 
-Current default speed:
+Wake word is a required future feature.
 
-0.95
+Preferred wake phrase:
 
-Current playback fix:
+Iris
 
-Kokoro output includes a short low-volume wake signal followed by lead-in silence before speech so the first words are not clipped by audio device wake-up latency.
+Do not implement wake word as default yet.
 
-Default wake signal:
+Correct order:
 
-900 ms
-
-Default lead-in silence:
-
-300 ms
-
-Default tail silence:
-
-300 ms
-
-## Useful voice commands
-
-Test Kokoro voice only:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice."
-
-Test with longer wake-up if first words are still clipped:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice." -WakeSignalMs 1300 -LeadSilenceMs 500
-
-Text prompt to Kokoro spoken response:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 -Prompt "hello iris"
-
-Windows fallback:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 -Prompt "hello iris" -TtsBackend Windows
+1. typed prompt
+2. explicit one-shot voice
+3. push-to-talk
+4. visible listening state
+5. optional local wake word while Iris is open
 
 ## Do next
 
-Verify the Kokoro first-word clipping fix.
+Wire voice metadata into runtime self-check and docs.
 
-Then run typed prompt -> Iris model -> response post-check -> Kokoro spoken output.
+Then run the Kokoro text/voice milestone verification again.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or full Rust Kokoro integration before the basic text/voice milestone is stable.
+Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or wake word runtime before push-to-talk and visible voice state are stable.

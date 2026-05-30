@@ -720,3 +720,19 @@ LeadSilenceMs = 300
 TailSilenceMs = 300
 
 This is intentionally small and avoids adding complex playback architecture too early.
+
+## iris-voice abstraction rule
+
+iris-voice owns voice policy metadata and checked-response speech contracts.
+
+Current defaults:
+- backend: Kokoro ONNX
+- voice: af_heart
+- speed: 0.95
+- wake signal: 900 ms
+- lead silence: 300 ms
+- tail silence: 300 ms
+
+Future wake word is required, but disabled by default until push-to-talk and visible listening state are stable.
+
+Do not let voice behavior live only in PowerShell scripts.
