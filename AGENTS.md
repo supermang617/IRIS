@@ -567,3 +567,12 @@ Do not capture Cargo/native command output with `2>&1` while `$ErrorActionPrefer
 Cargo writes normal build/status text to stderr, and PowerShell may treat that as an error record.
 
 Use separate temporary stdout/stderr files when a script needs to parse runtime output.
+
+## PowerShell switch forwarding rule
+
+Do not forward switch parameters as `-Switch:$SwitchParameter` to nested PowerShell calls.
+
+Use an argument array and append `-Switch` only when the switch is present.
+
+This prevents errors like:
+Cannot convert value "System.String" to type "System.Management.Automation.SwitchParameter".

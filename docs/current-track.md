@@ -32,13 +32,13 @@ Iris supports:
 - Panic Stop skeleton
 - safety spine verification
 
-## Current issue being fixed
+## Current fix
 
-PowerShell scripts must not capture native Cargo output with `2>&1` while `$ErrorActionPreference = "Stop"`.
+PowerShell switch forwarding is fixed.
 
-Cargo writes normal build/status text to stderr.
+Do not pass switch parameters as `-Switch:$SwitchParameter` into nested PowerShell processes.
 
-Scripts that parse runtime output must capture stdout and stderr into separate temporary files.
+Build an argument list and append the switch name only when the switch is present.
 
 ## Useful commands
 
@@ -55,9 +55,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_voi
 
 ## Do next
 
-Fix and stabilize text/voice helper scripts.
+Rerun milestone verification.
 
-Then rerun the first text and voice milestone verification.
+Then run the live voice input test manually.
 
 ## Do not do yet
 

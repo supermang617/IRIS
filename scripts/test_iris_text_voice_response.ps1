@@ -16,7 +16,25 @@ if ($DryRun) {
     return
 }
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -Prompt $Prompt -NoSpeak:$NoSpeak -Rate $Rate -Volume $Volume
+$scriptArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "scripts\ask_iris_local_speak.ps1",
+    "-Prompt",
+    $Prompt,
+    "-Rate",
+    "$Rate",
+    "-Volume",
+    "$Volume"
+)
+
+if ($NoSpeak) {
+    $scriptArgs += "-NoSpeak"
+}
+
+powershell @scriptArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Iris text voice response test failed"
 }

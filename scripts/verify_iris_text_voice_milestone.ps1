@@ -29,6 +29,9 @@ if ($LASTEXITCODE -ne 0) { throw "iris-runtime response-check test failed" }
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\test_iris_text_voice_response.ps1" -Prompt "In one sentence, say hello as Iris and confirm you are running locally." -NoSpeak
 if ($LASTEXITCODE -ne 0) { throw "text prompt plus checked response test failed" }
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\test_iris_voice_text_response.ps1" -DryRun
+if ($LASTEXITCODE -ne 0) { throw "voice input helper dry-run failed" }
+
 Write-Host ""
 Write-Host "Voice input live test is not run automatically here."
 Write-Host "Run this manually when ready:"

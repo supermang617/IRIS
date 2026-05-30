@@ -73,7 +73,25 @@ try {
 Write-Host ""
 Write-Host "=== Sending transcript to Iris ==="
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -Prompt $transcript -NoSpeak:$NoSpeak -Rate $Rate -Volume $Volume
+$scriptArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "scripts\ask_iris_local_speak.ps1",
+    "-Prompt",
+    $transcript,
+    "-Rate",
+    "$Rate",
+    "-Volume",
+    "$Volume"
+)
+
+if ($NoSpeak) {
+    $scriptArgs += "-NoSpeak"
+}
+
+powershell @scriptArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Iris voice input response test failed"
 }
