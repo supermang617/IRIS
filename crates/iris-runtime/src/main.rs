@@ -297,6 +297,7 @@ fn print_self_check() {
     println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
+    println!("UI status: use cargo run -p iris-runtime -- ui-status");
     println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");

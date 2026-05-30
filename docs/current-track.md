@@ -20,21 +20,23 @@ Iris has reached:
 
 ## Current architecture step
 
-Runtime now exposes UI scaffold status.
+Runtime exposes UI scaffold status.
 
 Useful command:
 
 cargo run -p iris-runtime -- ui-status
 
+## Current diagnostics command
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose_iris_current_milestone.ps1
+
 ## Why this is next
 
-The v0.1 plan requires Iris-owned typed input, visible PTT state, and explicit absence language in the UI.
-
-We are still avoiding GUI dependencies until the UI model and safety language are stable.
+The v0.1 plan requires Iris-owned typed input, visible PTT state, explicit absence language, and repeatable audit tooling before real GUI dependencies.
 
 ## Do next
 
-Run the UI runtime status check.
+Run the diagnostics command.
 
 Then decide whether to add the smallest real desktop HUD dependency slice.
 

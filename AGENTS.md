@@ -923,3 +923,28 @@ This command must show:
 - visible voice state model available
 - safety absence language available
 - GUI dependencies not enabled yet
+
+## Diagnostics script rule
+
+Maintain one current milestone diagnostics script:
+
+scripts/diagnose_iris_current_milestone.ps1
+
+It must run:
+- git status
+- cargo fmt check
+- cargo build
+- cargo test
+- xtask audit
+- runtime self-check
+- runtime ui-status
+- runtime voice-status
+- runtime push-to-talk visible-state test
+- runtime response post-check test
+- Kokoro voice milestone verification
+- live text/voice session dry-run
+
+Write reports under:
+.iris-dev/diagnostics/
+
+Do not commit diagnostic output files.
