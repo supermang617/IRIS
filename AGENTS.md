@@ -1370,3 +1370,14 @@ For natural speech rendering examples, use:
 Vec<(&str, &str, Vec<&str>)>
 
 Do not use tuple arrays where the forbidden-word list has different lengths per example.
+
+## Natural speech rendering syntax rule
+
+Avoid fragile Rust character literals for symbols when generating code from PowerShell.
+
+Prefer:
+char::from(36) for dollar sign
+char::from(35) for number sign
+char::from(42) for asterisk
+
+This avoids broken character literals after scripted edits.
