@@ -7,6 +7,7 @@ param(
     [double] $KokoroSpeed = 0.95,
     [int] $KokoroWakeSignalMs = 900,
     [double] $KokoroWakeSignalAmplitude = 0.004,
+    [double] $KokoroWakeSignalHz = 220.0,
     [int] $KokoroLeadSilenceMs = 300,
     [int] $KokoroTailSilenceMs = 300,
     [string] $VoiceName = "",
@@ -41,6 +42,8 @@ if ($DryRun) {
     $scriptArgs += "$KokoroWakeSignalMs"
     $scriptArgs += "-KokoroWakeSignalAmplitude"
     $scriptArgs += "$KokoroWakeSignalAmplitude"
+    $scriptArgs += "-KokoroWakeSignalHz"
+    $scriptArgs += "$KokoroWakeSignalHz"
     $scriptArgs += "-KokoroLeadSilenceMs"
     $scriptArgs += "$KokoroLeadSilenceMs"
     $scriptArgs += "-KokoroTailSilenceMs"

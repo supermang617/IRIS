@@ -869,3 +869,18 @@ This validates:
 - no always-listening mode
 - no wake word runtime yet
 - no system-control capability
+
+## Kokoro text argument rule
+
+Do not pass long model responses to Kokoro through a direct PowerShell command-line `-Text` argument.
+
+Use a temporary UTF-8 text file and pass `-TextFile`.
+
+Reason:
+PowerShell can split long response text into accidental positional arguments, causing words from the response to bind to numeric parameters like WakeSignalHz.
+
+Correct path:
+ResponsePostChecker PASS
+-> write checked response to temp UTF-8 text file
+-> call scripts/speak_iris_kokoro.ps1 -TextFile <path>
+-> delete temp file

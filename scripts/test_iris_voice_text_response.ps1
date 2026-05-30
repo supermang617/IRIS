@@ -2,6 +2,14 @@ param(
     [int] $TimeoutSeconds = 8,
     [switch] $NoSpeak,
     [switch] $DryRun,
+    [string] $TtsBackend = "Kokoro",
+    [string] $KokoroVoice = "af_heart",
+    [double] $KokoroSpeed = 0.95,
+    [int] $KokoroWakeSignalMs = 900,
+    [double] $KokoroWakeSignalAmplitude = 0.004,
+    [double] $KokoroWakeSignalHz = 220.0,
+    [int] $KokoroLeadSilenceMs = 300,
+    [int] $KokoroTailSilenceMs = 300,
     [string] $VoiceName = ""
 )
 
@@ -22,7 +30,23 @@ $scriptArgs = @(
     "-File",
     "scripts\listen_iris_local_speak.ps1",
     "-TimeoutSeconds",
-    "$TimeoutSeconds"
+    "$TimeoutSeconds",
+    "-TtsBackend",
+    $TtsBackend,
+    "-KokoroVoice",
+    $KokoroVoice,
+    "-KokoroSpeed",
+    "$KokoroSpeed",
+    "-KokoroWakeSignalMs",
+    "$KokoroWakeSignalMs",
+    "-KokoroWakeSignalAmplitude",
+    "$KokoroWakeSignalAmplitude",
+    "-KokoroWakeSignalHz",
+    "$KokoroWakeSignalHz",
+    "-KokoroLeadSilenceMs",
+    "$KokoroLeadSilenceMs",
+    "-KokoroTailSilenceMs",
+    "$KokoroTailSilenceMs"
 )
 
 if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {

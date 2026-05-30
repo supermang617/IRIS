@@ -1,5 +1,6 @@
 param(
-    [string] $Text = "Hello, I am Iris. This is my Kokoro voice.",
+    [string] $Text = "",
+    [string] $TextFile = "",
     [string] $Voice = "af_heart",
     [double] $Speed = 0.95,
     [int] $WakeSignalMs = 900,
@@ -25,11 +26,20 @@ $voicesPath = Join-Path $ttsRoot "voices-v1.0.bin"
 $venvPython = Join-Path $ttsRoot ".venv\Scripts\python.exe"
 $outputPath = Join-Path $ttsRoot "iris_output.wav"
 
+if (-not [string]::IsNullOrWhiteSpace($TextFile)) {
+    if (-not (Test-Path $TextFile)) {
+        throw "TextFile does not exist: $TextFile"
+    }
+
+    $Text = Get-Content -Raw -Encoding UTF8 -Path $TextFile
+}
+
 Write-Host ""
 Write-Host "=== Project Iris Kokoro speak test ==="
 Write-Host "Voice: $Voice"
 Write-Host "Speed: $Speed"
 Write-Host "Wake signal ms: $WakeSignalMs"
+Write-Host "Wake signal hz: $WakeSignalHz"
 Write-Host "Lead silence ms: $LeadSilenceMs"
 Write-Host "Tail silence ms: $TailSilenceMs"
 
@@ -39,29 +49,49 @@ if ($DryRun) {
     return
 }
 
+if ([string]::IsNullOrWhiteSpace($Text)) {
+    throw "Text must not be empty."
+}
+
 if (-not (Test-Path $venvPython) -or -not (Test-Path $modelPath) -or -not (Test-Path $voicesPath)) {
     throw "Kokoro is not set up. Run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1"
 }
 
 if ($WakeSignalMs -lt 0) { throw "WakeSignalMs must not be negative." }
 if ($WakeSignalAmplitude -lt 0) { throw "WakeSignalAmplitude must not be negative." }
+if ($WakeSignalHz -le 0) { throw "WakeSignalHz must be greater than zero." }
 if ($LeadSilenceMs -lt 0) { throw "LeadSilenceMs must not be negative." }
 if ($TailSilenceMs -lt 0) { throw "TailSilenceMs must not be negative." }
 
-& $venvPython "scripts\iris_kokoro_tts.py" `
-    --text $Text `
-    --model $modelPath `
-    --voices $voicesPath `
-    --output $outputPath `
-    --voice $Voice `
-    --speed $Speed `
-    --lang "en-us" `
-    --wake-signal-ms $WakeSignalMs `
-    --wake-signal-amplitude $WakeSignalAmplitude `
-    --wake-signal-hz $WakeSignalHz `
-    --lead-silence-ms $LeadSilenceMs `
-    --tail-silence-ms $TailSilenceMs
+$pythonArgs = @(
+    "scripts\iris_kokoro_tts.py",
+    "--text",
+    $Text,
+    "--model",
+    $modelPath,
+    "--voices",
+    $voicesPath,
+    "--output",
+    $outputPath,
+    "--voice",
+    $Voice,
+    "--speed",
+    "$Speed",
+    "--lang",
+    "en-us",
+    "--wake-signal-ms",
+    "$WakeSignalMs",
+    "--wake-signal-amplitude",
+    "$WakeSignalAmplitude",
+    "--wake-signal-hz",
+    "$WakeSignalHz",
+    "--lead-silence-ms",
+    "$LeadSilenceMs",
+    "--tail-silence-ms",
+    "$TailSilenceMs"
+)
 
+& $venvPython @pythonArgs
 if ($LASTEXITCODE -ne 0) { throw "Kokoro TTS generation failed" }
 
 if (-not (Test-Path $outputPath)) {

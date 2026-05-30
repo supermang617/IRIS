@@ -7,6 +7,7 @@ param(
     [double] $KokoroSpeed = 0.95,
     [int] $KokoroWakeSignalMs = 900,
     [double] $KokoroWakeSignalAmplitude = 0.004,
+    [double] $KokoroWakeSignalHz = 220.0,
     [int] $KokoroLeadSilenceMs = 300,
     [int] $KokoroTailSilenceMs = 300,
     [string] $VoiceName = "",
@@ -34,9 +35,8 @@ if ($DryRun) {
     Write-Host "- call the compiled Iris runtime binary directly"
     Write-Host "- require Response post-check: PASS"
     Write-Host "- extract the checked model response"
+    Write-Host "- pass Kokoro text through a temporary UTF-8 text file"
     Write-Host "- speak through Kokoro ONNX by default"
-    Write-Host "- use 0.95 Kokoro speed by default"
-    Write-Host "- add wake signal plus lead-in silence so first words are not cut off"
     Write-Host "- optionally fall back to Windows speech synthesis"
     Write-Host "No model call was made."
     Write-Host "No speech was played."
@@ -130,16 +130,40 @@ if ($TtsBackend -eq "Kokoro") {
     Write-Host ""
     Write-Host "=== Speaking Iris response with Kokoro ONNX ==="
 
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\speak_iris_kokoro.ps1" `
-        -Text $responseText `
-        -Voice $KokoroVoice `
-        -Speed $KokoroSpeed `
-        -WakeSignalMs $KokoroWakeSignalMs `
-        -WakeSignalAmplitude $KokoroWakeSignalAmplitude `
-        -LeadSilenceMs $KokoroLeadSilenceMs `
-        -TailSilenceMs $KokoroTailSilenceMs
+    $tempTextFile = Join-Path ([System.IO.Path]::GetTempPath()) ("iris_kokoro_" + [System.Guid]::NewGuid().ToString("N") + ".txt")
 
-    if ($LASTEXITCODE -ne 0) { throw "Kokoro speech failed" }
+    try {
+        Set-Content -Encoding UTF8 -Path $tempTextFile -Value $responseText
+
+        $kokoroArgs = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts\speak_iris_kokoro.ps1",
+            "-TextFile",
+            $tempTextFile,
+            "-Voice",
+            $KokoroVoice,
+            "-Speed",
+            "$KokoroSpeed",
+            "-WakeSignalMs",
+            "$KokoroWakeSignalMs",
+            "-WakeSignalAmplitude",
+            "$KokoroWakeSignalAmplitude",
+            "-WakeSignalHz",
+            "$KokoroWakeSignalHz",
+            "-LeadSilenceMs",
+            "$KokoroLeadSilenceMs",
+            "-TailSilenceMs",
+            "$KokoroTailSilenceMs"
+        )
+
+        powershell @kokoroArgs
+        if ($LASTEXITCODE -ne 0) { throw "Kokoro speech failed" }
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $tempTextFile
+    }
 
     Write-Host ""
     Write-Host "Result: PASS"

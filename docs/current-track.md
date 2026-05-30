@@ -2,6 +2,12 @@
 
 Use this file to avoid drifting from the roadmap.
 
+## Current fix
+
+Kokoro speech text is now passed through a temporary UTF-8 text file.
+
+This avoids PowerShell splitting long model responses into accidental parameters.
+
 ## Current milestone
 
 Iris has reached:
@@ -17,37 +23,15 @@ Iris has reached:
 - runtime voice-status
 - runtime push-to-talk visible-state test
 
-## Main live test command
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_iris_live_text_voice_session.ps1
-
-## Faster live test command after baseline already passed
+## Main live command
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_iris_live_text_voice_session.ps1 -SkipBuild
 
-## Wake word requirement
-
-Wake word is a required future feature.
-
-Preferred wake phrase:
-
-Iris
-
-Do not implement wake word as default yet.
-
-Correct order:
-
-1. typed prompt
-2. explicit one-shot voice
-3. push-to-talk
-4. visible listening state
-5. optional local wake word while Iris is open
-
 ## Do next
 
-Run the live text and voice session.
+Rerun the live text and voice session.
 
-If it passes, start the smallest UI/HUD typed-input scaffold next, because the v0.1 plan requires Iris-owned typed input and visible status instead of only PowerShell helpers.
+If it passes, start the smallest Iris-owned HUD typed-input scaffold next.
 
 ## Do not do yet
 

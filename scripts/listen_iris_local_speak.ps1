@@ -2,6 +2,14 @@ param(
     [int] $TimeoutSeconds = 8,
     [switch] $DryRun,
     [switch] $NoSpeak,
+    [string] $TtsBackend = "Kokoro",
+    [string] $KokoroVoice = "af_heart",
+    [double] $KokoroSpeed = 0.95,
+    [int] $KokoroWakeSignalMs = 900,
+    [double] $KokoroWakeSignalAmplitude = 0.004,
+    [double] $KokoroWakeSignalHz = 220.0,
+    [int] $KokoroLeadSilenceMs = 300,
+    [int] $KokoroTailSilenceMs = 300,
     [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
@@ -22,8 +30,7 @@ if ($DryRun) {
     Write-Host "- route the transcript through Iris ask-local"
     Write-Host "- require Response post-check: PASS"
     Write-Host "- print the model response"
-    Write-Host "- optionally select a Windows voice by name"
-    Write-Host "- speak the checked response using local Windows speech synthesis unless -NoSpeak is used"
+    Write-Host "- speak the checked response using Kokoro unless -NoSpeak is used"
     Write-Host "No microphone capture was started."
     Write-Host "No model call was made."
     Write-Host "No speech was played."
@@ -83,6 +90,22 @@ $scriptArgs = @(
     "scripts\ask_iris_local_speak.ps1",
     "-Prompt",
     $transcript,
+    "-TtsBackend",
+    $TtsBackend,
+    "-KokoroVoice",
+    $KokoroVoice,
+    "-KokoroSpeed",
+    "$KokoroSpeed",
+    "-KokoroWakeSignalMs",
+    "$KokoroWakeSignalMs",
+    "-KokoroWakeSignalAmplitude",
+    "$KokoroWakeSignalAmplitude",
+    "-KokoroWakeSignalHz",
+    "$KokoroWakeSignalHz",
+    "-KokoroLeadSilenceMs",
+    "$KokoroLeadSilenceMs",
+    "-KokoroTailSilenceMs",
+    "$KokoroTailSilenceMs",
     "-Rate",
     "$Rate",
     "-Volume",
