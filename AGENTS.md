@@ -595,3 +595,14 @@ Do not use:
 - ProcessStartInfo.ArgumentList, because it is not reliable across Windows PowerShell versions
 
 This prevents repeated native-command capture failures in the voice helper scripts.
+
+## PowerShell native capture rule
+
+When parsing Cargo or runtime output, use Start-Process with redirected stdout and redirected stderr.
+
+Do not use:
+- `2>&1` with Cargo under `$ErrorActionPreference = "Stop"`
+- direct native-command capture when stderr matters
+- ProcessStartInfo.ArgumentList, because it is not reliable across Windows PowerShell versions
+
+This prevents repeated native-command capture failures in the voice helper scripts.
