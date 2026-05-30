@@ -20,20 +20,32 @@ Iris has reached:
 - runtime ui-status
 - clean milestone diagnostics script
 
-## Current diagnostics command
+## Current checkpoint
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose_iris_current_milestone.ps1
+HUD dependency readiness gate.
 
-## Why this matters
+Command:
 
-The v0.1 plan requires audit tooling, visible UI status, explicit absence language, and repeatable safety checks before moving into heavier GUI, screen, OCR, memory, or wake-word work.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_hud_readiness.ps1
 
-## Do next
+## Next decision
 
-Run the diagnostics command.
+Approve or reject adding the minimal GUI dependencies:
 
-If diagnostics pass cleanly, the next architectural step is the smallest real HUD dependency decision.
+- winit
+- egui
+
+## If approved
+
+Build the smallest real desktop HUD slice:
+
+- window
+- safety absence language
+- typed prompt field
+- response area
+- visible voice state label
+- no dashboard yet
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, or wake word runtime before the HUD and visible voice-state path are stable.
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, or GUI dependencies before explicit approval.

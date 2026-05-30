@@ -960,3 +960,20 @@ Cargo writes normal progress/status text to stderr. PowerShell can display that 
 
 Required diagnostics script:
 scripts/diagnose_iris_current_milestone.ps1
+
+## HUD dependency readiness rule
+
+Before adding real GUI dependencies, run:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_hud_readiness.ps1
+
+Do not add winit, egui, or other GUI dependencies until explicitly approved.
+
+The first real HUD slice must stay minimal:
+- window
+- safety absence language
+- typed prompt field
+- response area
+- visible voice state label
+
+No screen capture, OCR, memory database, dashboard, wake word, or system-control features in the first HUD slice.
