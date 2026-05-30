@@ -18,6 +18,15 @@ Iris has reached:
 - runtime ui-status
 - clean milestone diagnostics script
 - first minimal desktop HUD slice
+- HUD typed prompt to checked response wiring
+
+## Current product rule
+
+Direct user input must be preserved.
+
+Typed input must not be censored, softened, paraphrased, or profanity-filtered.
+
+Voice input may be misrecognized by ASR, but Iris should not intentionally sanitize it.
 
 ## Current HUD command
 
@@ -27,19 +36,11 @@ cargo run -p iris-runtime -- hud
 
 cargo run -p iris-runtime -- hud-submit-test "hello iris"
 
-## Current HUD path
-
-HUD typed prompt
--> runtime responder
--> ContextGate
--> PromptBuilder
--> selected local model loopback
--> ResponsePostChecker
--> HUD response text
-
 ## Do next
 
-Test the HUD typed prompt path manually.
+Run the manual HUD typed prompt test.
+
+Verify the HUD preserves typed user text and shows checked response text.
 
 Then add Kokoro speech output from HUD only after text response is stable.
 

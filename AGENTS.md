@@ -1071,3 +1071,13 @@ Good:
 format!("local model request failed: {error:?}")
 
 Do not commit code that fails cargo fmt or cargo build.
+
+## Input fidelity rule
+
+Direct user input must be preserved.
+
+Typed HUD input must not be censored, softened, paraphrased, profanity-filtered, tone-filtered, or silently corrected.
+
+Redaction may protect secrets and sensitive data, but profanity is not sensitive data.
+
+Voice transcripts may contain ASR mistakes, but Iris must not intentionally sanitize or rewrite the user's language.

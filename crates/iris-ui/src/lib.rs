@@ -443,3 +443,47 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod input_fidelity_tests {
+    use super::*;
+
+    #[test]
+    fn hud_preserves_user_typed_language_verbatim() {
+        let original = "what the fuck is this weird-ass error doing";
+
+        let draft = HudInputDraft::typed(original);
+
+        assert_eq!(draft.text, original);
+        assert_eq!(draft.kind, HudInputKind::TypedPrompt);
+        assert!(draft.is_sendable());
+    }
+
+    #[test]
+    fn hud_submit_does_not_clean_up_user_language() {
+        let original = "why the fuck did this change my words";
+
+        let mut app = IrisHudApp::new(Box::new(|prompt| Ok(format!("Iris received: {prompt}"))));
+
+        app.draft_text = original.to_string();
+        app.submit_typed_prompt();
+
+        let joined = app
+            .hud
+            .responses
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            joined.contains(original),
+            "HUD response history must preserve original typed user text"
+        );
+
+        assert_eq!(
+            app.hud.responses.last().unwrap().text,
+            format!("Iris received: {original}")
+        );
+    }
+}
