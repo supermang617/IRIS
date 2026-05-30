@@ -34,11 +34,9 @@ Iris supports:
 
 ## Current fix
 
-PowerShell switch forwarding is fixed.
+PowerShell native command capture is now done through System.Diagnostics.ProcessStartInfo.
 
-Do not pass switch parameters as `-Switch:$SwitchParameter` into nested PowerShell processes.
-
-Build an argument list and append the switch name only when the switch is present.
+This avoids PowerShell treating normal Cargo stderr status output as a terminating NativeCommandError.
 
 ## Useful commands
 

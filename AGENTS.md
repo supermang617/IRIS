@@ -576,3 +576,11 @@ Use an argument array and append `-Switch` only when the switch is present.
 
 This prevents errors like:
 Cannot convert value "System.String" to type "System.Management.Automation.SwitchParameter".
+
+## PowerShell native capture rule
+
+When a PowerShell script must parse Cargo or runtime output, use System.Diagnostics.ProcessStartInfo with redirected stdout and stderr.
+
+Do not use `2>&1` with `$ErrorActionPreference = "Stop"` for Cargo commands that are expected to write normal status text to stderr.
+
+Do not use direct native command capture when stderr must be parsed separately.

@@ -10,28 +10,27 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
-if ($DryRun) {
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -DryRun
-    if ($LASTEXITCODE -ne 0) { throw "text voice response dry-run failed" }
-    return
-}
-
 $scriptArgs = @(
     "-NoProfile",
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    "scripts\ask_iris_local_speak.ps1",
-    "-Prompt",
-    $Prompt,
-    "-Rate",
-    "$Rate",
-    "-Volume",
-    "$Volume"
+    "scripts\ask_iris_local_speak.ps1"
 )
 
-if ($NoSpeak) {
-    $scriptArgs += "-NoSpeak"
+if ($DryRun) {
+    $scriptArgs += "-DryRun"
+} else {
+    $scriptArgs += "-Prompt"
+    $scriptArgs += $Prompt
+    $scriptArgs += "-Rate"
+    $scriptArgs += "$Rate"
+    $scriptArgs += "-Volume"
+    $scriptArgs += "$Volume"
+
+    if ($NoSpeak) {
+        $scriptArgs += "-NoSpeak"
+    }
 }
 
 powershell @scriptArgs
