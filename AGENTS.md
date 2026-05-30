@@ -1438,3 +1438,19 @@ Hello Iris, this is a local voice test.
 The voice input quality gate may retry up to three times before failing.
 
 Do not let a rejected transcript proceed into Iris response or TTS.
+
+## Stable voice milestone phrase rule
+
+For voice-input milestone tests, do not use very short phrases like "Hello Iris" as the only required phrase.
+
+Use:
+
+Testing now, Iris local voice test.
+
+Required words:
+- iris
+- voice
+- test
+
+Reason:
+The first word of a recording can be clipped or misheard. Required words should come after capture has already stabilized.

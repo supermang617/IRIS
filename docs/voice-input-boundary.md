@@ -2,42 +2,22 @@
 
 Status: active checkpoint.
 
-## Purpose
+## Current test phrase
 
-This verifies that Iris can capture a spoken user prompt as transcript text before chaining it into the response and Kokoro speech path.
-
-## Command
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1
-
-## Test phrase
-
-Hello Iris, this is a local voice test.
-
-## Rule
-
-Iris must not continue when the transcript is clearly wrong.
-
-The script now allows multiple attempts because short STT phrases are fragile.
+Testing now, Iris local voice test.
 
 ## Required words
 
-- hello
 - iris
+- voice
+- test
 
-Accepted Iris-like variants:
+## Reason
 
-- iris
-- irish
-- heiress
-- aris
+Short phrases such as "Hello Iris" are too easy for STT to clip or mishear at the start of capture.
 
-## Rejected example
+The milestone phrase now puts the important words later in the phrase so the quality gate measures a more reliable transcript.
 
-If the transcript is unrelated, such as:
+## Rule
 
-If a whole
-
-the script must fail and write:
-
-.iris-dev\voice\last-transcript-rejected.txt
+A bad transcript must not continue into Iris response or Kokoro speech.

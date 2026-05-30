@@ -1,7 +1,7 @@
 param(
-    [int] $TimeoutSeconds = 12,
-    [string] $ExpectedPhrase = "Hello Iris, this is a local voice test.",
-    [string[]] $RequiredWords = @("hello", "iris"),
+    [int] $TimeoutSeconds = 15,
+    [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
+    [string[]] $RequiredWords = @("iris", "voice", "test"),
     [int] $MaxAttempts = 3,
     [switch] $AllowUnverifiedTranscript
 )
@@ -153,6 +153,21 @@ function Test-RequiredWord {
         )
     }
 
+    if ($requiredLower -eq "voice") {
+        return (
+            $TranscriptWords -contains "voice" -or
+            $TranscriptWords -contains "voices"
+        )
+    }
+
+    if ($requiredLower -eq "test") {
+        return (
+            $TranscriptWords -contains "test" -or
+            $TranscriptWords -contains "tests" -or
+            $TranscriptWords -contains "testing"
+        )
+    }
+
     return ($TranscriptWords -contains $requiredLower)
 }
 
@@ -297,3 +312,4 @@ if (-not [string]::IsNullOrWhiteSpace($lastTranscript)) {
 Write-Host ""
 Write-Host "Rejected transcript file: $rejectedTranscriptPath"
 throw "Transcript failed quality gate after $MaxAttempts attempt(s). Iris will not answer because the captured words did not match required words."
+
