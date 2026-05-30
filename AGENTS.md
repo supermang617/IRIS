@@ -1248,3 +1248,11 @@ Run this before new feature slices:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_foundation_guard.ps1
 
 The guard is intentionally lightweight and must not add runtime capabilities.
+
+## Foundation guard false-positive rule
+
+Do not search for the text string "Read-Host" with plain Select-String.
+
+Use PowerShell token parsing and only fail when Read-Host appears as an actual command token.
+
+This prevents the guard from failing on its own documentation or warning text.

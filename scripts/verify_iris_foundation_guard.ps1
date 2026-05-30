@@ -67,6 +67,30 @@ function Assert-FileDoesNotContain {
     }
 }
 
+function Assert-NoReadHostCommand {
+    $files = Get-ChildItem -Path "scripts" -Filter "*.ps1" -File -Recurse
+    $violations = New-Object System.Collections.Generic.List[string]
+
+    foreach ($file in $files) {
+        $content = Get-Content -Raw -Path $file.FullName
+        $parseErrors = $null
+        $tokens = [System.Management.Automation.PSParser]::Tokenize($content, [ref] $parseErrors)
+
+        foreach ($token in $tokens) {
+            if ($token.Type -eq "Command" -and $token.Content -eq "Read-Host") {
+                $violations.Add("$($file.FullName):$($token.StartLine):$($token.Content)")
+            }
+        }
+    }
+
+    if ($violations.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Forbidden interactive command found:"
+        $violations | ForEach-Object { Write-Host $_ }
+        throw "Development scripts must not use interactive Read-Host prompts."
+    }
+}
+
 function Assert-OutputContains {
     param(
         [Parameter(Mandatory = $true)]
@@ -126,10 +150,7 @@ Assert-FileDoesNotContain `
     -Pattern "run_assistant_role_response_repair_test_v[0-9]" `
     -Failure "Runtime tests must use one canonical assistant role repair test, not suffixed test chains."
 
-Assert-FileDoesNotContain `
-    -Path "scripts\*.ps1" `
-    -Pattern "Read-Host" `
-    -Failure "Development scripts must not use interactive Read-Host prompts."
+Assert-NoReadHostCommand
 
 Assert-FileDoesNotContain `
     -Path "scripts\diagnose_iris_current_milestone.ps1" `
