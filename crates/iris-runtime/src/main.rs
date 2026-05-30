@@ -39,9 +39,83 @@ Preserve the user's original language, including profanity, slang, humor, grief,
 Respond naturally as Iris.
 "#;
 
-fn apply_iris_identity_and_addressee_policy(prompt: String) -> String {
-    format!("{IRIS_ADDRESSEE_POLICY}\n\n{prompt}")
+fn build_deictic_interpretation_for_input(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+
+    let addresses_iris = contains_word(&lower, "you")
+        || contains_word(&lower, "your")
+        || contains_word(&lower, "yourself")
+        || contains_word(&lower, "iris");
+
+    let references_user = contains_word(&lower, "i")
+        || contains_word(&lower, "me")
+        || contains_word(&lower, "my")
+        || contains_word(&lower, "myself");
+
+    let praise_or_test = lower.contains("proud")
+        || lower.contains("passed")
+        || lower.contains("pass")
+        || lower.contains("test")
+        || lower.contains("good job")
+        || lower.contains("did great")
+        || lower.contains("congrats")
+        || lower.contains("awesome")
+        || lower.contains("great");
+
+    let comparison = lower.contains("me or you")
+        || lower.contains("you or me")
+        || lower.contains("who's better")
+        || lower.contains("who is better");
+
+    let mut lines = Vec::new();
+
+    lines.push("Dynamic addressee interpretation for this direct user message:".to_string());
+    lines.push("- The direct user is speaking to Iris.".to_string());
+    lines.push(
+        "- In this message, first-person words such as I/me/my refer to the user.".to_string(),
+    );
+    lines.push("- In this message, second-person words such as you/your refer to Iris unless explicitly stated otherwise.".to_string());
+
+    if addresses_iris {
+        lines.push("- This message addresses Iris directly.".to_string());
+        lines.push("- Treat praise, testing feedback, criticism, jokes, or affection using 'you' as directed at Iris.".to_string());
+    }
+
+    if references_user {
+        lines.push("- The user's first-person statements remain about the user.".to_string());
+    }
+
+    if praise_or_test && addresses_iris {
+        lines.push(
+            "- If the user says Iris or you passed, Iris passed; do not say the user passed."
+                .to_string(),
+        );
+        lines.push("- If the user says they are proud of you, they are proud of Iris; do not say they are proud of themself.".to_string());
+        lines.push("- Reply as Iris receiving the praise or test result.".to_string());
+    }
+
+    if comparison {
+        lines.push(
+            "- If the user compares me and you, interpret 'me' as the user and 'you' as Iris."
+                .to_string(),
+        );
+    }
+
+    lines.join("\n")
 }
+
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(|character: char| !character.is_alphanumeric() && character != '\'')
+        .any(|word| word == needle)
+}
+
+fn apply_iris_identity_addressee_and_deictic_policy(input: &str, prompt: String) -> String {
+    let deictic = build_deictic_interpretation_for_input(input);
+
+    format!("{IRIS_ADDRESSEE_POLICY}\n\n{deictic}\n\n{prompt}")
+}
+
 const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
 
@@ -55,6 +129,7 @@ fn main() {
         Some("response-check-test") => run_response_check_test(),
         Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
         Some("addressee-intent-test") => run_addressee_intent_test(),
+        Some("deictic-role-test") => run_deictic_role_test(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
@@ -225,7 +300,10 @@ fn build_prompt_from_input(input: &str) -> String {
     let gate = ContextGate::new();
     let bundle = gate.gate_user_text(input);
 
-    apply_iris_identity_and_addressee_policy(PromptBuilder::new().build(&bundle).text)
+    apply_iris_identity_addressee_and_deictic_policy(
+        input,
+        PromptBuilder::new().build(&bundle).text,
+    )
 }
 
 fn run_safety_spine(input: &str) {
@@ -832,5 +910,50 @@ fn run_addressee_intent_test() {
 
     println!("Addressee policy: present");
     println!("Original user input preserved: true");
+    println!("Result: PASS");
+}
+
+fn run_deictic_role_test() {
+    let examples = [
+        "Awesome, you passed our test, Iris. I am proud of you.",
+        "Okay that was the test. You passed! Congrats!!!",
+        "Who's better at this game? me or you?",
+        "I am proud of you, Iris.",
+    ];
+
+    println!("Project Iris deictic role test");
+
+    for example in examples {
+        let interpretation = build_deictic_interpretation_for_input(example);
+        let prompt = build_prompt_from_input(example);
+
+        println!("Example: {example}");
+        println!("{interpretation}");
+
+        if !prompt.contains("Default conversation roles") {
+            panic!("Prompt must include default conversation role rules");
+        }
+
+        if !prompt.contains("In this message, second-person words such as you/your refer to Iris") {
+            panic!("Prompt must include dynamic second-person interpretation");
+        }
+
+        if example.to_ascii_lowercase().contains("you passed")
+            && !prompt.contains("If the user says Iris or you passed, Iris passed")
+        {
+            panic!("Prompt must explicitly say that 'you passed' means Iris passed");
+        }
+
+        if example.to_ascii_lowercase().contains("proud of you")
+            && !prompt.contains("they are proud of Iris")
+        {
+            panic!("Prompt must explicitly say that 'proud of you' means proud of Iris");
+        }
+
+        if !prompt.contains(example) {
+            panic!("Prompt must preserve original direct user input");
+        }
+    }
+
     println!("Result: PASS");
 }

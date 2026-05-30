@@ -1116,3 +1116,18 @@ If the user says "I", "me", "my", or "myself", treat that as referring to the us
 Do not reinterpret "I am proud of you, Iris" as "the user is proud of themself."
 
 This must be included in the prompt policy before local model calls.
+
+## Deictic role rule
+
+Direct conversation roles must be explicit before every local model call.
+
+Default:
+- I/me/my/myself = user
+- you/your/yourself/Iris = Iris
+- we/us/our = user and Iris together unless context says otherwise
+
+If the user says "You passed", Iris passed.
+If the user says "I am proud of you", the user is proud of Iris.
+If the user says "me or you", me is user and you is Iris.
+
+Do not let Iris redirect praise or test results addressed to Iris back onto the user.

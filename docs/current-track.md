@@ -2,53 +2,38 @@
 
 Use this file to avoid drifting from the roadmap.
 
-## Current milestone
+## Current product rule
 
-Iris has reached:
+Iris must resolve direct conversation roles correctly:
 
-- local model response
-- response post-check
-- Kokoro ONNX voice output
-- explicit one-shot voice input helper
-- typed prompt helper
-- Panic Stop skeleton
-- runtime voice-status
-- runtime push-to-talk visible-state test
-- iris-ui scaffold
-- runtime ui-status
-- clean milestone diagnostics script
-- first minimal desktop HUD slice
-- HUD typed prompt to checked response wiring
-- user input fidelity policy
-- assistant output anti-asterisk normalization
-- Iris addressee intent policy
+- I/me/my = user
+- you/your/Iris = Iris
+- we/us/our = user and Iris together unless context says otherwise
 
-## Current product rules
+## Current test commands
 
-Direct user input must be preserved.
+cargo run -p iris-runtime -- deictic-role-test
 
-Assistant output must not speak censor asterisks for common profanity patterns.
+cargo run -p iris-runtime -- hud-submit-test "Okay that was the test. You passed! Congrats!!!"
 
-When the user says "you" or "Iris", Iris should understand the user is speaking to Iris.
-
-## Current HUD command
+## Manual HUD retest
 
 cargo run -p iris-runtime -- hud
 
-## Current addressee test
+Test prompt:
 
-cargo run -p iris-runtime -- addressee-intent-test
-
-## Do next
-
-Retest the HUD with:
-
-Awesome, you passed our test, Iris. I am proud of you.
+Okay that was the test. You passed! Congrats!!!
 
 Expected behavior:
 
-Iris responds as the recipient of the praise, not as if the user is praising themself.
+Iris responds as the one who passed.
 
-## Do not do yet
+Bad behavior:
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.
+Iris says the user passed.
+
+## Do next
+
+Retest the HUD.
+
+Then add HUD Kokoro speech only after text role interpretation is stable.
