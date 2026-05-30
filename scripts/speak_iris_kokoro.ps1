@@ -1,120 +1,88 @@
+[CmdletBinding()]
 param(
-    [string] $Text = "",
-    [string] $TextFile = "",
-    [string] $Voice = "af_heart",
-    [double] $Speed = 0.95,
-    [int] $WakeSignalMs = 900,
-    [double] $WakeSignalAmplitude = 0.004,
-    [double] $WakeSignalHz = 220.0,
-    [int] $LeadSilenceMs = 300,
-    [int] $TailSilenceMs = 300,
-    [switch] $NoPlay,
-    [switch] $UseInt8,
-    [switch] $DryRun
+    [string] $Text = "Iris Kokoro voice provider is working.",
+    [string] $OutWav = ".iris-dev\diagnostics\kokoro-direct-validation.wav",
+    [string] $Voice = "af_heart,af_bella,af_sky,am_adam",
+    [switch] $NoPlay
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-Set-Location -Path "C:\Projects\IRIS"
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$resolver = Join-Path $PSScriptRoot "resolve_iris_kokoro_provider.ps1"
+$helper = Join-Path $PSScriptRoot "invoke_iris_kokoro_tts.py"
 
-$ttsRoot = Join-Path (Get-Location) ".iris-dev\tts\kokoro"
-$modelPath = Join-Path $ttsRoot "kokoro-v1.0.onnx"
-if ($UseInt8) {
-    $modelPath = Join-Path $ttsRoot "kokoro-v1.0.int8.onnx"
+$provider = (& $resolver -AsJson) | ConvertFrom-Json
+
+if (-not $provider.ok) {
+    throw "Kokoro provider is incomplete. Model candidates: $($provider.model_candidate_count). Voice candidates: $($provider.voice_candidate_count)."
 }
-$voicesPath = Join-Path $ttsRoot "voices-v1.0.bin"
-$venvPython = Join-Path $ttsRoot ".venv\Scripts\python.exe"
-$outputPath = Join-Path $ttsRoot "iris_output.wav"
 
-if (-not [string]::IsNullOrWhiteSpace($TextFile)) {
-    if (-not (Test-Path $TextFile)) {
-        throw "TextFile does not exist: $TextFile"
+$pythonExe = Join-Path $RepoRoot ".iris-dev\tts\kokoro\.venv\Scripts\python.exe"
+$pythonArgsPrefix = @()
+
+if (-not (Test-Path $pythonExe)) {
+    $py = Get-Command "py" -ErrorAction SilentlyContinue
+    if ($py) {
+        $pythonExe = $py.Source
+        $pythonArgsPrefix = @("-3")
+    } else {
+        $python = Get-Command "python" -ErrorAction SilentlyContinue
+        if ($python) {
+            $pythonExe = $python.Source
+            $pythonArgsPrefix = @()
+        } else {
+            throw "No Python runtime found for Kokoro."
+        }
     }
-
-    $Text = Get-Content -Raw -Encoding UTF8 -Path $TextFile
 }
 
-Write-Host ""
-Write-Host "=== Project Iris Kokoro speak test ==="
-Write-Host "Voice: $Voice"
-Write-Host "Speed: $Speed"
-Write-Host "Wake signal ms: $WakeSignalMs"
-Write-Host "Wake signal hz: $WakeSignalHz"
-Write-Host "Lead silence ms: $LeadSilenceMs"
-Write-Host "Tail silence ms: $TailSilenceMs"
-
-if ($DryRun) {
-    Write-Host "Dry run only. No TTS generation or playback performed."
-    Write-Host "Result: PASS"
-    return
+$outFull = if ([System.IO.Path]::IsPathRooted($OutWav)) {
+    $OutWav
+} else {
+    Join-Path $RepoRoot $OutWav
 }
 
-if ([string]::IsNullOrWhiteSpace($Text)) {
-    throw "Text must not be empty."
-}
+New-Item -ItemType Directory -Force (Split-Path -Parent $outFull) | Out-Null
 
-if (-not (Test-Path $venvPython) -or -not (Test-Path $modelPath) -or -not (Test-Path $voicesPath)) {
-    throw "Kokoro is not set up. Run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1"
-}
-
-if ($WakeSignalMs -lt 0) { throw "WakeSignalMs must not be negative." }
-if ($WakeSignalAmplitude -lt 0) { throw "WakeSignalAmplitude must not be negative." }
-if ($WakeSignalHz -le 0) { throw "WakeSignalHz must be greater than zero." }
-if ($LeadSilenceMs -lt 0) { throw "LeadSilenceMs must not be negative." }
-if ($TailSilenceMs -lt 0) { throw "TailSilenceMs must not be negative." }
-
-$pythonArgs = @(
-    "scripts\iris_kokoro_tts.py",
-    "--text",
-    $Text,
-    "--model",
-    $modelPath,
-    "--voices",
-    $voicesPath,
-    "--output",
-    $outputPath,
-    "--voice",
-    $Voice,
-    "--speed",
-    "$Speed",
-    "--lang",
-    "en-us",
-    "--wake-signal-ms",
-    "$WakeSignalMs",
-    "--wake-signal-amplitude",
-    "$WakeSignalAmplitude",
-    "--wake-signal-hz",
-    "$WakeSignalHz",
-    "--lead-silence-ms",
-    "$LeadSilenceMs",
-    "--tail-silence-ms",
-    "$TailSilenceMs"
+$args = @()
+$args += $pythonArgsPrefix
+$args += @(
+    $helper,
+    "--model", $provider.model_path,
+    "--voices", $provider.voices_path,
+    "--text", $Text,
+    "--out", $outFull,
+    "--voice", $Voice
 )
 
-& $venvPython @pythonArgs
-if ($LASTEXITCODE -ne 0) { throw "Kokoro TTS generation failed" }
+& $pythonExe @args
 
-if (-not (Test-Path $outputPath)) {
-    throw "Kokoro output file missing: $outputPath"
+if ($LASTEXITCODE -ne 0) {
+    throw "Kokoro Python helper failed with exit code $LASTEXITCODE"
 }
 
-Write-Host ""
-Write-Host "Audio generated: $outputPath"
-
-if ($NoPlay) {
-    Write-Host "Playback skipped because -NoPlay was provided."
-    Write-Host "Result: PASS"
-    return
+if (-not (Test-Path $outFull)) {
+    throw "Kokoro did not create WAV output: $outFull"
 }
 
-Write-Host ""
-Write-Host "=== Playing Kokoro audio ==="
+$wav = Get-Item $outFull
+if ($wav.Length -lt 1000) {
+    throw "Kokoro WAV output is too small: $($wav.Length) bytes"
+}
 
-Add-Type -AssemblyName System
-$player = New-Object System.Media.SoundPlayer $outputPath
-$player.Load()
-Start-Sleep -Milliseconds 250
-$player.PlaySync()
+Write-Host "Model: $($provider.model_relative_path)"
+Write-Host "Voices: $($provider.voices_relative_path)"
+Write-Host "WAV: $outFull"
 
-Write-Host ""
+if (-not $NoPlay) {
+    $player = New-Object System.Media.SoundPlayer $outFull
+    $player.Load()
+    $player.PlaySync()
+    Write-Host "Playback: completed"
+} else {
+    Write-Host "Playback: skipped"
+}
+
 Write-Host "Result: PASS"

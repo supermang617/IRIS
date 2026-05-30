@@ -1,81 +1,48 @@
-$ErrorActionPreference = "Stop"
-Set-Location -Path "C:\Projects\IRIS"
-
-New-Item -ItemType Directory -Force ".iris-dev\diagnostics" | Out-Null
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$report = ".iris-dev\diagnostics\iris-kokoro-direct-voice-$timestamp.txt"
-
-function Write-Report {
-    param([string] $Text)
-    Write-Host $Text
-    Add-Content -Encoding UTF8 -Path $report -Value $Text
-}
-
-function Write-Section {
-    param([string] $Text)
-    Write-Report ""
-    Write-Report "=== $Text ==="
-}
-
-function Invoke-NativeCapture {
-    param(
-        [string] $Name,
-        [string] $FilePath,
-        [string[]] $Arguments
-    )
-
-    Write-Section $Name
-
-    $base = Join-Path $env:TEMP ("iris-kokoro-direct-" + [guid]::NewGuid().ToString())
-    $stdout = "$base.out"
-    $stderr = "$base.err"
-
-    try {
-        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-
-        if (Test-Path $stdout) {
-            Get-Content -Path $stdout | ForEach-Object { Write-Report $_ }
-        }
-
-        if (Test-Path $stderr) {
-            Get-Content -Path $stderr | ForEach-Object { Write-Report $_ }
-        }
-
-        if ($process.ExitCode -ne 0) {
-            throw "$Name failed with exit code $($process.ExitCode)"
-        }
-    } finally {
-        Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr
-    }
-}
-
-Write-Section "Iris Kokoro direct voice validation"
-Write-Report "Purpose: test Kokoro speech directly, without old mixed model-response scripts."
-
-$kokoroModel = "C:\Projects\IRIS\.iris-dev\tts\kokoro\kokoro-v1_0.onnx"
-$speakScript = "scripts\speak_iris_kokoro.ps1"
-
-if (-not (Test-Path $kokoroModel)) {
-    throw "Missing Kokoro model: $kokoroModel"
-}
-
-if (-not (Test-Path $speakScript)) {
-    throw "Missing Kokoro speak script: $speakScript"
-}
-
-Write-Report "Kokoro model: $kokoroModel"
-Write-Report "Speak script: $speakScript"
-
-Invoke-NativeCapture "Direct Kokoro speak test" "powershell" @(
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    $speakScript,
-    "-Text",
-    "Iris Kokoro voice provider is ready."
+[CmdletBinding()]
+param(
+    [switch] $NoPlay
 )
 
-Write-Section "Result"
-Write-Report "PASS: Kokoro direct voice validation passed."
-Write-Report "Report: $report"
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$resolver = Join-Path $PSScriptRoot "resolve_iris_kokoro_provider.ps1"
+$speak = Join-Path $PSScriptRoot "speak_iris_kokoro.ps1"
+
+Write-Host "=== Iris Kokoro direct voice validation ==="
+
+$provider = (& $resolver -AsJson) | ConvertFrom-Json
+
+Write-Host "Model candidates: $($provider.model_candidate_count)"
+Write-Host "Voice candidates: $($provider.voice_candidate_count)"
+Write-Host "Model: $($provider.model_relative_path)"
+Write-Host "Voices: $($provider.voices_relative_path)"
+
+if (-not $provider.ok) {
+    throw "Kokoro provider resolution failed. Need both Kokoro ONNX model and voices asset."
+}
+
+Write-Host ""
+Write-Host "=== Direct Kokoro speech ==="
+
+$args = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $speak,
+    "-Text", "Iris Kokoro voice provider is working.",
+    "-OutWav", ".iris-dev\diagnostics\kokoro-direct-validation.wav"
+)
+
+if ($NoPlay) {
+    $args += "-NoPlay"
+}
+
+& powershell @args
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Direct Kokoro speech failed with exit code $LASTEXITCODE"
+}
+
+Write-Host ""
+Write-Host "PASS: Kokoro direct voice validation completed."
