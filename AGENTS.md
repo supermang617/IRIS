@@ -1169,3 +1169,14 @@ This must verify:
 - "I am proud of you" means the user is proud of Iris
 - HUD submit path passes
 - milestone diagnostics pass
+
+## Assistant role response repair rule
+
+If the user addresses Iris with "you", "your", or "Iris", assistant output must not flip Iris-owned traits back onto the user.
+
+Examples:
+- "your voice" in assistant output should become "my voice" when the user was talking about Iris's voice.
+- "you passed" in assistant output should become "I passed" when the user was saying Iris passed.
+- "you did great" in assistant output should become "I did great" when the user was praising Iris.
+
+This applies to assistant output only. Do not alter direct user input.

@@ -1,23 +1,28 @@
 # Current Track
 
-## Current checkpoint
+## Current product rule
 
-HUD conversation reliability is now the active checkpoint before HUD speech.
+Iris must distinguish user/Iris roles across both prompt interpretation and assistant response repair.
 
-Command:
+Current commands:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_hud_conversation_reliability.ps1
+cargo run -p iris-runtime -- assistant-role-repair-test
+cargo run -p iris-runtime -- deictic-role-test
 
-## Do next after this passes
+Manual HUD retest:
 
-Add HUD Kokoro speech only after:
+cargo run -p iris-runtime -- hud
 
-- HUD typed response is stable
-- user input is preserved
-- assistant censor markers are normalized
-- Iris-directed praise is resolved correctly
-- diagnostics pass cleanly
+Test prompt:
 
-## Do not do yet
+Iris, your voice sounds awesome.
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.
+Expected:
+
+Iris says "my voice", not "your voice".
+
+## Do next
+
+Retest HUD role handling.
+
+Then add HUD Kokoro speech only after role handling remains stable.

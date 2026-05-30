@@ -150,6 +150,7 @@ fn main() {
         Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
         Some("addressee-intent-test") => run_addressee_intent_test(),
         Some("deictic-role-test") => run_deictic_role_test_v2(),
+        Some("assistant-role-repair-test") => run_assistant_role_response_repair_test(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
@@ -519,7 +520,10 @@ fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
         return Err(format!("response blocked by post-check: {findings}"));
     }
 
-    Ok(normalized_text)
+    Ok(normalize_assistant_role_response_for_input(
+        input,
+        &normalized_text,
+    ))
 }
 
 fn run_hud_submit_test(parts: Vec<String>) {
@@ -1075,5 +1079,87 @@ fn run_deictic_role_test_v2() {
     }
 
     println!("Prompt deictic policy: present");
+    println!("Result: PASS");
+}
+
+fn normalize_assistant_role_response_for_input(input: &str, response: &str) -> String {
+    let input_lower = input.to_ascii_lowercase();
+
+    let addresses_iris = contains_deictic_word_v2(&input_lower, "you")
+        || contains_deictic_word_v2(&input_lower, "your")
+        || contains_deictic_word_v2(&input_lower, "yourself")
+        || contains_deictic_word_v2(&input_lower, "iris");
+
+    if !addresses_iris {
+        return response.to_string();
+    }
+
+    let mut repaired = response.to_string();
+
+    let iris_owned_subjects = [
+        ("your voice", "my voice"),
+        ("Your voice", "My voice"),
+        ("your response", "my response"),
+        ("Your response", "My response"),
+        ("your answer", "my answer"),
+        ("Your answer", "My answer"),
+        ("your test", "my test"),
+        ("Your test", "My test"),
+        ("your work", "my work"),
+        ("Your work", "My work"),
+        ("your performance", "my performance"),
+        ("Your performance", "My performance"),
+        ("you passed", "I passed"),
+        ("You passed", "I passed"),
+        ("you did great", "I did great"),
+        ("You did great", "I did great"),
+        ("you sound good", "I sound good"),
+        ("You sound good", "I sound good"),
+        ("you sound awesome", "I sound awesome"),
+        ("You sound awesome", "I sound awesome"),
+    ];
+
+    for (wrong, right) in iris_owned_subjects {
+        repaired = repaired.replace(wrong, right);
+    }
+
+    repaired
+}
+
+fn run_assistant_role_response_repair_test() {
+    println!("Project Iris assistant role response repair test");
+
+    let input = "Iris, your voice sounds awesome.";
+    let raw = "I'm glad your voice sounds good.";
+    let repaired = normalize_assistant_role_response_for_input(input, raw);
+
+    println!("Input: {input}");
+    println!("Raw response: {raw}");
+    println!("Repaired response: {repaired}");
+
+    if repaired.contains("your voice") {
+        panic!("Assistant must not refer to Iris voice as 'your voice' when user addressed Iris");
+    }
+
+    if !repaired.contains("my voice") {
+        panic!("Assistant must refer to Iris voice as 'my voice'");
+    }
+
+    let input = "Okay that was the test. You passed! Congrats!!!";
+    let raw = "I'm glad you passed. You did great.";
+    let repaired = normalize_assistant_role_response_for_input(input, raw);
+
+    println!("Input: {input}");
+    println!("Raw response: {raw}");
+    println!("Repaired response: {repaired}");
+
+    if repaired.contains("you passed") || repaired.contains("You did great") {
+        panic!("Assistant must not redirect Iris-directed success back to the user");
+    }
+
+    if !repaired.contains("I passed") || !repaired.contains("I did great") {
+        panic!("Assistant must take ownership of Iris-directed success");
+    }
+
     println!("Result: PASS");
 }
