@@ -20,15 +20,37 @@ Ollama is only being used to test local model behavior quickly on Windows.
 
 Do not make Ollama a required production dependency.
 
-## Current fix
+## Voice direction
 
-Voice helper scripts now call the compiled runtime binary directly:
+Long-term production TTS target:
 
-target\debug\iris-runtime.exe
+Kokoro ONNX
 
-They do not parse `cargo run` output.
+Current development speech output:
 
-This avoids repeated PowerShell native-command capture errors caused by Cargo status text on stderr.
+Windows local speech synthesis helper
+
+Windows SAPI is temporary and only used to test the text-to-speech pipeline.
+
+Iris v0.1 should use a natural female Kokoro ONNX voice if packaging and quality tests pass.
+
+Fallback candidate:
+
+Piper
+
+Do not add heavy voice cloning or large Python-first TTS stacks before the text/voice milestone is stable.
+
+## Current status
+
+Iris supports:
+
+- typed prompt through ask-local
+- explicit one-shot voice input helper
+- local model response through Ollama loopback
+- response post-check before displaying or speaking output
+- local spoken response through Windows speech synthesis
+- Panic Stop skeleton
+- safety spine verification
 
 ## Useful commands
 
@@ -45,10 +67,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_voi
 
 ## Do next
 
-Rerun milestone verification.
+Rerun the live text and voice milestone test.
 
-Then run the live voice input test manually.
+Then start a small iris-voice abstraction only after the milestone is stable.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full UI, dashboard, or always-listening voice before the basic text/voice milestone is stable.
+Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or full Kokoro integration before the basic text/voice milestone is stable.

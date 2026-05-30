@@ -625,3 +625,19 @@ Correct pattern:
 3. Parse only Iris runtime output.
 
 This rule applies to text/voice milestone helper scripts.
+
+## Iris voice strategy rule
+
+The production TTS target is Kokoro ONNX with a natural female voice.
+
+Windows speech synthesis is a temporary development helper only.
+
+Do not treat Windows SAPI as the final Iris voice.
+
+Do not add heavy voice cloning, cloud voice APIs, paid voice APIs, or large Python-first TTS stacks for the v0.1 voice path unless explicitly approved.
+
+Do not speak blocked model output.
+
+Future TTS must be local, interruptible, Panic Stop aware, and available in text-only fallback mode.
+
+Piper is only a fallback candidate if Kokoro ONNX becomes a blocker.
