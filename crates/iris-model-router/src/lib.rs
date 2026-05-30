@@ -75,13 +75,13 @@ fn selected_qwen_vl_manifest(
     minimum_vram_gb: u32,
 ) -> Result<ModelManifest, ModelManifestError> {
     ModelManifest::new_verified_metadata(
-        "huihui_ai/qwen3.5-abliterated:9b",
+        "huihui_ai/qwen3.5-abliterated",
         ModelFamily::Qwen,
         ModelVariant::AbliteratedOrUncensored,
         ModelFormat::GGUF,
         Quantization::Q4KM,
         ModelSource::BartowskiHuggingFace,
-        "huihui_ai/qwen3.5-abliterated:9b",
+        "huihui_ai/qwen3.5-abliterated",
         "ollama-managed-model-digest",
         minimum_ram_gb,
         minimum_vram_gb,
@@ -98,7 +98,7 @@ mod tests {
         let routed = route_model(&profile).unwrap();
 
         assert_eq!(routed.tier, ModelTier::StandardDesktop);
-        assert_eq!(routed.manifest.model_id, "huihui_ai/qwen3.5-abliterated:9b");
+        assert_eq!(routed.manifest.model_id, "huihui_ai/qwen3.5-abliterated");
         assert_eq!(routed.manifest.family, ModelFamily::Qwen);
         assert_eq!(
             routed.manifest.variant,
@@ -114,7 +114,7 @@ mod tests {
         let routed = route_model(&profile).unwrap();
 
         assert_eq!(routed.tier, ModelTier::Lightweight);
-        assert_eq!(routed.manifest.model_id, "huihui_ai/qwen3.5-abliterated:9b");
+        assert_eq!(routed.manifest.model_id, "huihui_ai/qwen3.5-abliterated");
         assert_eq!(routed.manifest.minimum_vram_gb, 4);
     }
 
@@ -124,7 +124,7 @@ mod tests {
         let routed = route_model(&profile).unwrap();
 
         assert_eq!(routed.tier, ModelTier::Edge);
-        assert_eq!(routed.manifest.model_id, "huihui_ai/qwen3.5-abliterated:9b");
+        assert_eq!(routed.manifest.model_id, "huihui_ai/qwen3.5-abliterated");
         assert_eq!(routed.manifest.minimum_vram_gb, 0);
     }
 }

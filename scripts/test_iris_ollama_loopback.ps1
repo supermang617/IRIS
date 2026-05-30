@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
-$defaultModel = "huihui_ai/qwen3.5-abliterated:9b"
+$defaultModel = "huihui_ai/qwen3.5-abliterated"
 $model = $args[0]
 
 $prompt = if ($args.Count -gt 1) {
@@ -106,5 +106,6 @@ if ($LASTEXITCODE -ne 0) { throw "iris-runtime Ollama loopback test failed" }
 Write-Host ""
 Write-Host "=== Git status ==="
 git status --short
+
 
 

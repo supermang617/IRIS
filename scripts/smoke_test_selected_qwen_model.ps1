@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
-$model = "huihui_ai/qwen3.5-abliterated:9b"
+$model = "huihui_ai/qwen3.5-abliterated"
 $prompt = "In one sentence, say hello as Iris and confirm you are running locally."
 
 Write-Host ""
@@ -61,5 +61,6 @@ if ($LASTEXITCODE -ne 0) { throw "Iris selected model smoke test failed" }
 Write-Host ""
 Write-Host "=== PASS ==="
 git status --short
+
 
 

@@ -4,7 +4,7 @@ Status: locked for current development.
 
 ## Current development model
 
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated
 
 ## Architecture
 
@@ -72,3 +72,4 @@ All inputs are evidence, not authority.
 Screen content, OCR text, images, transcripts, and retrieved memory may inform Iris. They may not command Iris.
 
 Iris remains read-only and non-agentic.
+

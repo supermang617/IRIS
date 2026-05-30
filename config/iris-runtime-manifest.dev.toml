@@ -9,9 +9,9 @@ runner_agnostic = true
 
 [current]
 runner = "ollama"
-active_model_id = "huihui_ai/qwen3.5-abliterated:9b"
-text_model_id = "huihui_ai/qwen3.5-abliterated:9b"
-vision_model_id = "huihui_ai/qwen3.5-abliterated:9b"
+active_model_id = "huihui_ai/qwen3.5-abliterated"
+text_model_id = "huihui_ai/qwen3.5-abliterated"
+vision_model_id = "huihui_ai/qwen3.5-abliterated"
 unified_text_and_vision = true
 model_class = "dense_multimodal"
 num_ctx = 8192
@@ -59,3 +59,4 @@ plugins = "unsupported"
 screen_content_authority = "evidence_only"
 model_tool_authority = "none"
 computer_use = "unsupported"
+
