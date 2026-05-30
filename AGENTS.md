@@ -1336,3 +1336,11 @@ Before voice-input work, verify typed input can produce audible Iris speech:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_to_spoken_turn.ps1
 
 This remains a development boundary. Rust runtime must not spawn shell or external processes for speech.
+
+## Voice input boundary rule
+
+Before chaining voice input into Iris response and Kokoro speech, verify transcript capture with:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1
+
+Do not add wake word or always-listening behavior yet.

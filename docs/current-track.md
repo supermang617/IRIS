@@ -1,34 +1,24 @@
 # Current Track
 
-## Current milestone
+## Current milestone passed
 
-Text prompt to spoken Iris response.
+Typed prompt
+-> Iris response
+-> Kokoro spoken voice
+
+## Current checkpoint
+
+Voice input boundary.
 
 Command:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_to_spoken_turn.ps1
-
-## Current status
-
-HUD text path works.
-
-Role handling works.
-
-Speech plan works.
-
-Dev Kokoro speech boundary works.
-
-Text-to-spoken turn is now the active milestone gate.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1
 
 ## Next after this passes
 
-Build the voice-input-to-spoken-response turn:
+Build the full voice-to-spoken turn:
 
 voice input
 -> transcript
--> checked HUD response path
--> Kokoro spoken response
-
-## Do not do yet
-
-Do not add runtime shell execution, screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.
+-> checked response
+-> spoken Kokoro answer
