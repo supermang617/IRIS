@@ -8,60 +8,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+    $global:PSNativeCommandUseErrorActionPreference = $false
+}
+
 Set-Location -Path "C:\Projects\IRIS"
-
-function Join-NativeArguments {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
-    )
-
-    $quoted = foreach ($argument in $Arguments) {
-        if ($null -eq $argument) {
-            '""'
-        } else {
-            '"' + ($argument.Replace('\', '\\').Replace('"', '\"')) + '"'
-        }
-    }
-
-    $quoted -join " "
-}
-
-function Invoke-NativeCapture {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $CommandName,
-
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
-    )
-
-    $command = Get-Command $CommandName -CommandType Application -ErrorAction Stop
-    $stdoutPath = [System.IO.Path]::GetTempFileName()
-    $stderrPath = [System.IO.Path]::GetTempFileName()
-
-    try {
-        $argumentString = Join-NativeArguments -Arguments $Arguments
-
-        $process = Start-Process `
-            -FilePath $command.Source `
-            -ArgumentList $argumentString `
-            -NoNewWindow `
-            -Wait `
-            -PassThru `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
-
-        [pscustomobject]@{
-            ExitCode = $process.ExitCode
-            Stdout = Get-Content -Raw -Path $stdoutPath
-            Stderr = Get-Content -Raw -Path $stderrPath
-        }
-    } finally {
-        Remove-Item -Force -ErrorAction SilentlyContinue $stdoutPath
-        Remove-Item -Force -ErrorAction SilentlyContinue $stderrPath
-    }
-}
 
 Write-Host ""
 Write-Host "=== Project Iris text prompt + spoken response test ==="
@@ -71,52 +22,56 @@ if ($DryRun) {
     Write-Host ""
     Write-Host "Dry run only."
     Write-Host "This script will:"
-    Write-Host "- send a text prompt through Iris ask-local"
-    Write-Host "- capture stdout and stderr separately through Start-Process"
+    Write-Host "- call the compiled Iris runtime binary directly"
+    Write-Host "- avoid parsing cargo run output"
     Write-Host "- require Response post-check: PASS"
     Write-Host "- extract the checked model response"
     Write-Host "- print the text response"
-    Write-Host "- speak the response using local Windows speech synthesis unless -NoSpeak is used"
+    Write-Host "- speak the checked response unless -NoSpeak is used"
     Write-Host "No model call was made."
     Write-Host "No speech was played."
     Write-Host "Result: PASS"
     return
 }
 
-$result = Invoke-NativeCapture -CommandName "cargo" -Arguments @(
-    "run",
-    "-p",
-    "iris-runtime",
-    "--",
-    "ask-local",
-    $Prompt
-)
+$runtimeExe = Join-Path (Get-Location) "target\debug\iris-runtime.exe"
+
+if (-not (Test-Path -Path $runtimeExe)) {
+    Write-Host ""
+    Write-Host "Runtime binary not found. Building iris-runtime first..."
+
+    cargo build -p iris-runtime
+    if ($LASTEXITCODE -ne 0) { throw "cargo build -p iris-runtime failed" }
+}
+
+if (-not (Test-Path -Path $runtimeExe)) {
+    throw "Runtime binary still not found after build: $runtimeExe"
+}
 
 Write-Host ""
-Write-Host "=== Cargo/runtime stderr ==="
-if ([string]::IsNullOrWhiteSpace($result.Stderr)) {
-    Write-Host "(none)"
-} else {
-    Write-Host $result.Stderr
-}
+Write-Host "=== Running compiled Iris runtime ==="
+
+$outputLines = & $runtimeExe "ask-local" $Prompt
+$exitCode = $LASTEXITCODE
+$output = $outputLines -join [Environment]::NewLine
 
 Write-Host ""
 Write-Host "=== Raw Iris output ==="
-Write-Host $result.Stdout
+Write-Host $output
 
-if ($result.ExitCode -ne 0) {
-    throw "Iris ask-local failed with exit code $($result.ExitCode)"
+if ($exitCode -ne 0) {
+    throw "Iris ask-local failed with exit code $exitCode"
 }
 
-if ($result.Stdout -match "Response post-check: BLOCKED") {
+if ($output -match "Response post-check: BLOCKED") {
     throw "Response was blocked. Refusing to speak model output."
 }
 
-if ($result.Stdout -notmatch "Response post-check: PASS") {
+if ($output -notmatch "Response post-check: PASS") {
     throw "Response post-check did not pass. Refusing to speak model output."
 }
 
-$lines = $result.Stdout -split '\r?\n'
+$lines = $output -split '\r?\n'
 $startIndex = -1
 
 for ($i = 0; $i -lt $lines.Count; $i++) {

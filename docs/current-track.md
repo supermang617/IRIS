@@ -22,12 +22,13 @@ Do not make Ollama a required production dependency.
 
 ## Current fix
 
-PowerShell native command capture is now handled with Start-Process, redirected stdout, and redirected stderr.
+Voice helper scripts now call the compiled runtime binary directly:
 
-Avoid:
-- `2>&1` with Cargo
-- direct `& cargo ...` capture when stderr matters
-- ProcessStartInfo.ArgumentList because it is not reliable across Windows PowerShell versions
+target\debug\iris-runtime.exe
+
+They do not parse `cargo run` output.
+
+This avoids repeated PowerShell native-command capture errors caused by Cargo status text on stderr.
 
 ## Useful commands
 

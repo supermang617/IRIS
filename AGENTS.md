@@ -606,3 +606,22 @@ Do not use:
 - ProcessStartInfo.ArgumentList, because it is not reliable across Windows PowerShell versions
 
 This prevents repeated native-command capture failures in the voice helper scripts.
+
+## Voice helper runtime invocation rule
+
+Scripts that parse Iris runtime output must call the compiled binary directly:
+
+target\debug\iris-runtime.exe
+
+Do not parse output from:
+cargo run -p iris-runtime ...
+
+Reason:
+Cargo writes normal status output to stderr, which repeatedly caused PowerShell native-command capture failures.
+
+Correct pattern:
+1. Build first with cargo build.
+2. Call target\debug\iris-runtime.exe directly.
+3. Parse only Iris runtime output.
+
+This rule applies to text/voice milestone helper scripts.
