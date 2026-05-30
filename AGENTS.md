@@ -1180,3 +1180,17 @@ Examples:
 - "you did great" in assistant output should become "I did great" when the user was praising Iris.
 
 This applies to assistant output only. Do not alter direct user input.
+
+## HUD checked response path rule
+
+All HUD typed-prompt responses must use:
+
+checked_local_response_for_hud_v3
+
+This path must apply:
+- deterministic Iris-directed replies
+- assistant output profanity marker normalization
+- assistant user/Iris role repair
+- ResponsePostChecker
+
+Do not route HUD responses through older unchecked or partially repaired response helpers.

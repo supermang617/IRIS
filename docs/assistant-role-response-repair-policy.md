@@ -34,12 +34,21 @@ Correct Iris response:
 
 I'm glad I passed.
 
-## Scope
+## Implementation rule
 
-This applies before HUD display and before TTS.
+HUD responses must use the checked v3 HUD response path.
 
-User input remains untouched.
+The v3 path applies:
+
+1. deterministic Iris-directed reply handling
+2. assistant profanity marker normalization
+3. assistant user/Iris role repair
+4. ResponsePostChecker
 
 ## Boundary
+
+This applies to assistant output only.
+
+Direct user input remains untouched.
 
 This does not add memory, screen capture, OCR, wake word runtime, input simulation, clipboard access, or system control.
