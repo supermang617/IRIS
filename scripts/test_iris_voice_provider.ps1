@@ -7,20 +7,70 @@ $report = ".iris-dev\diagnostics\iris-voice-provider-test-$timestamp.txt"
 
 function Write-Report {
     param([string] $Text)
+
     Write-Host $Text
     Add-Content -Encoding UTF8 -Path $report -Value $Text
 }
 
 function Write-Section {
     param([string] $Text)
+
     Write-Report ""
     Write-Report "=== $Text ==="
 }
 
+function Invoke-IrisNativeCapture {
+    param(
+        [string] $Name,
+        [string] $FilePath,
+        [string[]] $Arguments
+    )
+
+    Write-Section $Name
+
+    $base = Join-Path $env:TEMP ("iris-voice-provider-" + [guid]::NewGuid().ToString())
+    $stdout = "$base.out"
+    $stderr = "$base.err"
+
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+        $captured = New-Object System.Collections.Generic.List[string]
+
+        if (Test-Path $stdout) {
+            Get-Content -Path $stdout | ForEach-Object {
+                $captured.Add($_)
+                Write-Report $_
+            }
+        }
+
+        if (Test-Path $stderr) {
+            Get-Content -Path $stderr | ForEach-Object {
+                $captured.Add($_)
+                Write-Report $_
+            }
+        }
+
+        if ($process.ExitCode -ne 0) {
+            throw "$Name failed with exit code $($process.ExitCode)"
+        }
+
+        return @($captured)
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr
+    }
+}
+
 Write-Section "Iris voice provider test"
-Write-Report "Goal: prefer Kokoro, allow SAPI only as fallback."
+Write-Report "Goal: prefer Kokoro later, allow SAPI only as fallback now."
 
 $Prompt = "Hello Iris. In one short sentence, say the voice provider test is running."
+
+Write-Section "Model check"
+
+if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    throw "Ollama command not found."
+}
 
 $modelLine = @(ollama list | Select-Object -Skip 1 | Where-Object {
     $_.Trim() -match "^huihui_ai/qwen3\.5-abliterated(:\S+)?\s+"
@@ -39,16 +89,17 @@ $env:IRIS_MODEL_NUM_CTX = "8192"
 $env:IRIS_MODEL_NUM_PREDICT = "160"
 
 Write-Report "Model: $TargetModel"
+Write-Report "Context: $env:IRIS_MODEL_NUM_CTX"
+Write-Report "Max response tokens: $env:IRIS_MODEL_NUM_PREDICT"
 
-Write-Section "Get Iris response"
-
-$output = cargo run -p iris-runtime -- hud-submit-test $Prompt 2>&1
-$exitCode = $LASTEXITCODE
-$output | ForEach-Object { Write-Report $_ }
-
-if ($exitCode -ne 0) {
-    throw "HUD response test failed"
-}
+$output = Invoke-IrisNativeCapture "Get checked Iris response" "cargo" @(
+    "run",
+    "-p",
+    "iris-runtime",
+    "--",
+    "hud-submit-test",
+    $Prompt
+)
 
 $responseLines = New-Object System.Collections.Generic.List[string]
 $capture = $false
@@ -82,17 +133,15 @@ Write-Report $IrisResponse
 
 Write-Section "Search for Kokoro provider"
 
-$kokoroCandidates = @()
-
-$kokoroCandidates += Get-ChildItem -Path "." -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.FullName -notmatch "\\target\\" -and
-        $_.FullName -notmatch "\\.git\\" -and
-        (
-            $_.Name -match "kokoro" -or
-            $_.Extension -in @(".onnx")
-        )
-    }
+$kokoroCandidates = @(Get-ChildItem -Path "." -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+    $_.FullName -notmatch "\\target\\" -and
+    $_.FullName -notmatch "\\.git\\" -and
+    $_.FullName -notmatch "\\.iris-dev\\" -and
+    (
+        $_.Name -match "kokoro" -or
+        $_.Extension -eq ".onnx"
+    )
+})
 
 if ($kokoroCandidates.Count -gt 0) {
     Write-Report "Kokoro-related files found:"
@@ -105,13 +154,12 @@ Write-Section "Voice output"
 
 $usedProvider = "sapi-fallback"
 
-# Current safe behavior: SAPI fallback only.
-# Next implementation step will replace this section with the real Kokoro backend once the Kokoro executable/model path is confirmed.
 try {
     $voice = New-Object -ComObject SAPI.SpVoice
     $voice.Rate = 0
     $voice.Volume = 100
     [void] $voice.Speak($IrisResponse)
+
     Write-Report "Provider used: $usedProvider"
     Write-Report "PASS: Voice output completed through SAPI fallback."
 } catch {
@@ -120,5 +168,5 @@ try {
 
 Write-Section "Result"
 Write-Report "PASS: Voice provider test completed."
-Write-Report "Next: wire Kokoro as the preferred provider once its local runtime/model path is confirmed."
+Write-Report "Next: wire Kokoro as preferred provider after confirming the local Kokoro runtime/model path."
 Write-Report "Report: $report"
