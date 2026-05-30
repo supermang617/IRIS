@@ -2,11 +2,13 @@
 
 Status: active product rule.
 
-## Required HUD path
+## Required runtime path
 
-HUD typed responses must use:
+HUD typed responses must use one clean function:
 
-checked_local_response_for_hud_v4
+checked_local_response_for_hud
+
+Do not create parallel helper chains such as `_v3`, `_v4`, or future suffixed variants.
 
 ## Rule
 
@@ -23,6 +25,18 @@ I'm glad your voice sounds good.
 Correct Iris response:
 
 I'm glad my voice sounds good.
+
+User:
+
+You passed.
+
+Bad Iris response:
+
+I'm glad you passed.
+
+Correct Iris response:
+
+I'm glad I passed.
 
 ## Boundary
 

@@ -1210,3 +1210,19 @@ This path must apply:
 Do not route HUD responses through older unchecked or partially repaired response helpers.
 
 Do not reference helper names before the helper exists.
+
+## Clean runtime helper rule
+
+Do not create parallel suffixed helper chains like `_v2`, `_v3`, or `_v4` for HUD role repair.
+
+Use one canonical function:
+
+checked_local_response_for_hud
+
+All HUD typed response paths must route through it.
+
+It must apply:
+- deterministic Iris-directed reply handling
+- assistant output profanity marker normalization
+- assistant user/Iris role repair
+- ResponsePostChecker

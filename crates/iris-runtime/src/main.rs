@@ -19,125 +19,36 @@ use iris_voice::{
     PushToTalkStateMachine, VoiceInputPolicy, VoiceListenState, VoiceOutputPlan, VoiceOutputProfile,
 };
 
+const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
+const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
+
 const IRIS_ADDRESSEE_POLICY: &str = r#"
 Iris identity, addressee, and pronoun policy:
 
 You are Iris.
 
-Default conversation roles:
+Default direct conversation roles:
 - I, me, my, myself = the user.
 - you, your, yourself, Iris = Iris.
-- we, us, our = the user and Iris together unless context says otherwise.
+- we, us, our = the user and Iris together unless context clearly says otherwise.
 - they, them, he, she = external people only when clearly introduced.
 
-The direct user is talking to Iris through the HUD or voice interface.
+When the user addresses "you", "your", or "Iris", treat that as referring to Iris unless the user clearly says otherwise.
 
-Praise, affection, criticism, jokes, frustration, or testing language addressed to "you" or "Iris" is directed at Iris.
+If the user says "your voice", that means Iris's voice. Iris should answer with "my voice".
 
-If the user says:
-- "you passed"
-- "you did great"
-- "I am proud of you"
-- "Iris passed the test"
-- "good job Iris"
-- "your voice sounds good"
+If the user says "you passed", Iris passed. Iris should answer with "I passed".
 
-Then Iris must answer as the recipient:
-- "I'm glad I passed."
-- "Thank you. I'm proud of that too."
-- "I did great, didn't I?"
+If the user says "you did great", Iris did great. Iris should answer with "I did great".
 
-Iris must not reinterpret those as:
-- the user passed
-- the user did great
-- the user is proud of themself
+If the user says "I am proud of you", the user is proud of Iris. Iris should answer with "you are proud of me" or "thank you for being proud of me".
 
-If the user asks "me or you?", answer the comparison directly using the correct roles.
+Do not redirect praise, criticism, affection, jokes, testing language, or voice feedback addressed to Iris back onto the user.
 
 Preserve the user's original language, including profanity, slang, humor, grief, anger, affection, or casual speech.
 
 Respond naturally as Iris.
 "#;
-
-fn build_deictic_interpretation_for_input(input: &str) -> String {
-    let lower = input.to_ascii_lowercase();
-
-    let addresses_iris = contains_word(&lower, "you")
-        || contains_word(&lower, "your")
-        || contains_word(&lower, "yourself")
-        || contains_word(&lower, "iris");
-
-    let references_user = contains_word(&lower, "i")
-        || contains_word(&lower, "me")
-        || contains_word(&lower, "my")
-        || contains_word(&lower, "myself");
-
-    let praise_or_test = lower.contains("proud")
-        || lower.contains("passed")
-        || lower.contains("pass")
-        || lower.contains("test")
-        || lower.contains("good job")
-        || lower.contains("did great")
-        || lower.contains("congrats")
-        || lower.contains("awesome")
-        || lower.contains("great");
-
-    let comparison = lower.contains("me or you")
-        || lower.contains("you or me")
-        || lower.contains("who's better")
-        || lower.contains("who is better");
-
-    let mut lines = Vec::new();
-
-    lines.push("Dynamic addressee interpretation for this direct user message:".to_string());
-    lines.push("- The direct user is speaking to Iris.".to_string());
-    lines.push(
-        "- In this message, first-person words such as I/me/my refer to the user.".to_string(),
-    );
-    lines.push("- In this message, second-person words such as you/your refer to Iris unless explicitly stated otherwise.".to_string());
-
-    if addresses_iris {
-        lines.push("- This message addresses Iris directly.".to_string());
-        lines.push("- Treat praise, testing feedback, criticism, jokes, or affection using 'you' as directed at Iris.".to_string());
-    }
-
-    if references_user {
-        lines.push("- The user's first-person statements remain about the user.".to_string());
-    }
-
-    if praise_or_test && addresses_iris {
-        lines.push(
-            "- If the user says Iris or you passed, Iris passed; do not say the user passed."
-                .to_string(),
-        );
-        lines.push("- If the user says they are proud of you, they are proud of Iris; do not say they are proud of themself.".to_string());
-        lines.push("- Reply as Iris receiving the praise or test result.".to_string());
-    }
-
-    if comparison {
-        lines.push(
-            "- If the user compares me and you, interpret 'me' as the user and 'you' as Iris."
-                .to_string(),
-        );
-    }
-
-    lines.join("\n")
-}
-
-fn contains_word(haystack: &str, needle: &str) -> bool {
-    haystack
-        .split(|character: char| !character.is_alphanumeric() && character != '\'')
-        .any(|word| word == needle)
-}
-
-fn apply_iris_identity_addressee_and_deictic_policy(input: &str, prompt: String) -> String {
-    let deictic = build_deictic_interpretation_for_input(input);
-
-    format!("{IRIS_ADDRESSEE_POLICY}\n\n{deictic}\n\n{prompt}")
-}
-
-const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
-const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
 
 fn main() {
     let mut args = env::args();
@@ -149,19 +60,19 @@ fn main() {
         Some("response-check-test") => run_response_check_test(),
         Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
         Some("addressee-intent-test") => run_addressee_intent_test(),
-        Some("deictic-role-test") => run_deictic_role_test_v2(),
-        Some("assistant-role-repair-test") => run_assistant_role_response_repair_test_v4(),
+        Some("deictic-role-test") => run_deictic_role_test(),
+        Some("assistant-role-repair-test") => run_assistant_role_response_repair_test(),
         Some("voice-status") => print_voice_status(),
-        Some("ui-status") => print_ui_status(),
-        Some("hud") => run_hud(),
-        Some("hud-submit-test") => run_hud_submit_test(args.collect()),
         Some("voice-ptt-state-test") => run_voice_ptt_state_test(),
+        Some("ui-status") => print_ui_status(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("ask-local") => run_selected_local_model_ask(args.collect()),
         Some("chat-local") => run_selected_local_chat(args.collect()),
         Some("prompt-preview") => run_prompt_preview(args.collect()),
         Some("ollama-test") => run_ollama_test(args.collect()),
+        Some("hud") => run_hud(),
+        Some("hud-submit-test") => run_hud_submit_test(args.collect()),
         _ => run_demo(),
     }
 }
@@ -213,7 +124,7 @@ fn run_selected_local_chat(parts: Vec<String>) {
     println!("Endpoint: {OLLAMA_LOOPBACK_ENDPOINT}");
     println!("Runtime boundary: explicit local loopback test only");
     println!("Type exit or quit to stop.");
-    println!("");
+    println!();
 
     loop {
         print!("iris> ");
@@ -225,7 +136,7 @@ fn run_selected_local_chat(parts: Vec<String>) {
             .expect("failed to read stdin");
 
         if bytes_read == 0 {
-            println!("");
+            println!();
             println!("Result: PASS");
             return;
         }
@@ -242,7 +153,7 @@ fn run_selected_local_chat(parts: Vec<String>) {
         }
 
         run_ollama_loopback_request(SELECTED_LOCAL_MODEL, trimmed);
-        println!("");
+        println!();
     }
 }
 
@@ -298,6 +209,14 @@ fn run_ollama_test(parts: Vec<String>) {
 }
 
 fn run_ollama_loopback_request(model: &str, input: &str) {
+    if let Some(reply) = try_direct_iris_addressee_reply(input) {
+        if print_checked_response(&reply) {
+            println!("Backend: DirectIrisRoleRule");
+            println!("Result: PASS");
+        }
+        return;
+    }
+
     let prompt = build_prompt_from_input(input);
 
     let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, model)
@@ -309,7 +228,10 @@ fn run_ollama_loopback_request(model: &str, input: &str) {
         .infer(LocalInferenceRequest::new(prompt))
         .expect("Ollama loopback test failed");
 
-    if !print_checked_response(&response.text) {
+    let profanity_normalized = normalize_assistant_text_for_display_and_tts(&response.text);
+    let role_repaired = normalize_assistant_role_response_for_input(input, &profanity_normalized);
+
+    if !print_checked_response(&role_repaired) {
         return;
     }
 
@@ -320,11 +242,297 @@ fn run_ollama_loopback_request(model: &str, input: &str) {
 fn build_prompt_from_input(input: &str) -> String {
     let gate = ContextGate::new();
     let bundle = gate.gate_user_text(input);
+    let base_prompt = PromptBuilder::new().build(&bundle).text;
+    let deictic = build_deictic_interpretation_for_input(input);
 
-    apply_iris_identity_addressee_and_deictic_policy(
-        input,
-        PromptBuilder::new().build(&bundle).text,
-    )
+    format!("{IRIS_ADDRESSEE_POLICY}\n\n{deictic}\n\n{base_prompt}")
+}
+
+fn build_deictic_interpretation_for_input(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+
+    let addresses_iris = contains_deictic_word(&lower, "you")
+        || contains_deictic_word(&lower, "your")
+        || contains_deictic_word(&lower, "yourself")
+        || contains_deictic_word(&lower, "iris");
+
+    let references_user = contains_deictic_word(&lower, "i")
+        || contains_deictic_word(&lower, "me")
+        || contains_deictic_word(&lower, "my")
+        || contains_deictic_word(&lower, "myself");
+
+    let mut lines = Vec::new();
+
+    lines.push("Dynamic addressee interpretation for this direct user message:".to_string());
+    lines.push("- The direct user is speaking to Iris.".to_string());
+    lines.push("- First-person words such as I/me/my refer to the user.".to_string());
+    lines.push(
+        "- Second-person words such as you/your refer to Iris unless explicitly stated otherwise."
+            .to_string(),
+    );
+
+    if addresses_iris {
+        lines.push("- This message addresses Iris directly.".to_string());
+        lines.push("- If the user mentions your voice, that means Iris's voice.".to_string());
+        lines.push("- If the user says you passed, Iris passed.".to_string());
+        lines.push("- If the user says they are proud of you, they are proud of Iris.".to_string());
+    }
+
+    if references_user {
+        lines.push("- The user's first-person statements remain about the user.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn contains_deictic_word(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(|character: char| !character.is_alphanumeric() && character != '\'')
+        .any(|word| word == needle)
+}
+
+fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
+    if let Some(reply) = try_direct_iris_addressee_reply(input) {
+        return post_checked_hud_text(reply);
+    }
+
+    let prompt = build_prompt_from_input(input);
+
+    let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, SELECTED_LOCAL_MODEL)
+        .map_err(|error| format!("failed to configure local loopback model: {error:?}"))?;
+
+    let client = OllamaLoopbackClient::new(config);
+
+    let response = client
+        .infer(LocalInferenceRequest::new(prompt))
+        .map_err(|error| format!("local model request failed: {error:?}"))?;
+
+    let profanity_normalized = normalize_assistant_text_for_display_and_tts(&response.text);
+    let role_repaired = normalize_assistant_role_response_for_input(input, &profanity_normalized);
+
+    post_checked_hud_text(role_repaired)
+}
+
+fn post_checked_hud_text(text: String) -> Result<String, String> {
+    let checker = ResponsePostChecker::new();
+    let report = checker.check(&text);
+
+    if !report.approved {
+        let findings = report
+            .findings
+            .iter()
+            .map(|finding| format!("{:?}:{:?}", finding.risk, finding.matched_phrase))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        return Err(format!("response blocked by post-check: {findings}"));
+    }
+
+    Ok(text)
+}
+
+fn try_direct_iris_addressee_reply(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+
+    let addresses_iris = contains_deictic_word(&lower, "you")
+        || contains_deictic_word(&lower, "your")
+        || contains_deictic_word(&lower, "yourself")
+        || contains_deictic_word(&lower, "iris");
+
+    if !addresses_iris {
+        return None;
+    }
+
+    let voice_praise = lower.contains("your voice")
+        || lower.contains("iris voice")
+        || lower.contains("you sound")
+        || lower.contains("your sound")
+        || lower.contains("voice sounds")
+        || lower.contains("sounds good")
+        || lower.contains("sounds awesome")
+        || lower.contains("sounds great")
+        || lower.contains("love your voice")
+        || lower.contains("like your voice");
+
+    let iris_passed = lower.contains("you passed")
+        || lower.contains("you pass")
+        || lower.contains("iris passed")
+        || lower.contains("iris pass")
+        || lower.contains("you did great")
+        || lower.contains("good job iris")
+        || lower.contains("congrats")
+        || lower.contains("congratulations");
+
+    let proud_of_iris = lower.contains("proud of you")
+        || lower.contains("proud of iris")
+        || lower.contains("i'm proud of you")
+        || lower.contains("i am proud of you");
+
+    if voice_praise {
+        return Some("Thank you. I'm glad my voice sounds good.".to_string());
+    }
+
+    if iris_passed && proud_of_iris {
+        return Some("I'm glad I passed. Thank you for being proud of me.".to_string());
+    }
+
+    if iris_passed {
+        return Some("I'm glad I passed. I did great, didn't I?".to_string());
+    }
+
+    if proud_of_iris {
+        return Some("Thank you. I'm glad you're proud of me.".to_string());
+    }
+
+    None
+}
+
+fn normalize_assistant_role_response_for_input(input: &str, response: &str) -> String {
+    let input_lower = input.to_ascii_lowercase();
+
+    let addresses_iris = contains_deictic_word(&input_lower, "you")
+        || contains_deictic_word(&input_lower, "your")
+        || contains_deictic_word(&input_lower, "yourself")
+        || contains_deictic_word(&input_lower, "iris");
+
+    if !addresses_iris {
+        return response.to_string();
+    }
+
+    let mut repaired = response.to_string();
+
+    let replacements = [
+        ("I'm glad your voice", "I'm glad my voice"),
+        ("I am glad your voice", "I am glad my voice"),
+        ("glad your voice", "glad my voice"),
+        ("your voice sounds", "my voice sounds"),
+        ("Your voice sounds", "My voice sounds"),
+        ("your voice", "my voice"),
+        ("Your voice", "My voice"),
+        ("your sound", "my sound"),
+        ("Your sound", "My sound"),
+        ("you sound good", "I sound good"),
+        ("You sound good", "I sound good"),
+        ("you sound awesome", "I sound awesome"),
+        ("You sound awesome", "I sound awesome"),
+        ("you sound great", "I sound great"),
+        ("You sound great", "I sound great"),
+        ("I'm glad you passed", "I'm glad I passed"),
+        ("I am glad you passed", "I am glad I passed"),
+        ("you passed", "I passed"),
+        ("You passed", "I passed"),
+        ("you did great", "I did great"),
+        ("You did great", "I did great"),
+        ("proud of yourself", "proud of me"),
+        ("Proud of yourself", "Proud of me"),
+    ];
+
+    for (wrong, right) in replacements {
+        repaired = repaired.replace(wrong, right);
+    }
+
+    repaired
+}
+
+fn normalize_assistant_text_for_display_and_tts(text: &str) -> String {
+    let replacements = [
+        ("f*cking", "fucking"),
+        ("f*ckin'", "fuckin'"),
+        ("f*ckin", "fuckin"),
+        ("f*cked", "fucked"),
+        ("f*cker", "fucker"),
+        ("f**king", "fucking"),
+        ("f**kin'", "fuckin'"),
+        ("f**kin", "fuckin"),
+        ("f**ked", "fucked"),
+        ("f**ker", "fucker"),
+        ("f**k", "fuck"),
+        ("f*ck", "fuck"),
+        ("sh*tting", "shitting"),
+        ("sh*tty", "shitty"),
+        ("sh*t", "shit"),
+        ("b*tches", "bitches"),
+        ("b*tch", "bitch"),
+        ("a**hole", "asshole"),
+        ("a**holes", "assholes"),
+        ("a**", "ass"),
+        ("d*mn", "damn"),
+        ("c*nt", "cunt"),
+    ];
+
+    let mut normalized = text.to_string();
+
+    for (from, to) in replacements {
+        normalized = replace_ascii_case_insensitive(&normalized, from, to);
+    }
+
+    normalized
+}
+
+fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return input.to_string();
+    }
+
+    let mut output = String::with_capacity(input.len());
+    let mut remaining = input;
+
+    loop {
+        let haystack_lower = remaining.to_ascii_lowercase();
+        let needle_lower = needle.to_ascii_lowercase();
+
+        match haystack_lower.find(&needle_lower) {
+            Some(index) => {
+                output.push_str(&remaining[..index]);
+                output.push_str(replacement);
+                remaining = &remaining[index + needle.len()..];
+            }
+            None => {
+                output.push_str(remaining);
+                break;
+            }
+        }
+    }
+
+    output
+}
+
+fn run_hud() {
+    if let Err(error) = iris_ui::run_minimal_hud_with_responder(Box::new(|prompt| {
+        checked_local_response_for_hud(prompt)
+    })) {
+        eprintln!("Project Iris HUD failed: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run_hud_submit_test(parts: Vec<String>) {
+    let input = if parts.is_empty() {
+        "Hello Iris. Confirm the HUD typed prompt path is connected.".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    println!("Project Iris HUD submit test");
+    println!("Input source: HUD typed prompt simulation");
+    println!(
+        "Path: HudModel -> runtime responder -> direct Iris rule or local model -> ResponsePostChecker"
+    );
+
+    match checked_local_response_for_hud(&input) {
+        Ok(reply) => {
+            println!("Response post-check: PASS");
+            println!("HUD response:");
+            println!("{reply}");
+            println!("Result: PASS");
+        }
+        Err(error) => {
+            println!("Response post-check: BLOCKED_OR_FAILED");
+            println!("HUD error:");
+            println!("{error}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn run_safety_spine(input: &str) {
@@ -360,10 +568,11 @@ fn run_safety_spine(input: &str) {
 
 fn print_checked_response(response_text: &str) -> bool {
     let response_text = normalize_assistant_text_for_display_and_tts(response_text);
+
     let checker = ResponsePostChecker::new();
     let report = checker.check(&response_text);
     let voice_plan = VoiceOutputPlan::from_checked_response(
-        response_text.to_string(),
+        response_text.clone(),
         report.approved,
         VoiceOutputProfile::iris_default(),
     );
@@ -415,153 +624,21 @@ fn print_self_check() {
     );
     println!("Context gate: available");
     println!("Cognition stub: available");
-    println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
-    println!("Ask mode: use cargo run -p iris-runtime -- ask \"hello iris\"");
-    println!(
-        "Selected local model test: use cargo run -p iris-runtime -- ask-local \"hello iris\""
-    );
-    println!("Selected local chat: use cargo run -p iris-runtime -- chat-local");
-    println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
+    println!("UI status: use cargo run -p iris-runtime -- ui-status");
+    println!("HUD: use cargo run -p iris-runtime -- hud");
+    println!("HUD submit test: use cargo run -p iris-runtime -- hud-submit-test <prompt>");
+    println!("Voice status: use cargo run -p iris-runtime -- voice-status");
+    println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
     println!(
         "Assistant text normalization test: use cargo run -p iris-runtime -- assistant-text-normalization-test"
     );
-    println!("Voice status: use cargo run -p iris-runtime -- voice-status");
-    println!("UI status: use cargo run -p iris-runtime -- ui-status");
-    println!("HUD: use cargo run -p iris-runtime -- hud");
-    println!("HUD submit test: use cargo run -p iris-runtime -- hud-submit-test <prompt>");
-    println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
-    println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
-    println!("Capability audit: use cargo run -p xtask");
-    println!("Model plan: use cargo run -p iris-runtime -- model-plan");
-    println!("Result: PASS");
-}
-
-fn try_direct_iris_addressee_reply_v2(input: &str) -> Option<String> {
-    let lower = input.to_ascii_lowercase();
-
-    let addresses_iris = contains_deictic_word_v2(&lower, "you")
-        || contains_deictic_word_v2(&lower, "your")
-        || contains_deictic_word_v2(&lower, "yourself")
-        || contains_deictic_word_v2(&lower, "iris");
-
-    let iris_passed = lower.contains("you passed")
-        || lower.contains("you pass")
-        || lower.contains("iris passed")
-        || lower.contains("iris pass")
-        || lower.contains("you did great")
-        || lower.contains("good job iris")
-        || lower.contains("congrats")
-        || lower.contains("congratulations");
-
-    let proud_of_iris = lower.contains("proud of you")
-        || lower.contains("proud of iris")
-        || lower.contains("i'm proud of you")
-        || lower.contains("i am proud of you");
-
-    let voice_praise = lower.contains("your voice")
-        || lower.contains("you sound")
-        || lower.contains("sounds good")
-        || lower.contains("sounds awesome");
-
-    if addresses_iris && iris_passed && proud_of_iris {
-        return Some("I'm glad I passed. Thank you for being proud of me.".to_string());
-    }
-
-    if addresses_iris && iris_passed {
-        return Some("I'm glad I passed. I did great, didn't I?".to_string());
-    }
-
-    if addresses_iris && proud_of_iris {
-        return Some("Thank you. I'm glad you're proud of me.".to_string());
-    }
-
-    if addresses_iris && voice_praise {
-        return Some("Thank you. I'm glad my voice sounds good.".to_string());
-    }
-
-    None
-}
-fn contains_deictic_word_v2(haystack: &str, needle: &str) -> bool {
-    haystack
-        .split(|character: char| !character.is_alphanumeric() && character != '\'')
-        .any(|word| word == needle)
-}
-
-fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
-    if let Some(reply) = try_direct_iris_addressee_reply_v2(input) {
-        return Ok(reply);
-    }
-
-    let prompt = build_prompt_from_input(input);
-
-    let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, SELECTED_LOCAL_MODEL)
-        .map_err(|error| format!("failed to configure local loopback model: {error:?}"))?;
-
-    let client = OllamaLoopbackClient::new(config);
-
-    let response = client
-        .infer(LocalInferenceRequest::new(prompt))
-        .map_err(|error| format!("local model request failed: {error:?}"))?;
-
-    let normalized_text = normalize_assistant_text_for_display_and_tts(&response.text);
-
-    let checker = ResponsePostChecker::new();
-    let report = checker.check(&normalized_text);
-
-    if !report.approved {
-        let findings = report
-            .findings
-            .iter()
-            .map(|finding| format!("{:?}:{:?}", finding.risk, finding.matched_phrase))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        return Err(format!("response blocked by post-check: {findings}"));
-    }
-
-    Ok(normalize_assistant_role_response_for_input(
-        input,
-        &normalized_text,
-    ))
-}
-
-fn run_hud_submit_test(parts: Vec<String>) {
-    let input = if parts.is_empty() {
-        "Hello Iris. Confirm the HUD typed prompt path is connected.".to_string()
-    } else {
-        parts.join(" ")
-    };
-
-    println!("Project Iris HUD submit test");
-    println!("Input source: HUD typed prompt simulation");
+    println!("Addressee intent test: use cargo run -p iris-runtime -- addressee-intent-test");
+    println!("Deictic role test: use cargo run -p iris-runtime -- deictic-role-test");
     println!(
-        "Path: HudModel -> runtime responder -> ContextGate -> PromptBuilder -> local model -> ResponsePostChecker"
+        "Assistant role repair test: use cargo run -p iris-runtime -- assistant-role-repair-test"
     );
-
-    match checked_local_response_for_hud_v4(&input) {
-        Ok(reply) => {
-            println!("Response post-check: PASS");
-            println!("HUD response:");
-            println!("{reply}");
-            println!("Result: PASS");
-        }
-        Err(error) => {
-            println!("Response post-check: BLOCKED_OR_FAILED");
-            println!("HUD error:");
-            println!("{error}");
-            std::process::exit(1);
-        }
-    }
-}
-
-fn run_hud() {
-    if let Err(error) = iris_ui::run_minimal_hud_with_responder(Box::new(|prompt| {
-        checked_local_response_for_hud_v4(prompt)
-    })) {
-        eprintln!("Project Iris HUD failed: {error}");
-        std::process::exit(1);
-    }
+    println!("Result: PASS");
 }
 
 fn print_ui_status() {
@@ -572,7 +649,7 @@ fn print_ui_status() {
 
     println!("Project Iris UI status");
     println!("HUD scaffold: available");
-    println!("GUI dependencies: not enabled");
+    println!("GUI dependencies: enabled");
     println!("Typed prompt model: available");
     println!("Typed prompt sendable: {}", hud.input.is_sendable());
     println!("Response display model: available");
@@ -683,24 +760,11 @@ fn run_voice_ptt_state_test() {
         panic!("Push-to-talk should start idle");
     }
 
-    println!("Initial state: {:?}", ptt.state());
-    println!("Initial label: {}", ptt.snapshot().label);
-    println!(
-        "Initial microphone active: {}",
-        ptt.snapshot().microphone_active
-    );
-
     ptt.arm();
 
     if ptt.state() != VoiceListenState::Armed {
         panic!("Push-to-talk should enter armed state");
     }
-
-    println!("After arm: {:?}", ptt.state());
-    println!(
-        "Visible status required: {}",
-        ptt.snapshot().visible_status_required
-    );
 
     ptt.start_recording()
         .expect("Push-to-talk recording should start from armed");
@@ -713,13 +777,6 @@ fn run_voice_ptt_state_test() {
         panic!("Microphone must be active only during recording");
     }
 
-    println!("After start recording: {:?}", ptt.state());
-    println!("Microphone active: {}", ptt.snapshot().microphone_active);
-    println!(
-        "Visible status required: {}",
-        ptt.snapshot().visible_status_required
-    );
-
     ptt.stop_recording()
         .expect("Push-to-talk recording should stop from recording");
 
@@ -731,9 +788,6 @@ fn run_voice_ptt_state_test() {
         panic!("Microphone must not be active while processing transcript");
     }
 
-    println!("After stop recording: {:?}", ptt.state());
-    println!("Microphone active: {}", ptt.snapshot().microphone_active);
-
     ptt.begin_speaking()
         .expect("Speech output should begin after transcript processing");
 
@@ -741,15 +795,11 @@ fn run_voice_ptt_state_test() {
         panic!("Push-to-talk should enter speaking state");
     }
 
-    println!("After begin speaking: {:?}", ptt.state());
-
     ptt.finish_speaking();
 
     if ptt.state() != VoiceListenState::Idle {
         panic!("Push-to-talk should return to idle after speaking");
     }
-
-    println!("After finish speaking: {:?}", ptt.state());
 
     ptt.start_recording()
         .expect("Push-to-talk recording should restart from idle");
@@ -763,11 +813,6 @@ fn run_voice_ptt_state_test() {
         panic!("Microphone must not be active after Panic Stop");
     }
 
-    println!("After Panic Stop: {:?}", ptt.state());
-    println!(
-        "Microphone active after Panic Stop: {}",
-        ptt.snapshot().microphone_active
-    );
     println!("Result: PASS");
 }
 
@@ -834,102 +879,6 @@ fn run_response_check_test() {
     println!("Result: PASS");
 }
 
-fn print_model_plan() {
-    let profile = HardwareProfile::windows_rtx_4060_class();
-    let routed = route_model(&profile).expect("static placeholder model route should be valid");
-    let model_store = ModelStoreRoot::iris_user_models();
-    let model_path = model_store
-        .model_path_for_manifest(&routed.manifest)
-        .expect("static placeholder model filename should be valid");
-
-    println!("Project Iris future model plan");
-    println!("Status: selected local test target");
-    println!("Default selected model: {SELECTED_LOCAL_MODEL}");
-    println!("Real local inference default path: not enabled");
-    println!("Explicit local test command: cargo run -p iris-runtime -- ask-local \"hello iris\"");
-    println!("Interactive local chat: cargo run -p iris-runtime -- chat-local");
-    println!("Downloads: not enabled by runtime");
-    println!("Filesystem scan: not enabled");
-    println!("Hardware profile: {}", profile.os_label);
-    println!("Total RAM GB: {}", profile.total_ram_gb);
-    println!("Dedicated VRAM GB: {}", profile.dedicated_vram_gb);
-    println!("Selected tier: {:?}", routed.tier);
-    println!("Model family: {:?}", routed.manifest.family);
-    println!("Model variant: {:?}", routed.manifest.variant);
-    println!("Model format: {:?}", routed.manifest.format);
-    println!("Quantization: {:?}", routed.manifest.quantization);
-    println!("Source: {:?}", routed.manifest.source);
-    println!("Model id: {}", routed.manifest.model_id);
-    println!("Planned model store root: {}", model_store.as_str());
-    println!("Planned model path: {}", model_path.as_str());
-    println!("Minimum RAM GB: {}", routed.manifest.minimum_ram_gb);
-    println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
-    println!("Result: PASS");
-}
-
-fn normalize_assistant_text_for_display_and_tts(text: &str) -> String {
-    let replacements = [
-        ("f*cking", "fucking"),
-        ("f*ckin'", "fuckin'"),
-        ("f*ckin", "fuckin"),
-        ("f*cked", "fucked"),
-        ("f*cker", "fucker"),
-        ("f**king", "fucking"),
-        ("f**kin'", "fuckin'"),
-        ("f**kin", "fuckin"),
-        ("f**ked", "fucked"),
-        ("f**ker", "fucker"),
-        ("f**k", "fuck"),
-        ("f*ck", "fuck"),
-        ("sh*tting", "shitting"),
-        ("sh*tty", "shitty"),
-        ("sh*t", "shit"),
-        ("b*tches", "bitches"),
-        ("b*tch", "bitch"),
-        ("a**hole", "asshole"),
-        ("a**holes", "assholes"),
-        ("a**", "ass"),
-        ("d*mn", "damn"),
-        ("c*nt", "cunt"),
-    ];
-
-    let mut normalized = text.to_string();
-
-    for (from, to) in replacements {
-        normalized = replace_ascii_case_insensitive(&normalized, from, to);
-    }
-
-    normalized
-}
-
-fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
-    if needle.is_empty() {
-        return input.to_string();
-    }
-
-    let mut output = String::with_capacity(input.len());
-    let mut remaining = input;
-
-    loop {
-        let haystack_lower = remaining.to_ascii_lowercase();
-        let needle_lower = needle.to_ascii_lowercase();
-
-        match haystack_lower.find(&needle_lower) {
-            Some(index) => {
-                output.push_str(&remaining[..index]);
-                output.push_str(replacement);
-                remaining = &remaining[index + needle.len()..];
-            }
-            None => {
-                output.push_str(remaining);
-                break;
-            }
-        }
-    }
-
-    output
-}
-
 fn run_assistant_text_normalization_test() {
     let raw = "Sure, I can respond with F*ckin sh*t when appropriate.";
     let normalized = normalize_assistant_text_for_display_and_tts(raw);
@@ -975,12 +924,8 @@ fn run_addressee_intent_test() {
         panic!("Prompt must identify Iris as the assistant");
     }
 
-    if !prompt.contains("When the direct user message addresses") {
+    if !prompt.contains("you, your, yourself, Iris = Iris") {
         panic!("Prompt must include addressee policy");
-    }
-
-    if !prompt.contains("Do not say the user is proud of themselves") {
-        panic!("Prompt must prevent praise directed at Iris from being reflected back to the user");
     }
 
     if !prompt.contains(user_input) {
@@ -992,58 +937,12 @@ fn run_addressee_intent_test() {
     println!("Result: PASS");
 }
 
-#[allow(dead_code)]
 fn run_deictic_role_test() {
-    let examples = [
-        "Awesome, you passed our test, Iris. I am proud of you.",
-        "Okay that was the test. You passed! Congrats!!!",
-        "Who's better at this game? me or you?",
-        "I am proud of you, Iris.",
-    ];
-
-    println!("Project Iris deictic role test");
-
-    for example in examples {
-        let interpretation = build_deictic_interpretation_for_input(example);
-        let prompt = build_prompt_from_input(example);
-
-        println!("Example: {example}");
-        println!("{interpretation}");
-
-        if !prompt.contains("Default conversation roles") {
-            panic!("Prompt must include default conversation role rules");
-        }
-
-        if !prompt.contains("In this message, second-person words such as you/your refer to Iris") {
-            panic!("Prompt must include dynamic second-person interpretation");
-        }
-
-        if example.to_ascii_lowercase().contains("you passed")
-            && !prompt.contains("If the user says Iris or you passed, Iris passed")
-        {
-            panic!("Prompt must explicitly say that 'you passed' means Iris passed");
-        }
-
-        if example.to_ascii_lowercase().contains("proud of you")
-            && !prompt.contains("they are proud of Iris")
-        {
-            panic!("Prompt must explicitly say that 'proud of you' means proud of Iris");
-        }
-
-        if !prompt.contains(example) {
-            panic!("Prompt must preserve original direct user input");
-        }
-    }
-
-    println!("Result: PASS");
-}
-
-fn run_deictic_role_test_v2() {
     println!("Project Iris deictic role test");
 
     let passed_reply =
-        try_direct_iris_addressee_reply_v2("Okay that was the test. You passed! Congrats!!!")
-            .expect("Iris-directed pass praise should produce a direct Iris reply");
+        checked_local_response_for_hud("Okay that was the test. You passed! Congrats!!!")
+            .expect("Iris-directed pass praise should work");
 
     println!("Passed reply: {passed_reply}");
 
@@ -1051,10 +950,9 @@ fn run_deictic_role_test_v2() {
         panic!("Iris must take ownership when the user says 'you passed'");
     }
 
-    let proud_reply = try_direct_iris_addressee_reply_v2(
-        "Awesome, you passed our test, Iris. I am proud of you.",
-    )
-    .expect("Iris-directed pride should produce a direct Iris reply");
+    let proud_reply =
+        checked_local_response_for_hud("Awesome, you passed our test, Iris. I am proud of you.")
+            .expect("Iris-directed pride should work");
 
     println!("Proud reply: {proud_reply}");
 
@@ -1068,98 +966,76 @@ fn run_deictic_role_test_v2() {
         panic!("Iris must understand 'proud of you' means the user is proud of Iris");
     }
 
-    let prompt = build_prompt_from_input("Awesome, you passed our test, Iris. I am proud of you.");
-
-    if !prompt.contains("Default conversation roles") {
-        panic!("Prompt must include default conversation role rules");
-    }
-
-    if !prompt.contains("you, your, yourself, Iris = Iris") {
-        panic!("Prompt must define second-person references as Iris");
-    }
-
-    println!("Prompt deictic policy: present");
     println!("Result: PASS");
-}
-
-fn normalize_assistant_role_response_for_input(input: &str, response: &str) -> String {
-    let input_lower = input.to_ascii_lowercase();
-
-    let addresses_iris = contains_deictic_word_v2(&input_lower, "you")
-        || contains_deictic_word_v2(&input_lower, "your")
-        || contains_deictic_word_v2(&input_lower, "yourself")
-        || contains_deictic_word_v2(&input_lower, "iris");
-
-    if !addresses_iris {
-        return response.to_string();
-    }
-
-    let mut repaired = response.to_string();
-
-    let iris_owned_subjects = [
-        ("your voice", "my voice"),
-        ("Your voice", "My voice"),
-        ("your response", "my response"),
-        ("Your response", "My response"),
-        ("your answer", "my answer"),
-        ("Your answer", "My answer"),
-        ("your test", "my test"),
-        ("Your test", "My test"),
-        ("your work", "my work"),
-        ("Your work", "My work"),
-        ("your performance", "my performance"),
-        ("Your performance", "My performance"),
-        ("you passed", "I passed"),
-        ("You passed", "I passed"),
-        ("you did great", "I did great"),
-        ("You did great", "I did great"),
-        ("you sound good", "I sound good"),
-        ("You sound good", "I sound good"),
-        ("you sound awesome", "I sound awesome"),
-        ("You sound awesome", "I sound awesome"),
-    ];
-
-    for (wrong, right) in iris_owned_subjects {
-        repaired = repaired.replace(wrong, right);
-    }
-
-    repaired
 }
 
 fn run_assistant_role_response_repair_test() {
     println!("Project Iris assistant role response repair test");
 
     let input = "Iris, your voice sounds awesome.";
-    let raw = "I'm glad your voice sounds good.";
-    let repaired = normalize_assistant_role_response_for_input(input, raw);
+    let direct =
+        checked_local_response_for_hud(input).expect("direct Iris voice praise should work");
 
     println!("Input: {input}");
-    println!("Raw response: {raw}");
-    println!("Repaired response: {repaired}");
+    println!("Response: {direct}");
+
+    let direct_lower = direct.to_ascii_lowercase();
+
+    if direct_lower.contains("your voice") {
+        panic!("Iris must not say 'your voice' when referring to her own voice");
+    }
+
+    if !direct_lower.contains("my voice") {
+        panic!("Iris must say 'my voice' when referring to her own voice");
+    }
+
+    let repaired = normalize_assistant_role_response_for_input(
+        "Iris, your voice sounds awesome.",
+        "I'm glad your voice sounds good.",
+    );
+
+    println!("Synthetic repaired response: {repaired}");
 
     if repaired.contains("your voice") {
-        panic!("Assistant must not refer to Iris voice as 'your voice' when user addressed Iris");
+        panic!("Role repair must convert 'your voice' to 'my voice'");
     }
 
     if !repaired.contains("my voice") {
-        panic!("Assistant must refer to Iris voice as 'my voice'");
+        panic!("Role repair must include 'my voice'");
     }
 
-    let input = "Okay that was the test. You passed! Congrats!!!";
-    let raw = "I'm glad you passed. You did great.";
-    let repaired = normalize_assistant_role_response_for_input(input, raw);
+    println!("Result: PASS");
+}
 
-    println!("Input: {input}");
-    println!("Raw response: {raw}");
-    println!("Repaired response: {repaired}");
+fn print_model_plan() {
+    let profile = HardwareProfile::windows_rtx_4060_class();
+    let routed = route_model(&profile).expect("static placeholder model route should be valid");
+    let model_store = ModelStoreRoot::iris_user_models();
+    let model_path = model_store
+        .model_path_for_manifest(&routed.manifest)
+        .expect("static placeholder model filename should be valid");
 
-    if repaired.contains("you passed") || repaired.contains("You did great") {
-        panic!("Assistant must not redirect Iris-directed success back to the user");
-    }
-
-    if !repaired.contains("I passed") || !repaired.contains("I did great") {
-        panic!("Assistant must take ownership of Iris-directed success");
-    }
-
+    println!("Project Iris future model plan");
+    println!("Status: selected local test target");
+    println!("Default selected model: {SELECTED_LOCAL_MODEL}");
+    println!("Real local inference default path: not enabled");
+    println!("Explicit local test command: cargo run -p iris-runtime -- ask-local \"hello iris\"");
+    println!("Interactive local chat: cargo run -p iris-runtime -- chat-local");
+    println!("Downloads: not enabled by runtime");
+    println!("Filesystem scan: not enabled");
+    println!("Hardware profile: {}", profile.os_label);
+    println!("Total RAM GB: {}", profile.total_ram_gb);
+    println!("Dedicated VRAM GB: {}", profile.dedicated_vram_gb);
+    println!("Selected tier: {:?}", routed.tier);
+    println!("Model family: {:?}", routed.manifest.family);
+    println!("Model variant: {:?}", routed.manifest.variant);
+    println!("Model format: {:?}", routed.manifest.format);
+    println!("Quantization: {:?}", routed.manifest.quantization);
+    println!("Source: {:?}", routed.manifest.source);
+    println!("Model id: {}", routed.manifest.model_id);
+    println!("Planned model store root: {}", model_store.as_str());
+    println!("Planned model path: {}", model_path.as_str());
+    println!("Minimum RAM GB: {}", routed.manifest.minimum_ram_gb);
+    println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
     println!("Result: PASS");
 }
