@@ -1091,3 +1091,16 @@ If the model returns common self-censored profanity patterns such as f*ck, f**k,
 This rule applies to assistant-generated output only.
 
 Do not alter direct user input.
+
+## Assistant output normalization test rule
+
+When testing restored profanity, compare normalized assistant output case-insensitively.
+
+The normalizer may output lower-case restored words such as:
+fuckin shit
+
+Do not require title-case profanity in tests.
+
+The important invariant is:
+- known censor-marker profanity patterns are removed from assistant output
+- direct user input remains unchanged

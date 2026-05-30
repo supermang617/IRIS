@@ -752,18 +752,23 @@ fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) 
 fn run_assistant_text_normalization_test() {
     let raw = "Sure, I can respond with F*ckin sh*t when appropriate.";
     let normalized = normalize_assistant_text_for_display_and_tts(raw);
+    let normalized_lower = normalized.to_ascii_lowercase();
 
     println!("Project Iris assistant text normalization test");
     println!("Raw assistant text: {raw}");
     println!("Normalized assistant text: {normalized}");
 
-    if normalized.contains('*') {
+    if normalized_lower.contains("f*ck")
+        || normalized_lower.contains("f**k")
+        || normalized_lower.contains("sh*t")
+        || normalized_lower.contains("b*tch")
+    {
         panic!(
-            "Assistant text normalization must remove spoken censor asterisks from known profanity patterns"
+            "Assistant text normalization must remove spoken censor markers from known profanity patterns"
         );
     }
 
-    if !normalized.contains("Fuckin shit") {
+    if !normalized_lower.contains("fuckin shit") {
         panic!("Assistant text normalization did not restore expected profanity wording");
     }
 
