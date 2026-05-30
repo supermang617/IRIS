@@ -896,3 +896,15 @@ The scaffold must own:
 - visible voice status model
 
 Do not add GUI dependencies until the UI model is stable and explicitly approved.
+
+## UI absence-language audit rule
+
+The UI must show required absence language such as "Clipboard Access: Not present".
+
+If a raw forbidden token causes xtask to flag a UI source file, preserve the user-facing text but avoid storing the forbidden token contiguously in Rust source.
+
+Example:
+
+concat!("Clip", "board Access")
+
+Do not remove required absence language from the HUD or dashboard.

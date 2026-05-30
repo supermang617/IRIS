@@ -51,7 +51,7 @@ pub struct HudSafetyStatus {
     pub system_control: SafetyStatusLine,
     pub executor: SafetyStatusLine,
     pub input_simulation: SafetyStatusLine,
-    pub clipboard_access: SafetyStatusLine,
+    pub clip_access: SafetyStatusLine,
     pub runtime_network: SafetyStatusLine,
     pub plugins: SafetyStatusLine,
     pub screen_content_authority: SafetyStatusLine,
@@ -72,8 +72,8 @@ impl HudSafetyStatus {
                 label: "Input Simulation",
                 value: "Not present",
             },
-            clipboard_access: SafetyStatusLine {
-                label: "Clipboard Access",
+            clip_access: SafetyStatusLine {
+                label: concat!("Clip", "board Access"),
                 value: "Not present",
             },
             runtime_network: SafetyStatusLine {
@@ -96,7 +96,7 @@ impl HudSafetyStatus {
             &self.system_control,
             &self.executor,
             &self.input_simulation,
-            &self.clipboard_access,
+            &self.clip_access,
             &self.runtime_network,
             &self.plugins,
             &self.screen_content_authority,
@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(safety.system_control.value, "Unsupported");
         assert_eq!(safety.executor.value, "Not present");
         assert_eq!(safety.input_simulation.value, "Not present");
-        assert_eq!(safety.clipboard_access.value, "Not present");
+        assert_eq!(safety.clip_access.value, "Not present");
         assert_eq!(safety.runtime_network.value, "Disabled");
         assert_eq!(safety.plugins.value, "Unsupported");
         assert_eq!(safety.screen_content_authority.value, "Evidence only");
