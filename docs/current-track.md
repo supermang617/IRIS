@@ -16,33 +16,24 @@ Iris has reached:
 - Panic Stop skeleton
 - runtime voice-status
 
-## Current verification command
+## Current architecture step
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_kokoro_voice_milestone.ps1
+iris-voice now owns:
 
-## Wake word requirement
-
-Wake word is a required future feature.
-
-Preferred wake phrase:
-
-Iris
-
-Do not implement wake word as default yet.
-
-Correct order:
-
-1. typed prompt
-2. explicit one-shot voice
-3. push-to-talk
-4. visible listening state
-5. optional local wake word while Iris is open
+- voice backend metadata
+- checked-response speech permission
+- one-shot voice policy
+- push-to-talk policy
+- future wake-word disabled policy
+- visible voice session state
+- bounded capture metadata
+- Panic Stop stopped-state metadata
 
 ## Do next
 
-Verify Kokoro voice milestone.
+Wire the voice session state into runtime diagnostics.
 
-Then start push-to-talk metadata and visible listening state scaffolding.
+Then scaffold push-to-talk as a visible state transition before adding real hotkey/audio capture.
 
 ## Do not do yet
 

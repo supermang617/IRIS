@@ -793,3 +793,18 @@ This verifier checks:
 - typed prompt to checked Kokoro spoken response
 
 Manual microphone testing remains separate.
+
+## Voice state rule
+
+iris-voice owns visible voice session state.
+
+Required states:
+Idle, Armed, Listening, Transcribing, Thinking, Speaking, Stopped.
+
+Voice capture must be:
+- visible to the user
+- bounded
+- routed through ContextGate as transcript text
+- cancellable by Panic Stop
+
+Do not add real push-to-talk hotkeys, wake word runtime, or always-listening behavior until this state model is wired into runtime diagnostics.
