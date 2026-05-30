@@ -242,9 +242,10 @@ if ($paramNames -contains "NoPlay") {
     $voiceArgs += "-NoPlay"
 }
 
-if ($paramNames -contains "DryRun") {
-    $voiceArgs += @("-DryRun:`$false")
-}
+# Important:
+# Do not pass -DryRun:$false to child scripts.
+# DryRun is a switch parameter; omitting it means false.
+# Passing it incorrectly can break voice capture before STT starts.
 
 Write-Host ""
 Write-Host "Listening will start now."

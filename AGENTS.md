@@ -1413,3 +1413,17 @@ Rejected example:
 - Brewers
 
 Do not let a bad transcript proceed into the model or TTS path.
+
+## PowerShell switch parameter rule
+
+Do not pass false values to child script switch parameters as strings.
+
+Bad:
+-DryRun:$false
+-DryRun "`$false"
+
+Good:
+omit -DryRun when false
+include -DryRun only when true
+
+This prevents SwitchParameter conversion failures in voice scripts.
