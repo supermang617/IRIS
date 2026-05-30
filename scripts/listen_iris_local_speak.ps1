@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
-    [string[]] $AnchorWords = @("testing", "voice", "test"),
+    [string] $AnchorWordsCsv = "testing,voice,test",
     [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
     [switch] $NoResponse
@@ -22,6 +22,12 @@ $diagPath = Join-Path $diagDir ("voice-input-" + $timestamp + ".txt")
 
 Remove-Item -Force -ErrorAction SilentlyContinue $transcriptPath
 
+$anchorWords = @(
+    $AnchorWordsCsv -split "," |
+        ForEach-Object { $_.Trim().ToLowerInvariant() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
+
 function Add-Diag {
     param([string] $Text)
     $Text | Add-Content -Encoding UTF8 $diagPath
@@ -29,14 +35,14 @@ function Add-Diag {
 
 Write-Host "=== Project Iris one-shot voice input ==="
 Write-Host ("Expected phrase: " + $ExpectedPhrase)
-Write-Host ("Anchor words: " + ($AnchorWords -join ", "))
+Write-Host ("Anchor words: " + ($anchorWords -join ", "))
 Write-Host ("Timeout seconds: " + $TimeoutSeconds)
 Write-Host ("Max attempts: " + $MaxAttempts)
 Write-Host "Speak only after: Listening now..."
 
 Add-Diag "Project Iris voice input diagnostic"
 Add-Diag ("Expected phrase: " + $ExpectedPhrase)
-Add-Diag ("Anchor words: " + ($AnchorWords -join ", "))
+Add-Diag ("Anchor words: " + ($anchorWords -join ", "))
 
 try {
     Add-Type -AssemblyName System.Speech

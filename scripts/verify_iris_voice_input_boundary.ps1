@@ -19,24 +19,25 @@ if (-not (Test-Path $listener)) {
     throw "Missing listener: $listener"
 }
 
+$anchorWordsCsv = ($AnchorWords -join ",")
+
 Write-Host "=== Project Iris voice input boundary verification ==="
 Write-Host "When prompted, say clearly:"
 Write-Host $ExpectedPhrase
+Write-Host ("Required anchor words: " + ($AnchorWords -join ", "))
 
-$args = @(
+$powershellArgs = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", $listener,
     "-ExpectedPhrase", $ExpectedPhrase,
+    "-AnchorWordsCsv", $anchorWordsCsv,
     "-TimeoutSeconds", "$TimeoutSeconds",
-    "-MaxAttempts", "$MaxAttempts",
-    "-NoResponse",
-    "-AnchorWords"
+    "-MaxAttempts", "$MaxAttempts",`r`n    "-NoResponse"
 )
 
-$args += $AnchorWords
 
-powershell @args
+powershell @powershellArgs
 
 if ($LASTEXITCODE -ne 0) {
     throw "Voice input capture failed with exit code $LASTEXITCODE"
