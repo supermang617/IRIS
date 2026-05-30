@@ -16,17 +16,25 @@ Current default voice:
 
 af_heart
 
+Current default speed:
+
+0.95
+
 Current playback fix:
 
-Kokoro output includes lead-in silence before speech so the first words are not clipped by device wake-up latency.
+Kokoro output includes a short low-volume wake signal followed by lead-in silence before speech so the first words are not clipped by audio device wake-up latency.
+
+Default wake signal:
+
+900 ms
 
 Default lead-in silence:
 
-700 ms
+300 ms
 
 Default tail silence:
 
-250 ms
+300 ms
 
 ## Useful voice commands
 
@@ -34,9 +42,9 @@ Test Kokoro voice only:
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice."
 
-Test with longer lead-in if first words are still clipped:
+Test with longer wake-up if first words are still clipped:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice." -LeadSilenceMs 1000
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice." -WakeSignalMs 1300 -LeadSilenceMs 500
 
 Text prompt to Kokoro spoken response:
 
@@ -48,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice
 
 ## Do next
 
-Verify the Kokoro lead-in silence fix.
+Verify the Kokoro first-word clipping fix.
 
 Then run typed prompt -> Iris model -> response post-check -> Kokoro spoken output.
 

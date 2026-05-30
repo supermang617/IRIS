@@ -1,4 +1,5 @@
 import argparse
+import math
 from pathlib import Path
 
 import numpy as np
@@ -6,24 +7,71 @@ import soundfile as sf
 from kokoro_onnx import Kokoro
 
 
-def add_silence(samples: np.ndarray, sample_rate: int, lead_ms: int, tail_ms: int) -> np.ndarray:
-    if lead_ms <= 0 and tail_ms <= 0:
-        return samples
-
-    samples = np.asarray(samples)
-
-    lead_count = max(0, int(sample_rate * lead_ms / 1000))
-    tail_count = max(0, int(sample_rate * tail_ms / 1000))
+def make_silence(samples: np.ndarray, sample_rate: int, ms: int) -> np.ndarray:
+    count = max(0, int(sample_rate * ms / 1000))
 
     if samples.ndim == 1:
-        lead = np.zeros((lead_count,), dtype=samples.dtype)
-        tail = np.zeros((tail_count,), dtype=samples.dtype)
-    else:
-        channels = samples.shape[1]
-        lead = np.zeros((lead_count, channels), dtype=samples.dtype)
-        tail = np.zeros((tail_count, channels), dtype=samples.dtype)
+        return np.zeros((count,), dtype=samples.dtype)
 
-    return np.concatenate([lead, samples, tail], axis=0)
+    channels = samples.shape[1]
+    return np.zeros((count, channels), dtype=samples.dtype)
+
+
+def make_wake_signal(
+    samples: np.ndarray,
+    sample_rate: int,
+    ms: int,
+    amplitude: float,
+    frequency_hz: float,
+) -> np.ndarray:
+    count = max(0, int(sample_rate * ms / 1000))
+
+    if count == 0 or amplitude <= 0:
+        return make_silence(samples, sample_rate, 0)
+
+    t = np.arange(count, dtype=np.float32) / float(sample_rate)
+    tone = amplitude * np.sin(2.0 * math.pi * frequency_hz * t)
+
+    ramp_count = min(count // 2, max(1, int(sample_rate * 0.05)))
+
+    if ramp_count > 0:
+        ramp_in = np.linspace(0.0, 1.0, ramp_count, dtype=np.float32)
+        ramp_out = np.linspace(1.0, 0.0, ramp_count, dtype=np.float32)
+        tone[:ramp_count] *= ramp_in
+        tone[-ramp_count:] *= ramp_out
+
+    tone = tone.astype(samples.dtype, copy=False)
+
+    if samples.ndim == 1:
+        return tone
+
+    channels = samples.shape[1]
+    return np.repeat(tone[:, np.newaxis], channels, axis=1)
+
+
+def add_preroll_and_tail(
+    samples: np.ndarray,
+    sample_rate: int,
+    wake_signal_ms: int,
+    wake_signal_amplitude: float,
+    wake_signal_hz: float,
+    lead_silence_ms: int,
+    tail_silence_ms: int,
+) -> np.ndarray:
+    samples = np.asarray(samples)
+
+    wake_signal = make_wake_signal(
+        samples=samples,
+        sample_rate=sample_rate,
+        ms=wake_signal_ms,
+        amplitude=wake_signal_amplitude,
+        frequency_hz=wake_signal_hz,
+    )
+
+    lead_silence = make_silence(samples, sample_rate, lead_silence_ms)
+    tail_silence = make_silence(samples, sample_rate, tail_silence_ms)
+
+    return np.concatenate([wake_signal, lead_silence, samples, tail_silence], axis=0)
 
 
 def main() -> int:
@@ -33,10 +81,13 @@ def main() -> int:
     parser.add_argument("--voices", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--voice", default="af_heart")
-    parser.add_argument("--speed", type=float, default=1.0)
+    parser.add_argument("--speed", type=float, default=0.95)
     parser.add_argument("--lang", default="en-us")
-    parser.add_argument("--lead-silence-ms", type=int, default=700)
-    parser.add_argument("--tail-silence-ms", type=int, default=250)
+    parser.add_argument("--wake-signal-ms", type=int, default=900)
+    parser.add_argument("--wake-signal-amplitude", type=float, default=0.004)
+    parser.add_argument("--wake-signal-hz", type=float, default=220.0)
+    parser.add_argument("--lead-silence-ms", type=int, default=300)
+    parser.add_argument("--tail-silence-ms", type=int, default=300)
 
     args = parser.parse_args()
 
@@ -52,6 +103,12 @@ def main() -> int:
 
     if not args.text.strip():
         raise ValueError("Text must not be empty")
+
+    if args.wake_signal_ms < 0:
+        raise ValueError("wake-signal-ms must not be negative")
+
+    if args.wake_signal_amplitude < 0:
+        raise ValueError("wake-signal-amplitude must not be negative")
 
     if args.lead_silence_ms < 0:
         raise ValueError("lead-silence-ms must not be negative")
@@ -69,11 +126,14 @@ def main() -> int:
         lang=args.lang,
     )
 
-    samples = add_silence(
+    samples = add_preroll_and_tail(
         samples=np.asarray(samples),
         sample_rate=sample_rate,
-        lead_ms=args.lead_silence_ms,
-        tail_ms=args.tail_silence_ms,
+        wake_signal_ms=args.wake_signal_ms,
+        wake_signal_amplitude=args.wake_signal_amplitude,
+        wake_signal_hz=args.wake_signal_hz,
+        lead_silence_ms=args.lead_silence_ms,
+        tail_silence_ms=args.tail_silence_ms,
     )
 
     sf.write(str(output_path), samples, sample_rate)

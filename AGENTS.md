@@ -707,3 +707,16 @@ Do not fix this by adding complex playback architecture yet.
 
 Keep the fix small:
 generate WAV -> prepend silence -> play WAV.
+
+## Kokoro playback wake-up rule
+
+If the first words are clipped, use a short low-volume wake signal before the actual speech.
+
+Current defaults:
+KokoroSpeed = 0.95
+WakeSignalMs = 900
+WakeSignalAmplitude = 0.004
+LeadSilenceMs = 300
+TailSilenceMs = 300
+
+This is intentionally small and avoids adding complex playback architecture too early.

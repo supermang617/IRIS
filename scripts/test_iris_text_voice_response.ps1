@@ -4,9 +4,11 @@ param(
     [switch] $NoSpeak,
     [string] $TtsBackend = "Kokoro",
     [string] $KokoroVoice = "af_heart",
-    [double] $KokoroSpeed = 1.0,
-    [int] $KokoroLeadSilenceMs = 700,
-    [int] $KokoroTailSilenceMs = 250,
+    [double] $KokoroSpeed = 0.95,
+    [int] $KokoroWakeSignalMs = 900,
+    [double] $KokoroWakeSignalAmplitude = 0.004,
+    [int] $KokoroLeadSilenceMs = 300,
+    [int] $KokoroTailSilenceMs = 300,
     [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
@@ -35,6 +37,10 @@ if ($DryRun) {
     $scriptArgs += $KokoroVoice
     $scriptArgs += "-KokoroSpeed"
     $scriptArgs += "$KokoroSpeed"
+    $scriptArgs += "-KokoroWakeSignalMs"
+    $scriptArgs += "$KokoroWakeSignalMs"
+    $scriptArgs += "-KokoroWakeSignalAmplitude"
+    $scriptArgs += "$KokoroWakeSignalAmplitude"
     $scriptArgs += "-KokoroLeadSilenceMs"
     $scriptArgs += "$KokoroLeadSilenceMs"
     $scriptArgs += "-KokoroTailSilenceMs"
