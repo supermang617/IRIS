@@ -1256,3 +1256,13 @@ Do not search for the text string "Read-Host" with plain Select-String.
 Use PowerShell token parsing and only fail when Read-Host appears as an actual command token.
 
 This prevents the guard from failing on its own documentation or warning text.
+
+## Foundation guard native capture rule
+
+The foundation guard must use Start-Process with stdout/stderr files for native tools.
+
+Do not use:
+& cargo ... 2>&1 | Tee-Object
+
+Reason:
+Cargo writes normal progress output to stderr. Direct PowerShell piping can make successful native output look like red NativeCommandError noise.
