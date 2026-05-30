@@ -1,7 +1,8 @@
 param(
     [int] $TimeoutSeconds = 8,
     [switch] $NoSpeak,
-    [switch] $DryRun
+    [switch] $DryRun,
+    [string] $VoiceName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,6 +24,11 @@ $scriptArgs = @(
     "-TimeoutSeconds",
     "$TimeoutSeconds"
 )
+
+if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {
+    $scriptArgs += "-VoiceName"
+    $scriptArgs += $VoiceName
+}
 
 if ($NoSpeak) {
     $scriptArgs += "-NoSpeak"

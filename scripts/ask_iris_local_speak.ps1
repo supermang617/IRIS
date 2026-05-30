@@ -2,6 +2,7 @@ param(
     [string] $Prompt = "In one sentence, say hello as Iris and confirm you are running locally.",
     [switch] $DryRun,
     [switch] $NoSpeak,
+    [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
 )
@@ -27,6 +28,7 @@ if ($DryRun) {
     Write-Host "- require Response post-check: PASS"
     Write-Host "- extract the checked model response"
     Write-Host "- print the text response"
+    Write-Host "- optionally select a Windows voice by name"
     Write-Host "- speak the checked response unless -NoSpeak is used"
     Write-Host "No model call was made."
     Write-Host "No speech was played."
@@ -126,6 +128,21 @@ $synth.Rate = $Rate
 $synth.Volume = $Volume
 
 try {
+    if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {
+        Write-Host "Requested voice: $VoiceName"
+        try {
+            $synth.SelectVoice($VoiceName)
+        } catch {
+            Write-Host ""
+            Write-Host "Requested voice was not found. Installed voices:"
+            $synth.GetInstalledVoices() | ForEach-Object {
+                Write-Host "- $($_.VoiceInfo.Name) [$($_.VoiceInfo.Gender)]"
+            }
+            throw "Voice not found: $VoiceName"
+        }
+    }
+
+    Write-Host "Speaking with voice: $($synth.Voice.Name)"
     $synth.Speak($responseText)
 } finally {
     $synth.Dispose()

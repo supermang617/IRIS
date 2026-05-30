@@ -641,3 +641,16 @@ Do not speak blocked model output.
 Future TTS must be local, interruptible, Panic Stop aware, and available in text-only fallback mode.
 
 Piper is only a fallback candidate if Kokoro ONNX becomes a blocker.
+
+## Temporary Windows voice selection rule
+
+Windows speech synthesis is temporary for development testing only.
+
+Use scripts/list_iris_windows_voices.ps1 to list installed local voices.
+
+The helper scripts may accept -VoiceName to select an installed Windows voice for testing.
+
+This does not replace the production target:
+Kokoro ONNX with a natural female voice.
+
+Do not add heavy TTS architecture until the basic text/voice milestone is stable.

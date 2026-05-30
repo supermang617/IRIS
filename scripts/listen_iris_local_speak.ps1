@@ -2,6 +2,7 @@ param(
     [int] $TimeoutSeconds = 8,
     [switch] $DryRun,
     [switch] $NoSpeak,
+    [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
 )
@@ -21,6 +22,7 @@ if ($DryRun) {
     Write-Host "- route the transcript through Iris ask-local"
     Write-Host "- require Response post-check: PASS"
     Write-Host "- print the model response"
+    Write-Host "- optionally select a Windows voice by name"
     Write-Host "- speak the checked response using local Windows speech synthesis unless -NoSpeak is used"
     Write-Host "No microphone capture was started."
     Write-Host "No model call was made."
@@ -86,6 +88,11 @@ $scriptArgs = @(
     "-Volume",
     "$Volume"
 )
+
+if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {
+    $scriptArgs += "-VoiceName"
+    $scriptArgs += $VoiceName
+}
 
 if ($NoSpeak) {
     $scriptArgs += "-NoSpeak"

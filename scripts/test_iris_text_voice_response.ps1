@@ -2,6 +2,7 @@ param(
     [string] $Prompt = "In one sentence, say hello as Iris and confirm you are running locally.",
     [switch] $DryRun,
     [switch] $NoSpeak,
+    [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
 )
@@ -27,6 +28,11 @@ if ($DryRun) {
     $scriptArgs += "$Rate"
     $scriptArgs += "-Volume"
     $scriptArgs += "$Volume"
+
+    if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {
+        $scriptArgs += "-VoiceName"
+        $scriptArgs += $VoiceName
+    }
 
     if ($NoSpeak) {
         $scriptArgs += "-NoSpeak"
