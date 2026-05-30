@@ -7,20 +7,96 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
+function Join-NativeArguments {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]] $Arguments
+    )
+
+    $quoted = foreach ($argument in $Arguments) {
+        if ($null -eq $argument) {
+            '""'
+        } elseif ($argument -match '[\s"]') {
+            '"' + ($argument.Replace('"', '\"')) + '"'
+        } else {
+            $argument
+        }
+    }
+
+    $quoted -join " "
+}
+
+function Invoke-NativeCapture {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+
+        [Parameter(Mandatory = $true)]
+        [string] $CommandName,
+
+        [Parameter(Mandatory = $true)]
+        [string[]] $Arguments
+    )
+
+    Write-Host ""
+    Write-Host "=== $Name ==="
+
+    $command = Get-Command $CommandName -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        throw "Command not found: $CommandName"
+    }
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+
+    try {
+        $argumentString = Join-NativeArguments -Arguments $Arguments
+
+        $process = Start-Process `
+            -FilePath $command.Source `
+            -ArgumentList $argumentString `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        $stdout = Get-Content -Raw -ErrorAction SilentlyContinue -Path $stdoutPath
+        $stderr = Get-Content -Raw -ErrorAction SilentlyContinue -Path $stderrPath
+        $combined = (($stdout, $stderr) -join "`n").Trim()
+
+        if (-not [string]::IsNullOrWhiteSpace($combined)) {
+            Write-Host $combined
+        }
+
+        if ($process.ExitCode -ne 0) {
+            throw "$Name failed with exit code $($process.ExitCode)"
+        }
+
+        return $combined
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdoutPath
+        Remove-Item -Force -ErrorAction SilentlyContinue $stderrPath
+    }
+}
+
 Write-Host ""
 Write-Host "=== Project Iris dev HUD speech boundary test ==="
 Write-Host "Prompt: $Prompt"
-Write-Host ""
 
-$planOutput = & cargo run -p iris-runtime -- hud-speech-plan-test $Prompt 2>&1
-$exitCode = $LASTEXITCODE
-$lines = @($planOutput | ForEach-Object { "$_" })
+$planOutput = Invoke-NativeCapture `
+    -Name "HUD speech plan" `
+    -CommandName "cargo" `
+    -Arguments @(
+        "run",
+        "-p",
+        "iris-runtime",
+        "--",
+        "hud-speech-plan-test",
+        $Prompt
+    )
 
-$lines | ForEach-Object { Write-Host $_ }
-
-if ($exitCode -ne 0) {
-    throw "HUD speech plan failed with exit code $exitCode"
-}
+$lines = @($planOutput -split "`r?`n")
 
 if (-not ($lines -contains "Result: PASS")) {
     throw "HUD speech plan did not report PASS"
@@ -84,7 +160,9 @@ if ($NoPlay) {
 $candidateScripts = @(
     "scripts\speak_iris_kokoro.ps1",
     "scripts\play_iris_kokoro.ps1",
-    "scripts\say_iris_kokoro.ps1"
+    "scripts\say_iris_kokoro.ps1",
+    "scripts\ask_iris_local_speak.ps1",
+    "scripts\test_iris_kokoro_voice.ps1"
 )
 
 $speakScript = $null
@@ -99,8 +177,8 @@ foreach ($candidate in $candidateScripts) {
 if ($null -eq $speakScript) {
     $discovered = Get-ChildItem -Path "scripts" -File -Filter "*.ps1" -Recurse |
         Where-Object {
-            $_.Name -match "kokoro|speak|tts" -and
-            (Get-Content -Raw -Path $_.FullName) -match "\$Text|\$Prompt|\$InputText"
+            $_.Name -match "kokoro|speak|tts|voice" -and
+            (Get-Content -Raw -Path $_.FullName) -match "Text|Prompt|InputText|Message"
         } |
         Select-Object -First 1
 
@@ -155,9 +233,9 @@ if ($paramNames -contains "Speed") {
 }
 
 if ($splat.Count -gt 0) {
-    powershell -NoProfile -ExecutionPolicy Bypass -File $speakScript @splat
+    & $speakScript @splat
 } else {
-    powershell -NoProfile -ExecutionPolicy Bypass -File $speakScript $speechText
+    & $speakScript $speechText
 }
 
 if ($LASTEXITCODE -ne 0) {

@@ -1319,3 +1319,12 @@ Rust runtime must not spawn:
 
 Development script:
 scripts/test_iris_dev_hud_speech_boundary.ps1
+
+## Dev HUD speech boundary native capture rule
+
+The dev HUD speech boundary script must use Start-Process with stdout/stderr files when invoking native tools like cargo.
+
+Do not directly assign native command output with stderr redirection.
+
+Reason:
+Cargo writes normal progress output to stderr and PowerShell may render it as red NativeCommandError noise.
