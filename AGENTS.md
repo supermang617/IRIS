@@ -1266,3 +1266,13 @@ Do not use:
 
 Reason:
 Cargo writes normal progress output to stderr. Direct PowerShell piping can make successful native output look like red NativeCommandError noise.
+
+## Foundation guard false-positive rule
+
+The foundation guard must not contain the exact native-pipe text it forbids inside failure messages or documentation strings.
+
+Use generic wording such as:
+captured native process output
+
+Reason:
+A guard should not fail because it finds its own warning text.

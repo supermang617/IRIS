@@ -8,10 +8,10 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $report = ".iris-dev\foundation\iris-foundation-$timestamp.txt"
 $timings = New-Object System.Collections.Generic.List[string]
 
-function Write-Report {
+function Write-ReportLine {
     param([string] $Text)
 
-    $Text | Tee-Object -FilePath $report -Append
+    Add-Content -Encoding UTF8 -Path $report -Value $Text
 }
 
 function Join-NativeArguments {
@@ -47,8 +47,8 @@ function Invoke-NativeStep {
 
     Write-Host ""
     Write-Host "=== $Name ==="
-    Write-Report ""
-    Write-Report "=== $Name ==="
+    Write-ReportLine ""
+    Write-ReportLine "=== $Name ==="
 
     $command = Get-Command $CommandName -CommandType Application -ErrorAction SilentlyContinue
     if ($null -eq $command) {
@@ -77,7 +77,7 @@ function Invoke-NativeStep {
 
         if (-not [string]::IsNullOrWhiteSpace($combined)) {
             Write-Host $combined
-            Write-Report $combined
+            Write-ReportLine $combined
         }
 
         $elapsed = (Get-Date) - $start
@@ -88,7 +88,7 @@ function Invoke-NativeStep {
             throw "$Name failed with exit code $($process.ExitCode)"
         }
 
-        Write-Report "PASS: $Name in $seconds sec"
+        Write-ReportLine "PASS: $Name in $seconds sec"
         return $combined
     } finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $stdoutPath
@@ -96,7 +96,7 @@ function Invoke-NativeStep {
     }
 }
 
-function Assert-FileDoesNotContain {
+function Assert-FileDoesNotContainRegex {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Path,
@@ -138,7 +138,7 @@ function Assert-NoInteractiveReadHostCommand {
         Write-Host ""
         Write-Host "Forbidden interactive command found:"
         $violations | ForEach-Object { Write-Host $_ }
-        throw "Development scripts must not use interactive Read-Host prompts."
+        throw "Development scripts must not require interactive prompts."
     }
 }
 
@@ -178,40 +178,47 @@ function Assert-OutputDoesNotContain {
     }
 }
 
-Write-Report "Project Iris foundation guard"
-Write-Report "Timestamp: $timestamp"
-Write-Report "Working directory: $(Get-Location)"
+Write-Host "Project Iris foundation guard"
+Write-Host "Timestamp: $timestamp"
+Write-Host "Working directory: $(Get-Location)"
+
+Write-ReportLine "Project Iris foundation guard"
+Write-ReportLine "Timestamp: $timestamp"
+Write-ReportLine "Working directory: $(Get-Location)"
 
 Invoke-NativeStep "Git status" "git" @("status", "--short", "--branch")
 
 Write-Host ""
 Write-Host "=== Static foundation checks ==="
-Write-Report ""
-Write-Report "=== Static foundation checks ==="
+Write-ReportLine ""
+Write-ReportLine "=== Static foundation checks ==="
 
-Assert-FileDoesNotContain `
+Assert-FileDoesNotContainRegex `
     -Path "crates\iris-runtime\src\main.rs" `
     -Pattern "checked_local_response_for_hud_v[0-9]" `
-    -Failure "Runtime must use one canonical HUD response function, not suffixed helper chains."
+    -Failure "Runtime must use one canonical HUD response function."
 
-Assert-FileDoesNotContain `
+Assert-FileDoesNotContainRegex `
     -Path "crates\iris-runtime\src\main.rs" `
     -Pattern "run_assistant_role_response_repair_test_v[0-9]" `
-    -Failure "Runtime tests must use one canonical assistant role repair test, not suffixed test chains."
+    -Failure "Runtime must use one canonical assistant role repair test."
 
 Assert-NoInteractiveReadHostCommand
 
-Assert-FileDoesNotContain `
+$nativePipePattern = '(2>\&1|\*>\&1)\s*\|\s*Tee-Object'
+
+Assert-FileDoesNotContainRegex `
     -Path "scripts\diagnose_iris_current_milestone.ps1" `
-    -Pattern "\*>\&1\s*\|\s*Tee-Object" `
-    -Failure "Diagnostics must not pipe native command output through *>&1 | Tee-Object."
+    -Pattern $nativePipePattern `
+    -Failure "Diagnostics must use captured native process output."
 
-Assert-FileDoesNotContain `
+Assert-FileDoesNotContainRegex `
     -Path "scripts\verify_iris_foundation_guard.ps1" `
-    -Pattern "\*>\&1\s*\|\s*Tee-Object" `
-    -Failure "Foundation guard must not pipe native command output through *>&1 | Tee-Object."
+    -Pattern $nativePipePattern `
+    -Failure "Foundation guard must use captured native process output."
 
-Write-Report "PASS: static foundation checks"
+Write-Host "PASS: static foundation checks"
+Write-ReportLine "PASS: static foundation checks"
 
 Invoke-NativeStep "Cargo format check" "cargo" @("fmt", "--all", "--", "--check")
 Invoke-NativeStep "Cargo build" "cargo" @("build", "--workspace")
@@ -229,8 +236,8 @@ Invoke-NativeStep "Assistant role repair test" "cargo" @("run", "-p", "iris-runt
 
 Write-Host ""
 Write-Host "=== HUD targeted behavior checks ==="
-Write-Report ""
-Write-Report "=== HUD targeted behavior checks ==="
+Write-ReportLine ""
+Write-ReportLine "=== HUD targeted behavior checks ==="
 
 $voiceText = Invoke-NativeStep "HUD voice role submit test" "cargo" @(
     "run", "-p", "iris-runtime", "--", "hud-submit-test",
@@ -269,15 +276,15 @@ Invoke-NativeStep "Current milestone diagnostics" "powershell" @(
     "scripts\diagnose_iris_current_milestone.ps1"
 )
 
-Write-Report ""
-Write-Report "=== Timing summary ==="
+Write-ReportLine ""
+Write-ReportLine "=== Timing summary ==="
 
 foreach ($timing in $timings) {
-    Write-Report $timing
+    Write-ReportLine $timing
 }
 
-Write-Report ""
-Write-Report "PASS: Iris foundation guard passed"
+Write-ReportLine ""
+Write-ReportLine "PASS: Iris foundation guard passed"
 
 Write-Host ""
 Write-Host "PASS: Iris foundation guard passed"
