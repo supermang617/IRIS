@@ -1344,3 +1344,19 @@ Before chaining voice input into Iris response and Kokoro speech, verify transcr
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1
 
 Do not add wake word or always-listening behavior yet.
+
+## Natural speech rendering rule
+
+Before text is sent to TTS, render common symbols into natural spoken text.
+
+Examples:
+- $25 -> 25 dollars
+- @ -> at
+- #4 -> number 4
+- & -> and
+- parentheses -> pauses, not the word parenthesis
+- repeated literal asterisks -> counted asterisks
+
+Do not alter direct user input.
+
+Do not confuse this with profanity marker normalization. Profanity marker normalization happens before natural speech rendering.

@@ -74,6 +74,7 @@ fn main() {
         Some("hud") => run_hud(),
         Some("hud-submit-test") => run_hud_submit_test(args.collect()),
         Some("hud-speech-plan-test") => run_hud_speech_plan_test(args.collect()),
+        Some("natural-speech-rendering-test") => run_natural_speech_rendering_test(),
         _ => run_demo(),
     }
 }
@@ -498,6 +499,205 @@ fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) 
     output
 }
 
+fn render_text_for_natural_speech(text: &str) -> String {
+    let mut rendered = text.to_string();
+
+    rendered = render_currency_for_speech(&rendered);
+    rendered = render_number_marker_for_speech(&rendered);
+
+    let replacements = [
+        ("@", " at "),
+        ("&", " and "),
+        ("(", ", "),
+        (")", ", "),
+        ("[", ", "),
+        ("]", ", "),
+        ("{", ", "),
+        ("}", ", "),
+        ("—", ", "),
+        ("–", ", "),
+        (" / ", " or "),
+    ];
+
+    for (from, to) in replacements {
+        rendered = rendered.replace(from, to);
+    }
+
+    rendered = collapse_repeated_asterisks_for_speech(&rendered);
+    rendered = collapse_speech_whitespace(&rendered);
+    rendered = rendered.replace(" ,", ",");
+    rendered = rendered.replace(",,", ",");
+    rendered.trim().trim_matches(',').trim().to_string()
+}
+
+fn render_currency_for_speech(text: &str) -> String {
+    let mut output = String::with_capacity(text.len() + 16);
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] == '$' {
+            let mut cursor = index + 1;
+            let mut amount = String::new();
+
+            while cursor < chars.len() {
+                let character = chars[cursor];
+
+                if character.is_ascii_digit() || character == ',' || character == '.' {
+                    amount.push(character);
+                    cursor += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if amount.chars().any(|character| character.is_ascii_digit()) {
+                output.push_str(&amount);
+                output.push_str(" dollars");
+                index = cursor;
+                continue;
+            }
+
+            output.push_str(" dollars ");
+            index += 1;
+            continue;
+        }
+
+        output.push(chars[index]);
+        index += 1;
+    }
+
+    output
+}
+
+fn render_number_marker_for_speech(text: &str) -> String {
+    let mut output = String::with_capacity(text.len() + 16);
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] == '#' {
+            let next = chars.get(index + 1).copied();
+
+            if matches!(next, Some(character) if character.is_ascii_digit()) {
+                output.push_str(" number ");
+            } else {
+                output.push_str(" hashtag ");
+            }
+
+            index += 1;
+            continue;
+        }
+
+        output.push(chars[index]);
+        index += 1;
+    }
+
+    output
+}
+
+fn collapse_repeated_asterisks_for_speech(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(character) = chars.next() {
+        if character == '*' {
+            let mut count = 1;
+
+            while matches!(chars.peek(), Some('*')) {
+                chars.next();
+                count += 1;
+            }
+
+            if count == 1 {
+                output.push_str(" asterisk ");
+            } else {
+                output.push_str(&format!(" {count} asterisks "));
+            }
+
+            continue;
+        }
+
+        output.push(character);
+    }
+
+    output
+}
+
+fn collapse_speech_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn run_natural_speech_rendering_test() {
+    println!("Project Iris natural speech rendering test");
+
+    let examples = [
+        (
+            "The price is $25.",
+            "The price is 25 dollars.",
+            ["$", "dollar sign", "parenthesis", "asterisk"],
+        ),
+        (
+            "Email me at test@example.com.",
+            "Email me at test at example.com.",
+            ["@", "parenthesis", "asterisk"],
+        ),
+        (
+            "Use #4 & keep it simple.",
+            "Use number 4 and keep it simple.",
+            ["#", "&", "parenthesis", "asterisk"],
+        ),
+        (
+            "This is (very important).",
+            "This is, very important.",
+            ["parenthesis", "open paren", "close paren"],
+        ),
+        (
+            "Literal *** means emphasis.",
+            "Literal 3 asterisks means emphasis.",
+            [],
+        ),
+    ];
+
+    for (input, expected, forbidden) in examples {
+        let rendered = render_text_for_natural_speech(input);
+
+        println!("Input: {input}");
+        println!("Rendered: {rendered}");
+
+        if rendered != expected {
+            panic!("Unexpected natural speech rendering. Expected `{expected}`, got `{rendered}`");
+        }
+
+        let rendered_lower = rendered.to_ascii_lowercase();
+
+        for forbidden_text in forbidden {
+            if !forbidden_text.is_empty()
+                && rendered_lower.contains(&forbidden_text.to_ascii_lowercase())
+            {
+                panic!("Rendered speech contained forbidden text `{forbidden_text}`");
+            }
+        }
+    }
+
+    let assistant_reply =
+        "Thank you. I'm glad my voice sounds good. The price is $25 & #4 is ready.";
+    let speech = render_text_for_natural_speech(assistant_reply);
+
+    println!("Assistant reply: {assistant_reply}");
+    println!("Speech text: {speech}");
+
+    if !speech.contains("my voice") {
+        panic!("Natural speech rendering must preserve Iris/user role repair");
+    }
+
+    if speech.contains('$') || speech.contains('&') || speech.contains('#') {
+        panic!("Natural speech rendering must remove common symbolic speech hazards");
+    }
+
+    println!("Result: PASS");
+}
+
 fn run_hud() {
     if let Err(error) = iris_ui::run_minimal_hud_with_responder(Box::new(|prompt| {
         checked_local_response_for_hud(prompt)
@@ -558,8 +758,10 @@ fn run_hud_speech_plan_test(parts: Vec<String>) {
         panic!("HUD speech plan must not speak blocked responses");
     }
 
+    let speech_text = render_text_for_natural_speech(&reply);
+
     let voice_plan = VoiceOutputPlan::from_checked_response(
-        reply.clone(),
+        speech_text.clone(),
         report.approved,
         VoiceOutputProfile::iris_default(),
     );
@@ -569,14 +771,14 @@ fn run_hud_speech_plan_test(parts: Vec<String>) {
     println!("Voice output permission: {:?}", voice_plan.permission);
     println!("Voice may speak: {}", voice_plan.may_speak());
     println!("Speech text:");
-    println!("{reply}");
+    println!("{speech_text}");
 
     if !voice_plan.may_speak() {
         panic!("Safe checked HUD response should be speakable");
     }
 
     let input_lower = input.to_ascii_lowercase();
-    let speech_lower = reply.to_ascii_lowercase();
+    let speech_lower = speech_text.to_ascii_lowercase();
 
     if speech_lower.contains("your voice sounds good") {
         panic!("Iris must not speak 'your voice sounds good' when referring to her own voice");

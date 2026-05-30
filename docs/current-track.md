@@ -1,24 +1,25 @@
 # Current Track
 
-## Current milestone passed
-
-Typed prompt
--> Iris response
--> Kokoro spoken voice
-
 ## Current checkpoint
 
-Voice input boundary.
+Natural speech rendering.
 
 Command:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1
+cargo run -p iris-runtime -- natural-speech-rendering-test
+
+## Why this matters
+
+Before full back-and-forth voice, Iris speech must avoid robotic symbol reading.
+
+Speech text should sound natural while display text can remain exact.
 
 ## Next after this passes
 
-Build the full voice-to-spoken turn:
+Continue voice-input-to-spoken-response wiring:
 
 voice input
 -> transcript
 -> checked response
--> spoken Kokoro answer
+-> natural speech rendering
+-> Kokoro spoken answer
