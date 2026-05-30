@@ -116,6 +116,17 @@ fn run_chat_local() {
 }
 
 fn main() {
+    // IRIS_CHAT_LOCAL_ROUTE_OVERRIDE_BEGIN
+    {
+        let mut iris_route_args = std::env::args();
+        let _ = iris_route_args.next();
+
+        if matches!(iris_route_args.next().as_deref(), Some("chat-local")) {
+            run_chat_local();
+            return;
+        }
+    }
+    // IRIS_CHAT_LOCAL_ROUTE_OVERRIDE_END
     let mut args = env::args();
     let _program = args.next();
 
