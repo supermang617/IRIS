@@ -2,26 +2,22 @@
 
 ## Current checkpoint
 
-HUD speech-plan gate.
+Dev-only HUD speech boundary.
 
 Command:
 
-cargo run -p iris-runtime -- hud-speech-plan-test "Iris, your voice sounds awesome."
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_dev_hud_speech_boundary.ps1 -Prompt "Iris, your voice sounds awesome."
 
 ## Why this is next
 
-Before HUD Kokoro audio, Iris must prove that the exact text sent to speech is:
+We already proved the HUD speech plan.
 
-- checked
-- role-repaired
-- free of censor-marker asterisks
-- speakable by policy
+Now we verify that the approved, role-repaired speech text can reach the existing Kokoro voice path without adding process execution inside the Rust runtime.
 
 ## Next after this passes
 
-Choose the actual HUD speech boundary:
+Manual voice confirmation, then decide the clean permanent TTS boundary.
 
-1. dev-only PowerShell wrapper around existing Kokoro scripts, or
-2. Rust-native local TTS backend with explicitly approved dependencies.
+## Do not do yet
 
-Do not make the Rust runtime spawn shell/process commands.
+Do not add runtime shell execution, screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.

@@ -1302,3 +1302,20 @@ Correct pattern:
 - Set-Content once
 
 This prevents missing function bodies after adding match arms.
+
+## Dev HUD speech boundary rule
+
+HUD speech playback tests must stay in development scripts until a permanent TTS boundary is approved.
+
+Rust runtime may produce:
+- checked response text
+- VoiceOutputPlan
+
+Rust runtime must not spawn:
+- PowerShell
+- Python
+- shell commands
+- external playback processes
+
+Development script:
+scripts/test_iris_dev_hud_speech_boundary.ps1
