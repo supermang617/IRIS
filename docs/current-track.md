@@ -14,16 +14,11 @@ Iris has reached:
 - explicit one-shot voice input helper
 - typed prompt helper
 - Panic Stop skeleton
+- runtime voice-status
 
-## Current architecture step
+## Current verification command
 
-Runtime now reads voice defaults from the iris-voice crate.
-
-Useful runtime commands:
-
-cargo run -p iris-runtime -- self-check
-cargo run -p iris-runtime -- voice-status
-cargo run -p iris-runtime -- response-check-test
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_kokoro_voice_milestone.ps1
 
 ## Wake word requirement
 
@@ -45,7 +40,7 @@ Correct order:
 
 ## Do next
 
-Run Kokoro voice milestone verification again.
+Verify Kokoro voice milestone.
 
 Then start push-to-talk metadata and visible listening state scaffolding.
 

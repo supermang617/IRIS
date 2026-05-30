@@ -771,3 +771,25 @@ The runtime must show:
 - push-to-talk policy
 - future wake word disabled by default
 - no always-listening default
+
+## Kokoro milestone verifier rule
+
+The Kokoro voice milestone verifier must exist at:
+
+scripts/verify_iris_kokoro_voice_milestone.ps1
+
+Do not reference verification scripts before creating them.
+
+This verifier checks:
+- cargo fmt
+- cargo build
+- cargo test
+- xtask audit
+- runtime self-check
+- runtime voice-status
+- Panic Stop test
+- response post-check test
+- direct Kokoro playback
+- typed prompt to checked Kokoro spoken response
+
+Manual microphone testing remains separate.
