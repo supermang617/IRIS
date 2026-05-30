@@ -80,13 +80,11 @@ if ($repoHits.Count -eq 0) {
 
 Write-Section "Python command discovery"
 
-$pythonCommands = @("py", "python", "python3")
-
-foreach ($cmd in $pythonCommands) {
+foreach ($cmd in @("py", "python", "python3")) {
     if (Get-Command $cmd -ErrorAction SilentlyContinue) {
-        Write-Report "FOUND: $cmd"
+        Write-Report "FOUND command: $cmd"
     } else {
-        Write-Report "MISSING: $cmd"
+        Write-Report "MISSING command: $cmd"
     }
 }
 
@@ -95,16 +93,7 @@ Invoke-Capture "Python version via python" "python" @("--version")
 
 Write-Section "Python package probes"
 
-$probeCode = @'
-import importlib.util
-packages = ["kokoro", "kokoro_onnx", "onnxruntime", "numpy", "soundfile", "scipy", "piper"]
-for name in packages:
-    spec = importlib.util.find_spec(name)
-    if spec is None:
-        print(f"MISSING {name}")
-    else:
-        print(f"FOUND {name}: {spec.origin}")
-'@
+$probeCode = "import importlib.util; packages = ['kokoro', 'kokoro_onnx', 'onnxruntime', 'numpy', 'soundfile', 'scipy', 'piper']; [print(('FOUND ' + name + ': ' + str(importlib.util.find_spec(name).origin)) if importlib.util.find_spec(name) else ('MISSING ' + name)) for name in packages]"
 
 Invoke-Capture "Package probe via py" "py" @("-3", "-c", $probeCode)
 Invoke-Capture "Package probe via python" "python" @("-c", $probeCode)
@@ -138,12 +127,11 @@ foreach ($root in $commonRoots) {
             Write-Report $hit.FullName
         }
     } catch {
-        Write-Report "WARN: scan failed for $root: $($_.Exception.Message)"
+        Write-Report ("WARN: scan failed for {0}: {1}" -f $root, $_.Exception.Message)
     }
 }
 
 Write-Section "Discovery result"
 Write-Report "PASS: Kokoro provider discovery completed."
 Write-Report "Report: $report"
-Write-Report ""
-Write-Report "Next step: use the discovered executable/package/model path to wire Kokoro as preferred provider, with SAPI fallback."
+Write-Report "Next step: wire Kokoro as preferred provider using the discovered path."
