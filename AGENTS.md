@@ -1155,3 +1155,17 @@ Correct response:
 I'm glad I passed. Thank you for being proud of me.
 
 Do not let one detected intent erase the other.
+
+## HUD conversation reliability rule
+
+Before adding HUD speech, run:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_hud_conversation_reliability.ps1
+
+This must verify:
+- no profanity censor markers in assistant output
+- user input remains direct
+- "you passed" means Iris passed
+- "I am proud of you" means the user is proud of Iris
+- HUD submit path passes
+- milestone diagnostics pass
