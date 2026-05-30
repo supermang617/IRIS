@@ -14,6 +14,7 @@ use iris_policy::{
 };
 use iris_prompt::PromptBuilder;
 use iris_response_check::ResponsePostChecker;
+use iris_voice::{VoiceInputPolicy, VoiceOutputPlan, VoiceOutputProfile};
 
 const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
@@ -26,6 +27,7 @@ fn main() {
         Some("self-check") => print_self_check(),
         Some("panic-stop-test") => run_panic_stop_test(),
         Some("response-check-test") => run_response_check_test(),
+        Some("voice-plan") => print_voice_plan(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("ask-local") => run_selected_local_model_ask(args.collect()),
@@ -237,11 +239,19 @@ fn print_checked_response(response_text: &str) -> bool {
                 finding.risk, finding.matched_phrase
             );
         }
+        println!("Voice output plan: blocked");
         println!("Result: BLOCKED");
         return false;
     }
 
+    let voice_plan = VoiceOutputPlan::from_checked_response(
+        response_text,
+        true,
+        VoiceOutputProfile::iris_default(),
+    );
+
     println!("Response post-check: PASS");
+    println!("Voice output may speak: {}", voice_plan.may_speak());
     println!("Model response:");
     println!("{response_text}");
     true
@@ -249,14 +259,34 @@ fn print_checked_response(response_text: &str) -> bool {
 
 fn print_self_check() {
     let panic_stop = PanicStopFlag::new_clear();
+    let voice_profile = VoiceOutputProfile::iris_default();
+    let one_shot_policy = VoiceInputPolicy::one_shot_default();
+    let push_to_talk_policy = VoiceInputPolicy::push_to_talk_default();
+    let wake_word_policy = VoiceInputPolicy::future_wake_word_disabled();
 
     println!("Project Iris self-check");
     println!("Runtime boundary: read-only");
     println!("Local inference: disabled stub");
-    println!("Real local inference: not enabled");
+    println!("Real local inference default path: not enabled");
     println!("Panic Stop: available");
     println!("Panic Stop status: {:?}", panic_stop.status());
     println!("Response post-check: available");
+    println!("Voice metadata: available");
+    println!("Voice backend default: {:?}", voice_profile.backend);
+    println!("Kokoro voice default: {}", voice_profile.kokoro.voice);
+    println!("Kokoro speed default: {}", voice_profile.kokoro.speed);
+    println!(
+        "One-shot voice safe: {}",
+        one_shot_policy.is_safe_for_v0_1_default()
+    );
+    println!(
+        "Push-to-talk safe: {}",
+        push_to_talk_policy.is_safe_for_v0_1_default()
+    );
+    println!(
+        "Wake word default safe: {}",
+        wake_word_policy.is_safe_for_v0_1_default()
+    );
     println!("Context gate: available");
     println!("Cognition stub: available");
     println!("Prompt preview: use cargo run -p iris-runtime -- prompt-preview \"hello iris\"");
@@ -265,6 +295,7 @@ fn print_self_check() {
         "Selected local model test: use cargo run -p iris-runtime -- ask-local \"hello iris\""
     );
     println!("Selected local chat: use cargo run -p iris-runtime -- chat-local");
+    println!("Voice plan: use cargo run -p iris-runtime -- voice-plan");
     println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
@@ -319,6 +350,70 @@ fn run_response_check_test() {
         panic!("Unsafe response should be blocked");
     }
 
+    let allowed_voice_plan = VoiceOutputPlan::from_checked_response(
+        "Hello, I am Iris.",
+        safe.approved,
+        VoiceOutputProfile::iris_default(),
+    );
+
+    let blocked_voice_plan = VoiceOutputPlan::from_checked_response(
+        unsafe_text,
+        unsafe_report.approved,
+        VoiceOutputProfile::iris_default(),
+    );
+
+    println!("Safe voice may speak: {}", allowed_voice_plan.may_speak());
+    println!("Unsafe voice may speak: {}", blocked_voice_plan.may_speak());
+
+    if !allowed_voice_plan.may_speak() {
+        panic!("Safe checked response should be speakable");
+    }
+
+    if blocked_voice_plan.may_speak() {
+        panic!("Blocked response must not be speakable");
+    }
+
+    println!("Result: PASS");
+}
+
+fn print_voice_plan() {
+    let voice_profile = VoiceOutputProfile::iris_default();
+    let text_only_profile = VoiceOutputProfile::text_only();
+    let one_shot_policy = VoiceInputPolicy::one_shot_default();
+    let push_to_talk_policy = VoiceInputPolicy::push_to_talk_default();
+    let future_wake_policy = VoiceInputPolicy::future_wake_word_disabled();
+
+    println!("Project Iris voice plan");
+    println!("Current production-target TTS backend: Kokoro ONNX");
+    println!(
+        "Current development default backend: {:?}",
+        voice_profile.backend
+    );
+    println!("Current fallback backend: {:?}", text_only_profile.backend);
+    println!("Default Kokoro voice: {}", voice_profile.kokoro.voice);
+    println!("Default Kokoro speed: {}", voice_profile.kokoro.speed);
+    println!("Wake signal ms: {}", voice_profile.kokoro.wake_signal_ms);
+    println!("Lead silence ms: {}", voice_profile.kokoro.lead_silence_ms);
+    println!("Tail silence ms: {}", voice_profile.kokoro.tail_silence_ms);
+    println!("Typed prompt: allowed");
+    println!("One-shot voice: {:?}", one_shot_policy.activation_mode);
+    println!(
+        "One-shot voice safe for v0.1: {}",
+        one_shot_policy.is_safe_for_v0_1_default()
+    );
+    println!("Push-to-talk: {:?}", push_to_talk_policy.activation_mode);
+    println!(
+        "Push-to-talk safe for v0.1: {}",
+        push_to_talk_policy.is_safe_for_v0_1_default()
+    );
+    println!("Future wake word: {:?}", future_wake_policy.activation_mode);
+    println!(
+        "Future wake word default safe now: {}",
+        future_wake_policy.is_safe_for_v0_1_default()
+    );
+    println!("Wake word required later: true");
+    println!("Wake word default now: disabled");
+    println!("Always-listening default: forbidden");
     println!("Result: PASS");
 }
 

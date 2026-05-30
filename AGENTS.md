@@ -736,3 +736,21 @@ Current defaults:
 Future wake word is required, but disabled by default until push-to-talk and visible listening state are stable.
 
 Do not let voice behavior live only in PowerShell scripts.
+
+## Runtime voice metadata rule
+
+iris-runtime must expose voice defaults through:
+
+cargo run -p iris-runtime -- voice-plan
+
+Runtime self-check must show:
+
+- voice metadata available
+- Kokoro ONNX default backend
+- af_heart default voice
+- 0.95 default speed
+- one-shot voice policy
+- push-to-talk policy
+- wake word disabled by default
+
+Voice output must be allowed only after ResponsePostChecker approves the response.

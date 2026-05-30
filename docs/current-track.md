@@ -17,9 +17,11 @@ Iris has reached:
 
 ## Current next step
 
-The smallest iris-voice abstraction crate now owns voice policy metadata.
+Runtime now exposes voice metadata through:
 
-This keeps voice architecture from living only in PowerShell scripts.
+cargo run -p iris-runtime -- voice-plan
+
+This keeps voice defaults visible in Rust, not only in PowerShell scripts.
 
 ## Wake word requirement
 
@@ -41,9 +43,9 @@ Correct order:
 
 ## Do next
 
-Wire voice metadata into runtime self-check and docs.
+Rerun Kokoro voice milestone verification.
 
-Then run the Kokoro text/voice milestone verification again.
+Then add the smallest push-to-talk policy/test surface.
 
 ## Do not do yet
 
