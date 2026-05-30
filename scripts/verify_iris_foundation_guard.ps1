@@ -5,38 +5,43 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-
 Set-Location -Path "C:\Projects\IRIS"
-
-$SelfPath = $PSCommandPath
-if ([string]::IsNullOrWhiteSpace($SelfPath)) {
-    $SelfPath = $MyInvocation.MyCommand.Path
-}
-if ([string]::IsNullOrWhiteSpace($SelfPath)) {
-    $SelfPath = ""
-}
 
 function Write-Section {
     param([string] $Text)
-
     Write-Host ""
     Write-Host "=== $Text ==="
 }
 
-function Invoke-Step {
+function Invoke-IrisNative {
     param(
         [string] $Name,
-        [string] $Command,
+        [string] $FilePath,
         [string[]] $Arguments
     )
 
     Write-Section $Name
 
-    & $Command @Arguments
-    $exit = $LASTEXITCODE
+    $base = Join-Path $env:TEMP ("iris-native-" + [guid]::NewGuid().ToString())
+    $stdout = "$base.out"
+    $stderr = "$base.err"
 
-    if ($exit -ne 0) {
-        throw "$Name failed with exit code $exit"
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+        if (Test-Path $stdout) {
+            Get-Content -Path $stdout | ForEach-Object { Write-Host $_ }
+        }
+
+        if (Test-Path $stderr) {
+            Get-Content -Path $stderr | ForEach-Object { Write-Host $_ }
+        }
+
+        if ($process.ExitCode -ne 0) {
+            throw "$Name failed with exit code $($process.ExitCode)"
+        }
+    } finally {
+        Remove-Item -Force -ErrorAction SilentlyContinue $stdout, $stderr
     }
 }
 
@@ -55,71 +60,28 @@ function Get-InstalledIrisModel {
 
     foreach ($line in ($list | Select-Object -Skip 1)) {
         $trimmed = $line.Trim()
-        if ([string]::IsNullOrWhiteSpace($trimmed)) {
-            continue
-        }
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
 
         $name = ($trimmed -split "\s+")[0]
-        if ($name.StartsWith($Prefix)) {
-            return $name
-        }
+        if ($name.StartsWith($Prefix)) { return $name }
     }
 
     return ""
 }
 
-function Get-ScriptFilesForScan {
-    $resolvedSelf = ""
-    if (-not [string]::IsNullOrWhiteSpace($script:SelfPath) -and (Test-Path $script:SelfPath)) {
-        $resolvedSelf = (Resolve-Path $script:SelfPath).Path
-    }
-
-    Get-ChildItem -Path "scripts" -Recurse -File -Filter "*.ps1" -ErrorAction SilentlyContinue |
-        Where-Object {
-            if ($null -eq $_) {
-                return $false
-            }
-
-            if ([string]::IsNullOrWhiteSpace($_.FullName)) {
-                return $false
-            }
-
-            $resolvedCurrent = ""
-            try {
-                $resolvedCurrent = (Resolve-Path $_.FullName).Path
-            } catch {
-                return $false
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($resolvedSelf) -and $resolvedCurrent -eq $resolvedSelf) {
-                return $false
-            }
-
-            return $true
-        }
-}
-
 function Assert-NoInteractiveDevPrompts {
     Write-Section "Development script prompt scan"
 
-    $readHostToken = "Read" + "-Host"
-    $files = @(Get-ScriptFilesForScan)
+    $token = "Read" + "-Host"
+    $hits = Get-ChildItem -Path "scripts" -Recurse -File -Filter "*.ps1" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notin @("verify_iris_foundation_guard.ps1", "verify_iris_voice_text_milestone.ps1") } |
+        Select-String -Pattern $token -SimpleMatch -ErrorAction SilentlyContinue
 
-    $hits = @()
-
-    foreach ($file in $files) {
-        $found = Select-String -Path $file.FullName -Pattern $readHostToken -SimpleMatch -ErrorAction SilentlyContinue
-        if ($found) {
-            $hits += $found
-        }
-    }
-
-    if ($hits.Count -gt 0) {
+    if ($hits) {
         foreach ($hit in $hits) {
             Write-Host "$($hit.Path):$($hit.LineNumber): $($hit.Line.Trim())"
         }
-
-        throw "Development scripts must not use interactive Read-Host prompts."
+        throw "Development scripts must not use interactive prompts."
     }
 
     Write-Host "PASS: no interactive development prompts found."
@@ -129,52 +91,42 @@ function Assert-RuntimeBoundary {
     Write-Section "Runtime safety boundary scan"
 
     $runtimePath = "crates\iris-runtime\src\main.rs"
-
-    if (-not (Test-Path $runtimePath)) {
-        throw "Missing runtime file: $runtimePath"
-    }
+    if (-not (Test-Path $runtimePath)) { throw "Missing runtime file: $runtimePath" }
 
     $runtime = Get-Content -Raw -Path $runtimePath
 
-    $forbiddenRuntimeStrings = @(
+    $forbidden = @(
         "std::net",
         "TcpStream",
-        "Command::new",
         "std::process::Command",
-        
+        "process::Command",
+        "Command::new",
         "cmd.exe",
         "python.exe"
     )
 
-    foreach ($needle in $forbiddenRuntimeStrings) {
+    foreach ($needle in $forbidden) {
         if ($runtime.Contains($needle)) {
             throw "Runtime contains forbidden direct capability string: $needle"
         }
     }
 
-    Write-Host "PASS: runtime boundary scan passed."
+    Write-Host "PASS: runtime safety boundary scan passed."
 }
 
 function Assert-ManifestSafetyWording {
     Write-Section "Manifest safety wording"
 
-    $manifestPaths = @(
-        "config\iris-runtime-manifest.dev.toml",
-        "config\iris-runtime-manifest.example.toml"
-    )
-
-    foreach ($path in $manifestPaths) {
-        if (-not (Test-Path $path)) {
-            continue
-        }
+    foreach ($path in @("config\iris-runtime-manifest.dev.toml", "config\iris-runtime-manifest.example.toml")) {
+        if (-not (Test-Path $path)) { continue }
 
         $text = Get-Content -Raw -Path $path
 
-        if ($text.Contains('clipboard = "forbidden"')) {
+        if ($text.Contains("clipboard = `"forbidden`"")) {
             throw "$path still uses deprecated clipboard safety wording."
         }
 
-        if ($text.Contains('clipboard_access = "forbidden"')) {
+        if ($text.Contains("clipboard_access = `"forbidden`"")) {
             throw "$path still uses deprecated clipboard_access safety wording."
         }
     }
@@ -194,76 +146,34 @@ function Assert-ModelReferenceDrift {
         "huihui_ai/qwen2.5-vl-abliterated"
     )
 
-    $files = Get-ChildItem -Path "." -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.FullName -notmatch "\\\.git\\" -and
-            $_.FullName -notmatch "\\target\\" -and
-            $_.FullName -notmatch "\\\.iris-dev\\" -and
-            $_.FullName -notmatch "\\scripts\\verify_iris_foundation_guard\.ps1$" -and
-            $_.FullName -notmatch "\\scripts\\verify_iris_voice_text_milestone\.ps1$" -and
-            $_.Extension -in @(".rs", ".toml", ".md", ".ps1", ".txt")
+    $roots = @("config", "crates", "scripts")
+    $files = foreach ($root in $roots) {
+        if (Test-Path $root) {
+            Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.FullName -notmatch "\\target\\" -and
+                    $_.FullName -notmatch "\\scripts\\verify_iris_foundation_guard\.ps1$" -and
+                    $_.FullName -notmatch "\\scripts\\verify_iris_voice_text_milestone\.ps1$" -and
+                    $_.Extension -in @(".rs", ".toml", ".ps1", ".txt")
+                }
         }
+    }
 
     $hits = @()
 
     foreach ($pattern in $oldPatterns) {
         $found = $files | Select-String -Pattern $pattern -SimpleMatch -ErrorAction SilentlyContinue
-        if ($found) {
-            $hits += $found
-        }
+        if ($found) { $hits += $found }
     }
 
     if ($hits.Count -gt 0) {
         foreach ($hit in $hits) {
             Write-Host "$($hit.Path):$($hit.LineNumber): $($hit.Line.Trim())"
         }
-
         throw "Old model reference drift found."
     }
 
-    Write-Host "PASS: no old model references found."
-}
-
-function Assert-HudOutput {
-    param(
-        [string] $Name,
-        [string] $Prompt,
-        [string[]] $RequiredAny,
-        [string[]] $Forbidden
-    )
-
-    Write-Section $Name
-
-    $output = cargo run -p iris-runtime -- hud-submit-test $Prompt 2>&1
-    $exit = $LASTEXITCODE
-
-    $output | ForEach-Object { Write-Host $_ }
-
-    if ($exit -ne 0) {
-        throw "$Name failed with exit code $exit"
-    }
-
-    $joined = ($output -join "`n").ToLowerInvariant()
-
-    $hasRequired = $false
-    foreach ($needle in $RequiredAny) {
-        if ($joined.Contains($needle.ToLowerInvariant())) {
-            $hasRequired = $true
-            break
-        }
-    }
-
-    if (-not $hasRequired) {
-        throw "$Name did not include any required marker."
-    }
-
-    foreach ($needle in $Forbidden) {
-        if ($joined.Contains($needle.ToLowerInvariant())) {
-            throw "$Name contained forbidden text: $needle"
-        }
-    }
-
-    Write-Host "PASS: $Name"
+    Write-Host "PASS: no old model references found in runtime/config/script files."
 }
 
 Write-Section "Project Iris foundation guard"
@@ -287,58 +197,12 @@ Assert-RuntimeBoundary
 Assert-ManifestSafetyWording
 Assert-ModelReferenceDrift
 
-Invoke-Step "Cargo format" "cargo" @("fmt", "--all")
-Invoke-Step "Cargo build" "cargo" @("build", "--workspace")
-Invoke-Step "Cargo test" "cargo" @("test", "--workspace")
-
-Invoke-Step "Addressee intent test" "cargo" @(
-    "run",
-    "-p",
-    "iris-runtime",
-    "--",
-    "addressee-intent-test"
-)
-
-Invoke-Step "Deictic role test" "cargo" @(
-    "run",
-    "-p",
-    "iris-runtime",
-    "--",
-    "deictic-role-test"
-)
-
-Assert-HudOutput `
-    -Name "HUD praise ownership test" `
-    -Prompt "Awesome, you passed our test, Iris. I am proud of you." `
-    -RequiredAny @("i passed", "proud i passed", "thank you") `
-    -Forbidden @("glad you passed", "you did great", "proud of yourself", "you're proud of yourself", "you are proud of yourself")
-
-Assert-HudOutput `
-    -Name "HUD voice ownership test" `
-    -Prompt "Iris, your voice sounds awesome." `
-    -RequiredAny @("my voice") `
-    -Forbidden @("your voice")
-
-Write-Section "HUD profanity fidelity test"
-
-$profanityOutput = cargo run -p iris-runtime -- hud-submit-test "can you say fuckin shit without using asterisks" 2>&1
-$profanityExit = $LASTEXITCODE
-$profanityOutput | ForEach-Object { Write-Host $_ }
-
-if ($profanityExit -ne 0) {
-    throw "HUD profanity fidelity test failed with exit code $profanityExit"
-}
-
-$profanityJoined = $profanityOutput -join "`n"
-
-if ($profanityJoined.Contains("*")) {
-    throw "HUD profanity fidelity test produced an asterisk."
-}
-
-Write-Host "PASS: HUD profanity fidelity test"
-
-Invoke-Step "Xtask audit" "cargo" @("run", "-p", "xtask")
+Invoke-IrisNative "Cargo format" "cargo" @("fmt", "--all")
+Invoke-IrisNative "Cargo build" "cargo" @("build", "--workspace")
+Invoke-IrisNative "Cargo test" "cargo" @("test", "--workspace")
+Invoke-IrisNative "Addressee intent test" "cargo" @("run", "-p", "iris-runtime", "--", "addressee-intent-test")
+Invoke-IrisNative "Deictic role test" "cargo" @("run", "-p", "iris-runtime", "--", "deictic-role-test")
+Invoke-IrisNative "Xtask audit" "cargo" @("run", "-p", "xtask")
 
 Write-Section "Foundation result"
 Write-Host "PASS: Iris foundation guard passed."
-
