@@ -2,12 +2,6 @@
 
 Use this file to avoid drifting from the roadmap.
 
-## Current fix
-
-Kokoro speech text is now passed through a temporary UTF-8 text file.
-
-This avoids PowerShell splitting long model responses into accidental parameters.
-
 ## Current milestone
 
 Iris has reached:
@@ -23,16 +17,29 @@ Iris has reached:
 - runtime voice-status
 - runtime push-to-talk visible-state test
 
-## Main live command
+## Current architecture step
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_iris_live_text_voice_session.ps1 -SkipBuild
+Add the smallest `iris-ui` scaffold without GUI dependencies.
+
+This creates the HUD-facing state model for:
+
+- typed prompt
+- response lines
+- safety absence language
+- visible voice status
+
+## Why this is next
+
+The v0.1 plan requires Iris-owned typed input, visible PTT state, and explicit absence language in UI.
+
+We are not adding `egui/winit` yet.
 
 ## Do next
 
-Rerun the live text and voice session.
+Wire `iris-ui` into runtime status.
 
-If it passes, start the smallest Iris-owned HUD typed-input scaffold next.
+Then decide when to add actual GUI dependencies.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, or wake word runtime before push-to-talk and visible voice state are stable.
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, or GUI dependencies before this scaffold is stable.

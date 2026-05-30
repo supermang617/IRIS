@@ -15,6 +15,8 @@ members = [
     "crates/iris-panic-stop",
     "crates/iris-response-check",
     "crates/iris-voice",
+    "crates/iris-ui",
     "xtask"
 ]
 resolver = "2"
+

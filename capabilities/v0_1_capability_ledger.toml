@@ -69,3 +69,9 @@ allowed = ["development_audit", "forbidden_api_scan", "capability_ledger_presenc
 forbidden = ["runtime_input_simulation", "runtime_clipboard_access", "runtime_network", "runtime_browser_automation"]
 may_receive = ["repository_files"]
 may_not_receive = ["runtime_user_data"]
+
+[crate.iris-ui]
+allowed = ["hud_state_model", "typed_prompt_model", "response_display_model", "visible_voice_status_model", "safety_absence_language"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
+may_receive = ["HudText", "CheckedAssistantResponseText", "VoiceStatusSnapshot"]
+may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest", "ShellCommand"]

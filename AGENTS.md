@@ -884,3 +884,15 @@ ResponsePostChecker PASS
 -> write checked response to temp UTF-8 text file
 -> call scripts/speak_iris_kokoro.ps1 -TextFile <path>
 -> delete temp file
+
+## iris-ui scaffold rule
+
+Before adding `winit + egui`, create and test a dependency-light `iris-ui` scaffold.
+
+The scaffold must own:
+- typed prompt model
+- response display model
+- safety absence language
+- visible voice status model
+
+Do not add GUI dependencies until the UI model is stable and explicitly approved.
