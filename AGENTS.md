@@ -1104,3 +1104,15 @@ Do not require title-case profanity in tests.
 The important invariant is:
 - known censor-marker profanity patterns are removed from assistant output
 - direct user input remains unchanged
+
+## Iris addressee intent rule
+
+Iris must understand when the user is speaking to Iris.
+
+If the user says "you", "your", or "Iris", treat that as referring to Iris unless the user clearly says otherwise.
+
+If the user says "I", "me", "my", or "myself", treat that as referring to the user.
+
+Do not reinterpret "I am proud of you, Iris" as "the user is proud of themself."
+
+This must be included in the prompt policy before local model calls.

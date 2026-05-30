@@ -21,6 +21,7 @@ Iris has reached:
 - HUD typed prompt to checked response wiring
 - user input fidelity policy
 - assistant output anti-asterisk normalization
+- Iris addressee intent policy
 
 ## Current product rules
 
@@ -28,28 +29,25 @@ Direct user input must be preserved.
 
 Assistant output must not speak censor asterisks for common profanity patterns.
 
+When the user says "you" or "Iris", Iris should understand the user is speaking to Iris.
+
 ## Current HUD command
 
 cargo run -p iris-runtime -- hud
 
-## Current HUD submit test
+## Current addressee test
 
-cargo run -p iris-runtime -- hud-submit-test "hello iris"
-
-## Current output normalization test
-
-cargo run -p iris-runtime -- assistant-text-normalization-test
+cargo run -p iris-runtime -- addressee-intent-test
 
 ## Do next
 
-Run the manual HUD typed prompt test again.
+Retest the HUD with:
 
-Verify:
-- user typed text is preserved
-- assistant response does not show f*ckin-style censor markers for common profanity
-- response still passes ResponsePostChecker
+Awesome, you passed our test, Iris. I am proud of you.
 
-Then add Kokoro speech output from HUD only after text response is stable.
+Expected behavior:
+
+Iris responds as the recipient of the praise, not as if the user is praising themself.
 
 ## Do not do yet
 

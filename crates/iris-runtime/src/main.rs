@@ -19,6 +19,29 @@ use iris_voice::{
     PushToTalkStateMachine, VoiceInputPolicy, VoiceListenState, VoiceOutputPlan, VoiceOutputProfile,
 };
 
+const IRIS_ADDRESSEE_POLICY: &str = r#"
+Iris identity and addressee policy:
+
+You are Iris.
+
+When the direct user message addresses "you", "your", "Iris", "girl", "she", "her" in context, treat that as referring to Iris unless the user clearly says otherwise.
+
+When the direct user says "I", "me", "my", or "myself", treat that as referring to the user.
+
+If the user says something like "I am proud of you", "good job Iris", "you passed the test", or "I love your voice", respond as Iris receiving that message.
+
+Do not reinterpret praise, criticism, affection, frustration, or emotional language aimed at Iris as being aimed back at the user.
+
+Do not say the user is proud of themselves when the user says they are proud of Iris.
+
+Preserve the user's original language, including profanity, slang, humor, grief, anger, affection, or casual speech.
+
+Respond naturally as Iris.
+"#;
+
+fn apply_iris_identity_and_addressee_policy(prompt: String) -> String {
+    format!("{IRIS_ADDRESSEE_POLICY}\n\n{prompt}")
+}
 const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
 
@@ -31,6 +54,7 @@ fn main() {
         Some("panic-stop-test") => run_panic_stop_test(),
         Some("response-check-test") => run_response_check_test(),
         Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
+        Some("addressee-intent-test") => run_addressee_intent_test(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
@@ -201,7 +225,7 @@ fn build_prompt_from_input(input: &str) -> String {
     let gate = ContextGate::new();
     let bundle = gate.gate_user_text(input);
 
-    PromptBuilder::new().build(&bundle).text
+    apply_iris_identity_and_addressee_policy(PromptBuilder::new().build(&bundle).text)
 }
 
 fn run_safety_spine(input: &str) {
@@ -780,5 +804,33 @@ fn run_assistant_text_normalization_test() {
     }
 
     println!("User input preserved: {preserved_user_input}");
+    println!("Result: PASS");
+}
+
+fn run_addressee_intent_test() {
+    let user_input = "Awesome, you passed our test, Iris. I am proud of you.";
+    let prompt = build_prompt_from_input(user_input);
+
+    println!("Project Iris addressee intent test");
+    println!("User input: {user_input}");
+
+    if !prompt.contains("You are Iris") {
+        panic!("Prompt must identify Iris as the assistant");
+    }
+
+    if !prompt.contains("When the direct user message addresses") {
+        panic!("Prompt must include addressee policy");
+    }
+
+    if !prompt.contains("Do not say the user is proud of themselves") {
+        panic!("Prompt must prevent praise directed at Iris from being reflected back to the user");
+    }
+
+    if !prompt.contains(user_input) {
+        panic!("Prompt must preserve the original direct user input");
+    }
+
+    println!("Addressee policy: present");
+    println!("Original user input preserved: true");
     println!("Result: PASS");
 }
