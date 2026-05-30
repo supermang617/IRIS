@@ -1,6 +1,20 @@
+param(
+    [string] $ModelPrefix = "huihui_ai/qwen3.5-abliterated",
+    [int] $NumCtx = 8192,
+    [int] $NumPredict = 160
+)
+
 $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
+
+$SelfPath = $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($SelfPath)) {
+    $SelfPath = $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($SelfPath)) {
+    $SelfPath = ""
+}
 
 function Write-Section {
     param([string] $Text)
@@ -19,23 +33,88 @@ function Invoke-Step {
     Write-Section $Name
 
     & $Command @Arguments
+    $exit = $LASTEXITCODE
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Name failed with exit code $LASTEXITCODE"
+    if ($exit -ne 0) {
+        throw "$Name failed with exit code $exit"
     }
+}
+
+function Get-InstalledIrisModel {
+    param([string] $Prefix)
+
+    Write-Section "Ollama model check"
+
+    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+        Write-Host "Ollama not found. Continuing without model env setup."
+        return ""
+    }
+
+    $list = @(ollama list)
+    $list | ForEach-Object { Write-Host $_ }
+
+    foreach ($line in ($list | Select-Object -Skip 1)) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+
+        $name = ($trimmed -split "\s+")[0]
+        if ($name.StartsWith($Prefix)) {
+            return $name
+        }
+    }
+
+    return ""
+}
+
+function Get-ScriptFilesForScan {
+    $resolvedSelf = ""
+    if (-not [string]::IsNullOrWhiteSpace($script:SelfPath) -and (Test-Path $script:SelfPath)) {
+        $resolvedSelf = (Resolve-Path $script:SelfPath).Path
+    }
+
+    Get-ChildItem -Path "scripts" -Recurse -File -Filter "*.ps1" -ErrorAction SilentlyContinue |
+        Where-Object {
+            if ($null -eq $_) {
+                return $false
+            }
+
+            if ([string]::IsNullOrWhiteSpace($_.FullName)) {
+                return $false
+            }
+
+            $resolvedCurrent = ""
+            try {
+                $resolvedCurrent = (Resolve-Path $_.FullName).Path
+            } catch {
+                return $false
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($resolvedSelf) -and $resolvedCurrent -eq $resolvedSelf) {
+                return $false
+            }
+
+            return $true
+        }
 }
 
 function Assert-NoInteractiveDevPrompts {
     Write-Section "Development script prompt scan"
 
-    $self = $MyInvocation.MyCommand.Path
     $readHostToken = "Read" + "-Host"
+    $files = @(Get-ScriptFilesForScan)
 
-    $hits = Get-ChildItem -Path "scripts" -Recurse -File -Filter "*.ps1" |
-        Where-Object { (Resolve-Path $_.FullName).Path -ne (Resolve-Path $self).Path } |
-        Select-String -Pattern $readHostToken -SimpleMatch -ErrorAction SilentlyContinue
+    $hits = @()
 
-    if ($hits) {
+    foreach ($file in $files) {
+        $found = Select-String -Path $file.FullName -Pattern $readHostToken -SimpleMatch -ErrorAction SilentlyContinue
+        if ($found) {
+            $hits += $found
+        }
+    }
+
+    if ($hits.Count -gt 0) {
         foreach ($hit in $hits) {
             Write-Host "$($hit.Path):$($hit.LineNumber): $($hit.Line.Trim())"
         }
@@ -47,7 +126,7 @@ function Assert-NoInteractiveDevPrompts {
 }
 
 function Assert-RuntimeBoundary {
-    Write-Section "Runtime boundary scan"
+    Write-Section "Runtime safety boundary scan"
 
     $runtimePath = "crates\iris-runtime\src\main.rs"
 
@@ -102,7 +181,49 @@ function Assert-ManifestSafetyWording {
     Write-Host "PASS: manifest safety wording passed."
 }
 
-function Assert-DeicticOutput {
+function Assert-ModelReferenceDrift {
+    Write-Section "Model reference drift scan"
+
+    $oldPatterns = @(
+        "qwen3-vl:4b",
+        "qwen3.6",
+        "gemma4",
+        "local-coder",
+        "qwen2.5-coder",
+        "huihui_ai/qwen2.5-vl-abliterated"
+    )
+
+    $files = Get-ChildItem -Path "." -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notmatch "\\\.git\\" -and
+            $_.FullName -notmatch "\\target\\" -and
+            $_.FullName -notmatch "\\\.iris-dev\\" -and
+            $_.FullName -notmatch "\\scripts\\verify_iris_foundation_guard\.ps1$" -and
+            $_.FullName -notmatch "\\scripts\\verify_iris_voice_text_milestone\.ps1$" -and
+            $_.Extension -in @(".rs", ".toml", ".md", ".ps1", ".txt")
+        }
+
+    $hits = @()
+
+    foreach ($pattern in $oldPatterns) {
+        $found = $files | Select-String -Pattern $pattern -SimpleMatch -ErrorAction SilentlyContinue
+        if ($found) {
+            $hits += $found
+        }
+    }
+
+    if ($hits.Count -gt 0) {
+        foreach ($hit in $hits) {
+            Write-Host "$($hit.Path):$($hit.LineNumber): $($hit.Line.Trim())"
+        }
+
+        throw "Old model reference drift found."
+    }
+
+    Write-Host "PASS: no old model references found."
+}
+
+function Assert-HudOutput {
     param(
         [string] $Name,
         [string] $Prompt,
@@ -113,18 +234,17 @@ function Assert-DeicticOutput {
     Write-Section $Name
 
     $output = cargo run -p iris-runtime -- hud-submit-test $Prompt 2>&1
-    $exitCode = $LASTEXITCODE
+    $exit = $LASTEXITCODE
 
     $output | ForEach-Object { Write-Host $_ }
 
-    if ($exitCode -ne 0) {
-        throw "$Name command failed with exit code $exitCode"
+    if ($exit -ne 0) {
+        throw "$Name failed with exit code $exit"
     }
 
     $joined = ($output -join "`n").ToLowerInvariant()
 
     $hasRequired = $false
-
     foreach ($needle in $RequiredAny) {
         if ($joined.Contains($needle.ToLowerInvariant())) {
             $hasRequired = $true
@@ -133,56 +253,28 @@ function Assert-DeicticOutput {
     }
 
     if (-not $hasRequired) {
-        throw "$Name did not include any required ownership marker."
+        throw "$Name did not include any required marker."
     }
 
     foreach ($needle in $Forbidden) {
         if ($joined.Contains($needle.ToLowerInvariant())) {
-            throw "$Name contained forbidden ownership text: $needle"
+            throw "$Name contained forbidden text: $needle"
         }
     }
 
     Write-Host "PASS: $Name"
 }
 
-function Get-InstalledIrisModel {
-    Write-Section "Ollama model check"
-
-    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-        Write-Host "Ollama not found in PATH. Skipping model environment setup."
-        return ""
-    }
-
-    $list = @(ollama list)
-    $list | ForEach-Object { Write-Host $_ }
-
-    foreach ($line in ($list | Select-Object -Skip 1)) {
-        $trimmed = $line.Trim()
-
-        if ([string]::IsNullOrWhiteSpace($trimmed)) {
-            continue
-        }
-
-        $name = ($trimmed -split "\s+")[0]
-
-        if ($name.StartsWith("huihui_ai/qwen3.5-abliterated")) {
-            return $name
-        }
-    }
-
-    return ""
-}
-
 Write-Section "Project Iris foundation guard"
 
-$Model = Get-InstalledIrisModel
+$Model = Get-InstalledIrisModel -Prefix $ModelPrefix
 
 if (-not [string]::IsNullOrWhiteSpace($Model)) {
     $env:IRIS_MODEL_ID = $Model
     $env:IRIS_OLLAMA_MODEL = $Model
     $env:IRIS_LOCAL_MODEL = $Model
-    $env:IRIS_MODEL_NUM_CTX = "8192"
-    $env:IRIS_MODEL_NUM_PREDICT = "160"
+    $env:IRIS_MODEL_NUM_CTX = "$NumCtx"
+    $env:IRIS_MODEL_NUM_PREDICT = "$NumPredict"
 
     Write-Host "IRIS_MODEL_ID=$env:IRIS_MODEL_ID"
     Write-Host "IRIS_MODEL_NUM_CTX=$env:IRIS_MODEL_NUM_CTX"
@@ -192,6 +284,7 @@ if (-not [string]::IsNullOrWhiteSpace($Model)) {
 Assert-NoInteractiveDevPrompts
 Assert-RuntimeBoundary
 Assert-ManifestSafetyWording
+Assert-ModelReferenceDrift
 
 Invoke-Step "Cargo format" "cargo" @("fmt", "--all")
 Invoke-Step "Cargo build" "cargo" @("build", "--workspace")
@@ -213,13 +306,13 @@ Invoke-Step "Deictic role test" "cargo" @(
     "deictic-role-test"
 )
 
-Assert-DeicticOutput `
+Assert-HudOutput `
     -Name "HUD praise ownership test" `
     -Prompt "Awesome, you passed our test, Iris. I am proud of you." `
     -RequiredAny @("i passed", "proud i passed", "thank you") `
     -Forbidden @("glad you passed", "you did great", "proud of yourself", "you're proud of yourself", "you are proud of yourself")
 
-Assert-DeicticOutput `
+Assert-HudOutput `
     -Name "HUD voice ownership test" `
     -Prompt "Iris, your voice sounds awesome." `
     -RequiredAny @("my voice") `
