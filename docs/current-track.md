@@ -1,22 +1,33 @@
 # Current Track
 
-## Current checkpoint
+## Current milestone
 
-Dev-only HUD speech boundary.
+Text prompt to spoken Iris response.
 
 Command:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_dev_hud_speech_boundary.ps1 -Prompt "Iris, your voice sounds awesome."
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_to_spoken_turn.ps1
 
-## Why this is next
+## Current status
 
-We already proved the HUD speech plan.
+HUD text path works.
 
-Now we verify that the approved, role-repaired speech text can reach the existing Kokoro voice path without adding process execution inside the Rust runtime.
+Role handling works.
+
+Speech plan works.
+
+Dev Kokoro speech boundary works.
+
+Text-to-spoken turn is now the active milestone gate.
 
 ## Next after this passes
 
-Manual voice confirmation, then decide the clean permanent TTS boundary.
+Build the voice-input-to-spoken-response turn:
+
+voice input
+-> transcript
+-> checked HUD response path
+-> Kokoro spoken response
 
 ## Do not do yet
 

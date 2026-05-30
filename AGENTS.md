@@ -1328,3 +1328,11 @@ Do not directly assign native command output with stderr redirection.
 
 Reason:
 Cargo writes normal progress output to stderr and PowerShell may render it as red NativeCommandError noise.
+
+## Text-to-spoken milestone rule
+
+Before voice-input work, verify typed input can produce audible Iris speech:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_to_spoken_turn.ps1
+
+This remains a development boundary. Rust runtime must not spawn shell or external processes for speech.
