@@ -1511,18 +1511,13 @@ Rules:
 - Do not let the model call memory directly.
 - Memory retrieval is Iris-owned broker context only.
 - Do not add action, tool, shell, input simulation, plugin, or computer-use capabilities.
-
-
-
-
-
 ## Deictic ownership rule
 
-When the user directly addresses Iris with second-person praise or evaluation, words like "you" and "your" refer to Iris.
+When the user directly addresses Iris, second-person words like "you" and "your" refer to Iris.
 
 Examples:
 - "You passed our test, Iris" means Iris passed.
 - "I am proud of you" means the user is proud of Iris.
 - "Your voice sounds good" means Iris's voice sounds good.
 
-Runtime responses must not misassign those statements back to the user.
+Runtime responses must not map those statements back to the user.

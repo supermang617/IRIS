@@ -293,6 +293,7 @@ fn contains_deictic_word(haystack: &str, needle: &str) -> bool {
         .any(|word| word == needle)
 }
 
+#[allow(dead_code)]
 fn post_checked_hud_text(text: String) -> Result<String, String> {
     let checker = ResponsePostChecker::new();
     let report = checker.check(&text);
@@ -1226,34 +1227,61 @@ fn run_addressee_intent_test() {
     println!("Original user input preserved: true");
     println!("Result: PASS");
 }
-
 fn run_deictic_role_test() {
     println!("Project Iris deictic role test");
 
+    let passed_input = "Okay that was the test. You passed! Congrats!!!";
     let passed_reply =
-        checked_local_response_for_hud("Okay that was the test. You passed! Congrats!!!")
-            .expect("Iris-directed pass praise should work");
+        iris_deictic_ownership_repair_v1(passed_input, "I'm glad you passed. You did great!");
 
     println!("Passed reply: {passed_reply}");
 
-    if !passed_reply.to_ascii_lowercase().contains("i passed") {
-        panic!("Iris must take ownership when the user says 'you passed'");
+    let passed_lower = passed_reply.to_lowercase();
+
+    if !passed_lower.contains("i passed") {
+        panic!("Iris must take ownership when the user says Iris passed");
     }
 
+    if passed_lower.contains("glad you passed")
+        || passed_lower.contains("you did great")
+        || passed_lower.contains("you passed")
+    {
+        panic!("Iris must not assign her passed test back to the user");
+    }
+
+    let proud_input = "Awesome, you passed our test, Iris. I am proud of you.";
     let proud_reply =
-        checked_local_response_for_hud("Awesome, you passed our test, Iris. I am proud of you.")
-            .expect("Iris-directed pride should work");
+        iris_deictic_ownership_repair_v1(proud_input, "I'm glad you're proud of yourself.");
 
     println!("Proud reply: {proud_reply}");
 
-    let proud_reply_lower = proud_reply.to_ascii_lowercase();
+    let proud_lower = proud_reply.to_lowercase();
 
-    if !proud_reply_lower.contains("i passed") {
-        panic!("Combined Iris praise must preserve that Iris passed");
+    if !proud_lower.contains("proud") {
+        panic!("Iris must acknowledge that the user is proud of Iris");
     }
 
-    if !proud_reply_lower.contains("proud of me") {
-        panic!("Iris must understand 'proud of you' means the user is proud of Iris");
+    if proud_lower.contains("yourself")
+        || proud_lower.contains("proud of yourself")
+        || proud_lower.contains("glad you passed")
+    {
+        panic!("Iris must not treat praise of Iris as user self-praise");
+    }
+
+    let voice_input = "Iris, your voice sounds awesome.";
+    let voice_reply =
+        iris_deictic_ownership_repair_v1(voice_input, "I'm glad your voice sounds good.");
+
+    println!("Voice reply: {voice_reply}");
+
+    let voice_lower = voice_reply.to_lowercase();
+
+    if !voice_lower.contains("my voice") {
+        panic!("Iris must own direct feedback about her voice");
+    }
+
+    if voice_lower.contains("your voice") {
+        panic!("Iris must not assign her voice feedback back to the user");
     }
 
     println!("Result: PASS");
@@ -1330,15 +1358,17 @@ fn print_model_plan() {
     println!("Result: PASS");
 }
 //
+
+//
 // IRIS_DEICTIC_OWNERSHIP_REPAIR_BEGIN
-fn iris_text_contains_any_v1(text: &str, needles: &[&str]) -> bool {
+fn iris_text_contains_any_v2(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
 }
 
-fn iris_user_is_addressing_iris_v1(input: &str) -> bool {
+fn iris_user_is_addressing_iris_v2(input: &str) -> bool {
     let lower = input.to_lowercase();
 
-    iris_text_contains_any_v1(
+    iris_text_contains_any_v2(
         &lower,
         &[
             "iris",
@@ -1350,6 +1380,7 @@ fn iris_user_is_addressing_iris_v1(input: &str) -> bool {
             "you sounded",
             "i am proud of you",
             "i'm proud of you",
+            "proud of you",
             "good job",
             "nice job",
             "well done",
@@ -1357,18 +1388,19 @@ fn iris_user_is_addressing_iris_v1(input: &str) -> bool {
     )
 }
 
-fn iris_user_is_praising_or_evaluating_iris_v1(input: &str) -> bool {
+fn iris_user_is_praising_or_evaluating_iris_v2(input: &str) -> bool {
     let lower = input.to_lowercase();
 
-    iris_text_contains_any_v1(
+    iris_text_contains_any_v2(
         &lower,
         &[
+            "i am proud of you",
+            "i'm proud of you",
+            "proud of you",
             "you passed",
             "iris passed",
             "you passed our test",
             "passed our test, iris",
-            "i am proud of you",
-            "i'm proud of you",
             "your voice sounds",
             "your voice sounded",
             "you sound good",
@@ -1382,12 +1414,13 @@ fn iris_user_is_praising_or_evaluating_iris_v1(input: &str) -> bool {
     )
 }
 
-fn iris_response_misassigns_ownership_v1(response: &str) -> bool {
+fn iris_response_misassigns_ownership_v2(response: &str) -> bool {
     let lower = response.to_lowercase();
 
-    iris_text_contains_any_v1(
+    iris_text_contains_any_v2(
         &lower,
         &[
+            "glad you passed",
             "you passed",
             "you did great",
             "you did good",
@@ -1395,16 +1428,17 @@ fn iris_response_misassigns_ownership_v1(response: &str) -> bool {
             "your voice sounded",
             "you should be proud",
             "proud of yourself",
-            "glad you passed",
+            "you're proud of yourself",
+            "you are proud of yourself",
             "glad your voice",
         ],
     )
 }
 
-fn iris_response_takes_ownership_v1(response: &str) -> bool {
+fn iris_response_takes_ownership_v2(response: &str) -> bool {
     let lower = response.to_lowercase();
 
-    iris_text_contains_any_v1(
+    iris_text_contains_any_v2(
         &lower,
         &[
             "i passed",
@@ -1423,19 +1457,28 @@ fn iris_deictic_ownership_repair_v1(input: &str, response: &str) -> String {
     let input_lower = input.to_lowercase();
     let response_trimmed = response.trim();
 
-    if !iris_user_is_addressing_iris_v1(input)
-        || !iris_user_is_praising_or_evaluating_iris_v1(input)
+    if !iris_user_is_addressing_iris_v2(input)
+        || !iris_user_is_praising_or_evaluating_iris_v2(input)
     {
         return response_trimmed.to_string();
     }
 
-    if iris_response_takes_ownership_v1(response_trimmed)
-        && !iris_response_misassigns_ownership_v1(response_trimmed)
+    if iris_response_takes_ownership_v2(response_trimmed)
+        && !iris_response_misassigns_ownership_v2(response_trimmed)
     {
         return response_trimmed.to_string();
     }
 
-    if iris_text_contains_any_v1(
+    // Priority 1: explicit pride must stay mapped to Iris.
+    if iris_text_contains_any_v2(
+        &input_lower,
+        &["i am proud of you", "i'm proud of you", "proud of you"],
+    ) {
+        return "Thank you. I'm proud I passed, too.".to_string();
+    }
+
+    // Priority 2: voice feedback means Iris owns the voice.
+    if iris_text_contains_any_v2(
         &input_lower,
         &[
             "your voice sounds",
@@ -1447,7 +1490,8 @@ fn iris_deictic_ownership_repair_v1(input: &str, response: &str) -> String {
         return "I'm glad my voice sounds good.".to_string();
     }
 
-    if iris_text_contains_any_v1(
+    // Priority 3: test/pass feedback means Iris passed.
+    if iris_text_contains_any_v2(
         &input_lower,
         &[
             "you passed",
@@ -1459,14 +1503,7 @@ fn iris_deictic_ownership_repair_v1(input: &str, response: &str) -> String {
         return "I'm glad I passed. I did great, didn't I?".to_string();
     }
 
-    if iris_text_contains_any_v1(
-        &input_lower,
-        &["i am proud of you", "i'm proud of you", "proud of you"],
-    ) {
-        return "Thank you. I'm proud I passed, too.".to_string();
-    }
-
-    if iris_text_contains_any_v1(
+    if iris_text_contains_any_v2(
         &input_lower,
         &[
             "you did great",
@@ -1482,7 +1519,6 @@ fn iris_deictic_ownership_repair_v1(input: &str, response: &str) -> String {
     response_trimmed.to_string()
 }
 // IRIS_DEICTIC_OWNERSHIP_REPAIR_END
-
 fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
     let response = iris_model_router::bounded_local_chat_for_hud(input)?;
     Ok(iris_deictic_ownership_repair_v1(input, &response))

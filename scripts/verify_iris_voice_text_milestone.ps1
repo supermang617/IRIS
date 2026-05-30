@@ -15,38 +15,6 @@ function Write-Section {
     Write-Host "=== $Text ==="
 }
 
-function Show-RecentIrisReports {
-    Write-Section "Recent Iris reports"
-
-    $reportRoots = @(
-        ".iris-dev\models",
-        ".iris-dev\diagnostics"
-    )
-
-    foreach ($root in $reportRoots) {
-        if (-not (Test-Path $root)) {
-            continue
-        }
-
-        $reports = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -in @(".txt", ".log") } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 5
-
-        foreach ($report in $reports) {
-            Write-Host ""
-            Write-Host "Report: $($report.FullName)"
-            Write-Host "Modified: $($report.LastWriteTime)"
-
-            try {
-                Get-Content -Path $report.FullName -Tail 20
-            } catch {
-                Write-Host "Could not read report tail."
-            }
-        }
-    }
-}
-
 function Get-InstalledIrisModel {
     param([string] $Prefix)
 
@@ -87,7 +55,6 @@ function Invoke-Step {
     & $Command @Arguments
 
     if ($LASTEXITCODE -ne 0) {
-        Show-RecentIrisReports
         throw "$Name failed with exit code $LASTEXITCODE"
     }
 }
@@ -183,7 +150,6 @@ Write-Host "IRIS_MODEL_ID=$env:IRIS_MODEL_ID"
 Write-Host "IRIS_MODEL_NUM_CTX=$env:IRIS_MODEL_NUM_CTX"
 Write-Host "IRIS_MODEL_NUM_PREDICT=$env:IRIS_MODEL_NUM_PREDICT"
 
-Show-RecentIrisReports
 Assert-NoKnownModelDrift -ActiveModel $Model
 Assert-RuntimeSafetyBoundary
 
