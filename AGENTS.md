@@ -1515,3 +1515,14 @@ Rules:
 
 
 
+
+## Deictic ownership rule
+
+When the user directly addresses Iris with second-person praise or evaluation, words like "you" and "your" refer to Iris.
+
+Examples:
+- "You passed our test, Iris" means Iris passed.
+- "I am proud of you" means the user is proud of Iris.
+- "Your voice sounds good" means Iris's voice sounds good.
+
+Runtime responses must not misassign those statements back to the user.
