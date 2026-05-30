@@ -530,3 +530,20 @@ This command must verify:
 - one-shot voice input to checked spoken response
 
 Do not move to screen capture, OCR, memory database, full UI, dashboard, or always-listening voice until this milestone is stable.
+
+## Text and voice milestone verification rule
+
+Use scripts/verify_iris_text_voice_milestone.ps1 to validate the first basic text and voice response milestone.
+
+This command must verify:
+- cargo fmt
+- cargo build
+- cargo test
+- xtask audit
+- runtime self-check
+- Panic Stop test
+- response post-check test
+- typed prompt to checked spoken response
+- one-shot voice input to checked spoken response
+
+Do not move to screen capture, OCR, memory database, full UI, dashboard, or always-listening voice until this milestone is stable.
