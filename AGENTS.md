@@ -694,3 +694,16 @@ Do not speak blocked model output.
 Do not add cloud TTS, paid TTS APIs, or always-listening voice.
 
 Do not commit downloaded model files or Python virtual environments.
+
+## Kokoro first-word clipping rule
+
+If Kokoro playback cuts off the first words, add lead-in silence to the generated WAV before playback.
+
+Default:
+LeadSilenceMs = 700
+TailSilenceMs = 250
+
+Do not fix this by adding complex playback architecture yet.
+
+Keep the fix small:
+generate WAV -> prepend silence -> play WAV.

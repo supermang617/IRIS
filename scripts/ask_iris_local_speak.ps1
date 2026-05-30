@@ -5,6 +5,8 @@ param(
     [string] $TtsBackend = "Kokoro",
     [string] $KokoroVoice = "af_heart",
     [double] $KokoroSpeed = 1.0,
+    [int] $KokoroLeadSilenceMs = 700,
+    [int] $KokoroTailSilenceMs = 250,
     [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
@@ -31,6 +33,7 @@ if ($DryRun) {
     Write-Host "- require Response post-check: PASS"
     Write-Host "- extract the checked model response"
     Write-Host "- speak through Kokoro ONNX by default"
+    Write-Host "- add lead-in silence so the first words are not cut off"
     Write-Host "- optionally fall back to Windows speech synthesis"
     Write-Host "No model call was made."
     Write-Host "No speech was played."
@@ -124,7 +127,13 @@ if ($TtsBackend -eq "Kokoro") {
     Write-Host ""
     Write-Host "=== Speaking Iris response with Kokoro ONNX ==="
 
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\speak_iris_kokoro.ps1" -Text $responseText -Voice $KokoroVoice -Speed $KokoroSpeed
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\speak_iris_kokoro.ps1" `
+        -Text $responseText `
+        -Voice $KokoroVoice `
+        -Speed $KokoroSpeed `
+        -LeadSilenceMs $KokoroLeadSilenceMs `
+        -TailSilenceMs $KokoroTailSilenceMs
+
     if ($LASTEXITCODE -ne 0) { throw "Kokoro speech failed" }
 
     Write-Host ""

@@ -2,6 +2,8 @@ param(
     [string] $Text = "Hello, I am Iris. This is my Kokoro voice.",
     [string] $Voice = "af_heart",
     [double] $Speed = 1.0,
+    [int] $LeadSilenceMs = 700,
+    [int] $TailSilenceMs = 250,
     [switch] $NoPlay,
     [switch] $UseInt8,
     [switch] $DryRun
@@ -24,6 +26,8 @@ Write-Host ""
 Write-Host "=== Project Iris Kokoro speak test ==="
 Write-Host "Voice: $Voice"
 Write-Host "Speed: $Speed"
+Write-Host "Lead silence ms: $LeadSilenceMs"
+Write-Host "Tail silence ms: $TailSilenceMs"
 
 if ($DryRun) {
     Write-Host "Dry run only. No TTS generation or playback performed."
@@ -35,6 +39,14 @@ if (-not (Test-Path $venvPython) -or -not (Test-Path $modelPath) -or -not (Test-
     throw "Kokoro is not set up. Run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1"
 }
 
+if ($LeadSilenceMs -lt 0) {
+    throw "LeadSilenceMs must not be negative."
+}
+
+if ($TailSilenceMs -lt 0) {
+    throw "TailSilenceMs must not be negative."
+}
+
 & $venvPython "scripts\iris_kokoro_tts.py" `
     --text $Text `
     --model $modelPath `
@@ -42,7 +54,9 @@ if (-not (Test-Path $venvPython) -or -not (Test-Path $modelPath) -or -not (Test-
     --output $outputPath `
     --voice $Voice `
     --speed $Speed `
-    --lang "en-us"
+    --lang "en-us" `
+    --lead-silence-ms $LeadSilenceMs `
+    --tail-silence-ms $TailSilenceMs
 
 if ($LASTEXITCODE -ne 0) { throw "Kokoro TTS generation failed" }
 
@@ -65,6 +79,7 @@ Write-Host "=== Playing Kokoro audio ==="
 Add-Type -AssemblyName System
 $player = New-Object System.Media.SoundPlayer $outputPath
 $player.Load()
+Start-Sleep -Milliseconds 200
 $player.PlaySync()
 
 Write-Host ""

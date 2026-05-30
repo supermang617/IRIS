@@ -4,7 +4,7 @@ Use this file to avoid drifting from the roadmap.
 
 ## Current goal
 
-Validate and harden the first basic text and voice response milestone.
+Stabilize the first basic text and voice response milestone.
 
 ## Voice direction
 
@@ -16,19 +16,27 @@ Current default voice:
 
 af_heart
 
-Temporary fallback:
+Current playback fix:
 
-Windows speech synthesis
+Kokoro output includes lead-in silence before speech so the first words are not clipped by device wake-up latency.
+
+Default lead-in silence:
+
+700 ms
+
+Default tail silence:
+
+250 ms
 
 ## Useful voice commands
 
-Setup Kokoro:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1
-
 Test Kokoro voice only:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris."
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice."
+
+Test with longer lead-in if first words are still clipped:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris. This is my Kokoro voice." -LeadSilenceMs 1000
 
 Text prompt to Kokoro spoken response:
 
@@ -40,9 +48,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice
 
 ## Do next
 
-Run Kokoro setup and hear the first Kokoro Iris voice.
+Verify the Kokoro lead-in silence fix.
 
-Then run the text prompt to Kokoro spoken response test.
+Then run typed prompt -> Iris model -> response post-check -> Kokoro spoken output.
 
 ## Do not do yet
 

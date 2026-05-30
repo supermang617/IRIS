@@ -5,6 +5,8 @@ param(
     [string] $TtsBackend = "Kokoro",
     [string] $KokoroVoice = "af_heart",
     [double] $KokoroSpeed = 1.0,
+    [int] $KokoroLeadSilenceMs = 700,
+    [int] $KokoroTailSilenceMs = 250,
     [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
@@ -33,6 +35,10 @@ if ($DryRun) {
     $scriptArgs += $KokoroVoice
     $scriptArgs += "-KokoroSpeed"
     $scriptArgs += "$KokoroSpeed"
+    $scriptArgs += "-KokoroLeadSilenceMs"
+    $scriptArgs += "$KokoroLeadSilenceMs"
+    $scriptArgs += "-KokoroTailSilenceMs"
+    $scriptArgs += "$KokoroTailSilenceMs"
     $scriptArgs += "-Rate"
     $scriptArgs += "$Rate"
     $scriptArgs += "-Volume"
