@@ -20,23 +20,14 @@ Ollama is only being used to test local model behavior quickly on Windows.
 
 Do not make Ollama a required production dependency.
 
-## Current status
-
-Iris supports:
-
-- typed prompt through ask-local
-- explicit one-shot voice input helper
-- local model response through Ollama loopback
-- response post-check before displaying or speaking output
-- local spoken response through Windows speech synthesis
-- Panic Stop skeleton
-- safety spine verification
-
 ## Current fix
 
-PowerShell native command capture is now done through System.Diagnostics.ProcessStartInfo.
+PowerShell native command capture is now handled with Start-Process, redirected stdout, and redirected stderr.
 
-This avoids PowerShell treating normal Cargo stderr status output as a terminating NativeCommandError.
+Avoid:
+- `2>&1` with Cargo
+- direct `& cargo ...` capture when stderr matters
+- ProcessStartInfo.ArgumentList because it is not reliable across Windows PowerShell versions
 
 ## Useful commands
 

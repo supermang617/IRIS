@@ -584,3 +584,14 @@ When a PowerShell script must parse Cargo or runtime output, use System.Diagnost
 Do not use `2>&1` with `$ErrorActionPreference = "Stop"` for Cargo commands that are expected to write normal status text to stderr.
 
 Do not use direct native command capture when stderr must be parsed separately.
+
+## PowerShell native capture rule
+
+When parsing Cargo or runtime output, use Start-Process with redirected stdout and redirected stderr.
+
+Do not use:
+- `2>&1` with Cargo under `$ErrorActionPreference = "Stop"`
+- direct native-command capture when stderr matters
+- ProcessStartInfo.ArgumentList, because it is not reliable across Windows PowerShell versions
+
+This prevents repeated native-command capture failures in the voice helper scripts.
