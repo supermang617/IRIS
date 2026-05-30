@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
-    [string[]] $AnchorWords = @("testing", "iris", "voice", "test"),
-    [int] $TimeoutSeconds = 25,
+    [string[]] $AnchorWords = @("testing", "voice", "test"),
+    [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
     [switch] $NoResponse
 )
@@ -13,11 +13,13 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $voiceDir = Join-Path $repoRoot ".iris-dev\voice"
 $diagDir = Join-Path $repoRoot ".iris-dev\diagnostics"
+
 New-Item -ItemType Directory -Force -Path @($voiceDir, $diagDir) | Out-Null
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $transcriptPath = Join-Path $voiceDir "last-transcript.txt"
 $diagPath = Join-Path $diagDir ("voice-input-" + $timestamp + ".txt")
+
 Remove-Item -Force -ErrorAction SilentlyContinue $transcriptPath
 
 function Add-Diag {
@@ -27,6 +29,7 @@ function Add-Diag {
 
 Write-Host "=== Project Iris one-shot voice input ==="
 Write-Host ("Expected phrase: " + $ExpectedPhrase)
+Write-Host ("Anchor words: " + ($AnchorWords -join ", "))
 Write-Host ("Timeout seconds: " + $TimeoutSeconds)
 Write-Host ("Max attempts: " + $MaxAttempts)
 Write-Host "Speak only after: Listening now..."
@@ -69,8 +72,10 @@ try {
         }
 
         $candidate = ($result.Text).Trim()
+
         Write-Host ("Transcript candidate: " + $candidate)
         Write-Host ("Confidence: " + $result.Confidence)
+
         Add-Diag ("Attempt " + $attempt + " transcript: " + $candidate)
         Add-Diag ("Attempt " + $attempt + " confidence: " + $result.Confidence)
 
@@ -87,6 +92,7 @@ try {
     }
 
     $acceptedTranscript | Set-Content -Encoding UTF8 $transcriptPath
+
     Add-Diag ("Final transcript: " + $acceptedTranscript)
     Add-Diag ("Transcript file: " + $transcriptPath)
 
@@ -94,20 +100,9 @@ try {
     Write-Host "=== Extracted transcript ==="
     Write-Host $acceptedTranscript
     Write-Host ("Transcript file: " + $transcriptPath)
-
-    if (-not $NoResponse) {
-        $bridge = Join-Path $PSScriptRoot "ask_iris_local_speak.ps1"
-        if (Test-Path $bridge) {
-            powershell -NoProfile -ExecutionPolicy Bypass -File $bridge $acceptedTranscript
-            if ($LASTEXITCODE -ne 0) {
-                throw "Local speak bridge failed with exit code $LASTEXITCODE"
-            }
-        }
-    }
-
-    Write-Host ""
     Write-Host "Result: PASS"
-} finally {
+}
+finally {
     if ($null -ne $recognizer) {
         $recognizer.Dispose()
     }

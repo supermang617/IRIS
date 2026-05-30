@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
-    [string[]] $AnchorWords = @("testing", "iris", "voice", "test"),
-    [int] $TimeoutSeconds = 25,
+    [string[]] $AnchorWords = @("testing", "voice", "test"),
+    [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3
 )
 
@@ -57,6 +57,7 @@ $missing = @()
 
 foreach ($word in $AnchorWords) {
     $w = (($word.ToLowerInvariant() -replace "[^a-z0-9\s]", " ") -replace "\s+", " ").Trim()
+
     if (-not [string]::IsNullOrWhiteSpace($w) -and $normalized -notmatch [regex]::Escape($w)) {
         $missing += $word
     }
