@@ -2,6 +2,9 @@ param(
     [string] $Prompt = "In one sentence, say hello as Iris and confirm you are running locally.",
     [switch] $DryRun,
     [switch] $NoSpeak,
+    [string] $TtsBackend = "Kokoro",
+    [string] $KokoroVoice = "af_heart",
+    [double] $KokoroSpeed = 1.0,
     [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
@@ -24,6 +27,12 @@ if ($DryRun) {
 } else {
     $scriptArgs += "-Prompt"
     $scriptArgs += $Prompt
+    $scriptArgs += "-TtsBackend"
+    $scriptArgs += $TtsBackend
+    $scriptArgs += "-KokoroVoice"
+    $scriptArgs += $KokoroVoice
+    $scriptArgs += "-KokoroSpeed"
+    $scriptArgs += "$KokoroSpeed"
     $scriptArgs += "-Rate"
     $scriptArgs += "$Rate"
     $scriptArgs += "-Volume"

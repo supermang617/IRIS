@@ -1,10 +1,9 @@
 param(
-    [string] $Text = "Hello, I am Iris. This is my local Kokoro voice.",
+    [string] $Text = "Hello, I am Iris. This is my Kokoro voice.",
     [string] $Voice = "af_heart",
     [double] $Speed = 1.0,
-    [string] $OutFile = "tools\kokoro\iris_output.wav",
-    [string] $Model = "kokoro-v1.0.onnx",
     [switch] $NoPlay,
+    [switch] $UseInt8,
     [switch] $DryRun
 )
 
@@ -12,59 +11,47 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
-$kokoroDir = Join-Path (Get-Location) "tools\kokoro"
-$ttsScript = Join-Path $kokoroDir "tts.py"
-$modelPath = Join-Path $kokoroDir $Model
-$voicesPath = Join-Path $kokoroDir "voices-v1.0.bin"
-$outputPath = Join-Path (Get-Location) $OutFile
+$ttsRoot = Join-Path (Get-Location) ".iris-dev\tts\kokoro"
+$modelPath = Join-Path $ttsRoot "kokoro-v1.0.onnx"
+if ($UseInt8) {
+    $modelPath = Join-Path $ttsRoot "kokoro-v1.0.int8.onnx"
+}
+$voicesPath = Join-Path $ttsRoot "voices-v1.0.bin"
+$venvPython = Join-Path $ttsRoot ".venv\Scripts\python.exe"
+$outputPath = Join-Path $ttsRoot "iris_output.wav"
 
 Write-Host ""
-Write-Host "=== Project Iris Kokoro speak helper ==="
+Write-Host "=== Project Iris Kokoro speak test ==="
 Write-Host "Voice: $Voice"
 Write-Host "Speed: $Speed"
-Write-Host "Output: $outputPath"
 
 if ($DryRun) {
-    Write-Host ""
-    Write-Host "Dry run only."
-    Write-Host "This script will generate a local WAV with Kokoro ONNX and play it unless -NoPlay is set."
-    Write-Host "No model call was made."
-    Write-Host "No audio was generated."
+    Write-Host "Dry run only. No TTS generation or playback performed."
     Write-Host "Result: PASS"
     return
 }
 
-if (-not (Test-Path $ttsScript)) {
-    throw "Missing TTS helper: $ttsScript"
+if (-not (Test-Path $venvPython) -or -not (Test-Path $modelPath) -or -not (Test-Path $voicesPath)) {
+    throw "Kokoro is not set up. Run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1"
 }
 
-if (-not (Test-Path $modelPath)) {
-    throw "Missing Kokoro model file: $modelPath. Run scripts\setup_iris_kokoro_tts.ps1 -Install first."
-}
+& $venvPython "scripts\iris_kokoro_tts.py" `
+    --text $Text `
+    --model $modelPath `
+    --voices $voicesPath `
+    --output $outputPath `
+    --voice $Voice `
+    --speed $Speed `
+    --lang "en-us"
 
-if (-not (Test-Path $voicesPath)) {
-    throw "Missing Kokoro voices file: $voicesPath. Run scripts\setup_iris_kokoro_tts.ps1 -Install first."
-}
-
-$uvCommand = Get-Command uv -ErrorAction SilentlyContinue
-if ($null -eq $uvCommand) {
-    throw "uv not found. Run scripts\setup_iris_kokoro_tts.ps1 -Install first."
-}
-
-Push-Location $kokoroDir
-try {
-    uv run python "tts.py" --text $Text --voice $Voice --speed $Speed --out $outputPath --model $Model --voices "voices-v1.0.bin"
-    if ($LASTEXITCODE -ne 0) { throw "Kokoro TTS generation failed" }
-} finally {
-    Pop-Location
-}
+if ($LASTEXITCODE -ne 0) { throw "Kokoro TTS generation failed" }
 
 if (-not (Test-Path $outputPath)) {
-    throw "Expected Kokoro output file was not created: $outputPath"
+    throw "Kokoro output file missing: $outputPath"
 }
 
 Write-Host ""
-Write-Host "Generated: $outputPath"
+Write-Host "Audio generated: $outputPath"
 
 if ($NoPlay) {
     Write-Host "Playback skipped because -NoPlay was provided."
@@ -73,20 +60,12 @@ if ($NoPlay) {
 }
 
 Write-Host ""
-Write-Host "Playing generated Kokoro voice locally."
+Write-Host "=== Playing Kokoro audio ==="
 
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-
-$player = New-Object System.Media.SoundPlayer
-$player.SoundLocation = $outputPath
-
-try {
-    $player.Load()
-    $player.PlaySync()
-} finally {
-    $player.Dispose()
-}
+Add-Type -AssemblyName System
+$player = New-Object System.Media.SoundPlayer $outputPath
+$player.Load()
+$player.PlaySync()
 
 Write-Host ""
 Write-Host "Result: PASS"

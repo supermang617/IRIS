@@ -670,3 +670,27 @@ Do not speak blocked model output.
 Prefer voice `af_heart` for initial Iris female voice testing.
 
 Use tools/kokoro for local Kokoro helper files.
+
+## Kokoro ONNX voice integration rule
+
+Kokoro ONNX is the current open-source local TTS development backend.
+
+Default development voice:
+af_heart
+
+Setup command:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1
+
+Voice-only test:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris."
+
+Text-to-Kokoro response test:
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 -Prompt "hello iris"
+
+Windows speech synthesis remains a temporary fallback only.
+
+Do not speak blocked model output.
+
+Do not add cloud TTS, paid TTS APIs, or always-listening voice.
+
+Do not commit downloaded model files or Python virtual environments.

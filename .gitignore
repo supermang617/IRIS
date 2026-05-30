@@ -4,3 +4,6 @@ target/
 .codex_backup*/
 *.tmp
 *.log
+
+# Local Iris development assets
+.iris-dev/

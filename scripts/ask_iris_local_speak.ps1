@@ -2,6 +2,9 @@ param(
     [string] $Prompt = "In one sentence, say hello as Iris and confirm you are running locally.",
     [switch] $DryRun,
     [switch] $NoSpeak,
+    [string] $TtsBackend = "Kokoro",
+    [string] $KokoroVoice = "af_heart",
+    [double] $KokoroSpeed = 1.0,
     [string] $VoiceName = "",
     [int] $Rate = 0,
     [int] $Volume = 90
@@ -18,18 +21,17 @@ Set-Location -Path "C:\Projects\IRIS"
 Write-Host ""
 Write-Host "=== Project Iris text prompt + spoken response test ==="
 Write-Host "Prompt: $Prompt"
+Write-Host "TTS backend: $TtsBackend"
 
 if ($DryRun) {
     Write-Host ""
     Write-Host "Dry run only."
     Write-Host "This script will:"
     Write-Host "- call the compiled Iris runtime binary directly"
-    Write-Host "- avoid parsing cargo run output"
     Write-Host "- require Response post-check: PASS"
     Write-Host "- extract the checked model response"
-    Write-Host "- print the text response"
-    Write-Host "- optionally select a Windows voice by name"
-    Write-Host "- speak the checked response unless -NoSpeak is used"
+    Write-Host "- speak through Kokoro ONNX by default"
+    Write-Host "- optionally fall back to Windows speech synthesis"
     Write-Host "No model call was made."
     Write-Host "No speech was played."
     Write-Host "Result: PASS"
@@ -118,8 +120,24 @@ if ($NoSpeak) {
     return
 }
 
+if ($TtsBackend -eq "Kokoro") {
+    Write-Host ""
+    Write-Host "=== Speaking Iris response with Kokoro ONNX ==="
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\speak_iris_kokoro.ps1" -Text $responseText -Voice $KokoroVoice -Speed $KokoroSpeed
+    if ($LASTEXITCODE -ne 0) { throw "Kokoro speech failed" }
+
+    Write-Host ""
+    Write-Host "Result: PASS"
+    return
+}
+
+if ($TtsBackend -ne "Windows") {
+    throw "Unsupported TTS backend: $TtsBackend. Use Kokoro or Windows."
+}
+
 Write-Host ""
-Write-Host "=== Speaking Iris response locally ==="
+Write-Host "=== Speaking Iris response with Windows speech synthesis ==="
 
 Add-Type -AssemblyName System.Speech
 
@@ -129,17 +147,7 @@ $synth.Volume = $Volume
 
 try {
     if (-not [string]::IsNullOrWhiteSpace($VoiceName)) {
-        Write-Host "Requested voice: $VoiceName"
-        try {
-            $synth.SelectVoice($VoiceName)
-        } catch {
-            Write-Host ""
-            Write-Host "Requested voice was not found. Installed voices:"
-            $synth.GetInstalledVoices() | ForEach-Object {
-                Write-Host "- $($_.VoiceInfo.Name) [$($_.VoiceInfo.Gender)]"
-            }
-            throw "Voice not found: $VoiceName"
-        }
+        $synth.SelectVoice($VoiceName)
     }
 
     Write-Host "Speaking with voice: $($synth.Voice.Name)"

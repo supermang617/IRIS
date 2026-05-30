@@ -1,132 +1,67 @@
 # Iris Voice Strategy
 
-Status: design decision, not full implementation yet.
+Status: active development decision.
 
 ## Goal
 
 Iris must have a natural, humanlike female voice for the v0.1 experience.
 
-The voice should feel warm, clear, calm, and personal without adding large architectural overhead.
+## Current voice backend
 
-## Current development state
-
-Current speech output uses Windows local speech synthesis only as a temporary development helper.
-
-This is acceptable for testing the pipeline:
-
-typed/voice input
--> ContextGate
--> PromptBuilder
--> local model
--> ResponsePostChecker
--> text output
--> spoken output
-
-Windows SAPI is not the final Iris voice.
-
-## Primary open-source target
-
-Primary TTS target:
+Current open-source local TTS development backend:
 
 Kokoro ONNX
 
-Reason:
+Default development voice:
 
-- local-first
-- open-weight model
-- small enough for practical desktop use
-- good naturalness for the footprint
-- supports multiple voices
-- has female voice options
-- ONNX path fits the future Rust architecture through ort
-- better fit than a large Python voice stack for v0.1
+af_heart
 
-Likely initial Iris voice profile:
+Temporary fallback:
 
-- natural female voice
-- English first
-- calm assistant tone
-- medium speed
-- interruptible playback
-- text-only fallback available
+Windows speech synthesis
 
-## Secondary fallback candidate
+## Why Kokoro ONNX
 
-Fallback TTS candidate:
+Kokoro ONNX is the selected near-term open-source voice path because it is:
 
-Piper
-
-Reason:
-
-- fast
 - local
-- lightweight
-- proven offline TTS path
+- open-source / open-weight
+- lightweight enough for development
+- capable of natural female voices
+- simple to call from the current PowerShell workflow
+- compatible with future Rust integration through ONNX Runtime / ort
 
-Use Piper only if Kokoro ONNX packaging, quality, or runtime integration becomes a blocker.
+## Current integration mode
 
-## Not preferred for v0.1
+For now, Kokoro runs as a development helper:
 
-Avoid heavy voice cloning or large Python-first TTS stacks for the first MVP.
+scripts/setup_iris_kokoro_onnx.ps1
+scripts/speak_iris_kokoro.ps1
+scripts/ask_iris_local_speak.ps1
 
-Avoid making Coqui/XTTS-style cloning the default path in v0.1.
+This is not the final Rust iris-voice crate yet.
 
-Reason:
-
-- higher dependency weight
-- more packaging friction
-- more GPU/CPU overhead
-- greater complexity around voice identity and consent
-- not needed for the first stable Iris voice
-
-## Architecture target
+## Production target
 
 Future production path:
 
 iris-voice
--> Kokoro ONNX runtime wrapper
+-> Kokoro ONNX wrapper
 -> checked assistant response
 -> local audio generation
 -> interruptible playback
 -> Panic Stop cancellation
 
-## Safety and privacy rules
+## Safety rules
 
 TTS is output only.
 
-TTS must never create a system-control path.
-
-TTS must not require cloud APIs.
-
-TTS must not send text to a remote service.
+TTS must not add system control.
 
 TTS must not speak blocked model output.
 
-TTS must respect Panic Stop.
+TTS must stay local.
 
-TTS must have a user setting for text-only mode.
+TTS must not require cloud APIs.
 
-## Implementation order
-
-Do not implement full Kokoro yet.
-
-First complete:
-
-1. text and voice milestone stability
-2. Panic Stop cancellation boundary
-3. response post-check stability
-4. local TTS abstraction crate
-5. Kokoro ONNX prototype
-6. female voice selection test
-7. interruptible playback test
-8. replace Windows SAPI helper with Iris-owned TTS path
-
-## Open-source packaging target
-
-For v0.1, Iris should eventually ship or guide install of the chosen voice model files inside Iris-owned directories.
-
-No hidden downloads during normal runtime.
-
-No cloud voice providers.
-
-No paid voice APIs.
+TTS must eventually respect Panic Stop.

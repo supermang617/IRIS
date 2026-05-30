@@ -4,62 +4,46 @@ Use this file to avoid drifting from the roadmap.
 
 ## Current goal
 
-Stabilize the first text and voice response milestone, then upgrade voice quality.
+Validate and harden the first basic text and voice response milestone.
 
 ## Voice direction
 
-Production TTS target:
+Current open-source local TTS backend:
 
-Kokoro ONNX with a natural female voice.
+Kokoro ONNX
 
-Initial Kokoro test voice:
+Current default voice:
 
 af_heart
 
-Current setup status:
+Temporary fallback:
 
-Kokoro helper scripts are added but installation/download is explicit and separate.
+Windows speech synthesis
 
-## Kokoro commands
+## Useful voice commands
 
-Dry-run setup:
+Setup Kokoro:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_tts.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_onnx.ps1
 
-Install full Kokoro model:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_tts.ps1 -Install
-
-Install smaller int8 Kokoro model:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_tts.ps1 -Install -UseInt8
-
-Speak text with Kokoro:
+Test Kokoro voice only:
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris."
 
-Speak checked Iris response with Kokoro:
+Text prompt to Kokoro spoken response:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_kokoro_response.ps1 -Prompt "hello iris"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 -Prompt "hello iris"
 
-## Backend direction
+Windows fallback:
 
-Long-term production LLM backend:
-
-llama.cpp / GGUF
-
-Current development bridge:
-
-Ollama loopback at 127.0.0.1:11434
-
-Ollama is not the final production dependency.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 -Prompt "hello iris" -TtsBackend Windows
 
 ## Do next
 
-Run Kokoro setup install when ready.
+Run Kokoro setup and hear the first Kokoro Iris voice.
 
-Then compare Kokoro af_heart against Windows voice output.
+Then run the text prompt to Kokoro spoken response test.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or full Rust Kokoro integration before the text/voice milestone and Kokoro helper are stable.
+Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or full Rust Kokoro integration before the basic text/voice milestone is stable.
