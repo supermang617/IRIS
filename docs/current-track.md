@@ -1,31 +1,33 @@
 # Current Track
 
-## Active milestone
+## Active architecture checkpoint
 
-Voice input to spoken Iris response.
+Provider manifest and model/runtime future-proofing are now the active plan.
 
-Command:
+## Selected development model
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_to_spoken_turn.ps1
+qwen3-vl:4b
+
+## Current runner
+
+Ollama, development only.
+
+## Locked rule
+
+Iris is not an Ollama app and not a Qwen-only app.
+
+Iris is a local-first read-only assistant shell with a swappable provider manifest.
+
+## Next milestone after this
+
+Return to the open voice-to-spoken conversation milestone:
+
+spoken prompt
+-> transcript quality gate
+-> checked Iris model response
+-> natural speech rendering
+-> Kokoro spoken answer
 
 ## Branch point
 
-After this passes cleanly, create the next conversation handoff.
-
-## Current verified stack
-
-- HUD typed response
-- role handling
-- profanity marker normalization
-- natural speech rendering
-- foundation guard
-- Kokoro dev speech boundary
-- typed prompt to spoken response
-- voice input soft quality gate
-
-## Current target
-
-spoken prompt
--> transcript
--> Iris response
--> spoken Kokoro answer
+Branch only after the open voice-to-spoken response is sensible and not deterministic.

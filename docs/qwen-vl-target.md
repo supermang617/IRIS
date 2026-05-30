@@ -4,7 +4,7 @@ Status: selected local test target.
 
 Default local test model:
 
-huihui_ai/qwen2.5-vl-abliterated:3b
+qwen3-vl:4b
 
 Purpose:
 
@@ -26,4 +26,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_qwen_vl_o
 
 Manual Iris loopback test after model exists:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loopback.ps1 huihui_ai/qwen2.5-vl-abliterated:3b "In one sentence, say hello as Iris and confirm you are running locally."
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_ollama_loopback.ps1 qwen3-vl:4b "In one sentence, say hello as Iris and confirm you are running locally."
+

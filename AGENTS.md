@@ -384,7 +384,7 @@ This script is a development test helper. It does not make Ollama the default ru
 ## Selected Qwen2.5-VL test model rule
 
 The selected local test model is:
-huihui_ai/qwen2.5-vl-abliterated:3b
+qwen3-vl:4b
 
 Use scripts/setup_iris_qwen_vl_ollama.ps1 to pull it through Ollama and run the first Iris local-thinking test.
 
@@ -399,7 +399,7 @@ The default runtime remains disabled stub unless an explicit test command opts i
 Use scripts/smoke_test_selected_qwen_model.ps1 after the selected Qwen2.5-VL model is installed.
 
 Selected model:
-huihui_ai/qwen2.5-vl-abliterated:3b
+qwen3-vl:4b
 
 This is the first repeatable local-thinking smoke test.
 
@@ -1467,3 +1467,27 @@ Brewers
 If a whole
 
 The purpose of this gate is to prevent obvious STT failures from reaching Iris while still allowing the voice pipeline to be tested.
+
+## Model/runtime manifest rule
+
+Iris must remain model-agnostic and runner-agnostic.
+
+Current development model:
+qwen3-vl:4b
+
+Current development runner:
+Ollama
+
+Rules:
+- Do not hardcode Iris core to a model family.
+- Do not hardcode Iris core to a runner.
+- Use a manifest/provider boundary.
+- Keep Ollama as development runner until promoted.
+- Keep Kokoro ONNX as TTS until a replacement is proven.
+- Keep ASR isolated from cognition.
+- Do not replace working subsystems with unified multimodal models until the replacement passes milestone tests.
+
+Manifest files:
+- config/iris-runtime-manifest.example.toml
+- config/iris-runtime-manifest.dev.toml
+

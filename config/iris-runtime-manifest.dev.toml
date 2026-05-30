@@ -1,0 +1,22 @@
+# Iris Development Runtime Manifest
+
+[manifest]
+schema_version = 1
+status = "local_development"
+
+[current]
+runner = "ollama"
+text_model = "qwen3-vl:4b"
+vision_model = "qwen3-vl:4b"
+asr_backend = "current_local_push_to_talk"
+tts_backend = "kokoro_onnx"
+context_limit_tokens = 4096
+hardware_tier = "desktop_8gb_vram"
+
+[safety]
+runtime_network = "disabled_in_iris_runtime"
+ollama = "development_runner_only"
+shell_execution = "forbidden_in_iris_runtime"
+input_simulation = "forbidden"
+clipboard = "forbidden"
+plugins = "forbidden"

@@ -27,4 +27,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_voi
 
 Current selected model:
 
-huihui_ai/qwen2.5-vl-abliterated:3b
+qwen3-vl:4b
+

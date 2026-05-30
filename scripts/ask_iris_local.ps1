@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 Set-Location -Path "C:\Projects\IRIS"
 
-$model = "huihui_ai/qwen2.5-vl-abliterated:3b"
+$model = "qwen3-vl:4b"
 $prompt = if ($args.Count -gt 0) {
     ($args -join " ")
 } else {
@@ -20,3 +20,4 @@ if ($LASTEXITCODE -ne 0) { throw "Iris selected model ask-local test failed" }
 Write-Host ""
 Write-Host "=== PASS ==="
 git status --short
+

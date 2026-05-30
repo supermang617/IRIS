@@ -19,7 +19,7 @@ use iris_voice::{
     PushToTalkStateMachine, VoiceInputPolicy, VoiceListenState, VoiceOutputPlan, VoiceOutputProfile,
 };
 
-const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
+const SELECTED_LOCAL_MODEL: &str = "qwen3-vl:4b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
 
 const IRIS_ADDRESSEE_POLICY: &str = r#"

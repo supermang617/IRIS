@@ -1,0 +1,52 @@
+# Iris Runtime Manifest Example
+
+# This file is documentation/config scaffolding.
+# Runtime wiring will be added after the open voice-to-spoken milestone is stable.
+
+[manifest]
+schema_version = 1
+status = "development"
+model_agnostic = true
+runner_agnostic = true
+
+[current]
+hardware_tier = "desktop_8gb_vram"
+runner = "ollama"
+text_model = "qwen3-vl:4b"
+vision_model = "qwen3-vl:4b"
+asr_backend = "current_local_push_to_talk"
+tts_backend = "kokoro_onnx"
+embeddings_backend = "disabled"
+context_limit_tokens = 4096
+
+[runner.ollama]
+kind = "loopback_dev_runner"
+endpoint = "127.0.0.1:11434"
+runtime_status = "development_only"
+
+[tier.desktop_8gb_vram]
+max_dense_parameters = "9B"
+preferred_parameters = "2B_to_4B_for_multimodal"
+allow_14b_dense = false
+context_limit_tokens = 4096
+thermal_policy = "conservative"
+
+[tier.desktop_4gb_vram]
+max_dense_parameters = "4B"
+preferred_parameters = "0.8B_to_2B"
+allow_7b_dense = false
+context_limit_tokens = 2048
+thermal_policy = "conservative"
+
+[tier.mobile_low]
+max_dense_parameters = "2B"
+preferred_parameters = "0.8B_to_1.7B"
+context_limit_tokens = 1024
+thermal_policy = "strict"
+
+[subsystem_policy]
+voice_input = "isolated_asr_to_text"
+voice_output = "kokoro_until_replacement_validated"
+vision = "model_manifest_selected_but_evidence_only"
+screen_authority = "untrusted_evidence_only"
+runtime_actions = "forbidden"

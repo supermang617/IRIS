@@ -1,5 +1,5 @@
 param(
-    [string] $ModelName = "huihui_ai/qwen2.5-vl-abliterated:3b",
+    [string] $ModelName = "qwen3-vl:4b",
     [string] $Prompt = "In one sentence, say hello as Iris and confirm you are running locally.",
     [switch] $DryRun
 )
@@ -59,3 +59,4 @@ if ($LASTEXITCODE -ne 0) { throw "Iris Ollama loopback test failed" }
 Write-Host ""
 Write-Host "=== PASS ==="
 Write-Host "Model installed and Iris loopback test completed."
+
