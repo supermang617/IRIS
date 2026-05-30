@@ -1226,3 +1226,25 @@ It must apply:
 - assistant output profanity marker normalization
 - assistant user/Iris role repair
 - ResponsePostChecker
+
+## Clean replacement workflow rule
+
+When a file becomes unstable from patch stacking, stop patching over patch chains.
+
+Prefer a clean, canonical full-file replacement or a targeted canonical-function replacement.
+
+Do not leave parallel helpers such as:
+- helper_v2
+- helper_v3
+- helper_v4
+
+For HUD checked responses, the canonical function is:
+checked_local_response_for_hud
+
+## Foundation guard rule
+
+Run this before new feature slices:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_foundation_guard.ps1
+
+The guard is intentionally lightweight and must not add runtime capabilities.

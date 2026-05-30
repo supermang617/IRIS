@@ -1,28 +1,35 @@
 # Current Track
 
-## Current product rule
+## Current checkpoint
 
-Iris must distinguish user/Iris roles across both prompt interpretation and assistant response repair.
+Iris now uses a foundation guard before moving to the next feature slice.
 
-Current commands:
+Command:
 
-cargo run -p iris-runtime -- assistant-role-repair-test
-cargo run -p iris-runtime -- deictic-role-test
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_foundation_guard.ps1
 
-Manual HUD retest:
+## Working rule
 
-cargo run -p iris-runtime -- hud
+Prefer clean canonical rewrites over stacked patch chains when a file becomes unstable.
 
-Test prompt:
+No suffixed helper chains for HUD behavior.
 
-Iris, your voice sounds awesome.
+Canonical HUD function:
 
-Expected:
+checked_local_response_for_hud
 
-Iris says "my voice", not "your voice".
+## Next feature after this passes
 
-## Do next
+Add HUD Kokoro speech output.
 
-Retest HUD role handling.
+Only after:
 
-Then add HUD Kokoro speech only after role handling remains stable.
+- foundation guard passes
+- HUD role handling remains stable
+- user input is preserved
+- assistant output has no censor-marker asterisks
+- diagnostics remain clean
+
+## Do not do yet
+
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.
