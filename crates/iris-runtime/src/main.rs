@@ -14,7 +14,9 @@ use iris_policy::{
 };
 use iris_prompt::PromptBuilder;
 use iris_response_check::ResponsePostChecker;
-use iris_voice::{VoiceInputPolicy, VoiceOutputPlan, VoiceOutputProfile};
+use iris_voice::{
+    PushToTalkStateMachine, VoiceInputPolicy, VoiceListenState, VoiceOutputPlan, VoiceOutputProfile,
+};
 
 const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen2.5-vl-abliterated:3b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
@@ -28,6 +30,7 @@ fn main() {
         Some("panic-stop-test") => run_panic_stop_test(),
         Some("response-check-test") => run_response_check_test(),
         Some("voice-status") => print_voice_status(),
+        Some("voice-ptt-state-test") => run_voice_ptt_state_test(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
         Some("ask-local") => run_selected_local_model_ask(args.collect()),
@@ -292,6 +295,7 @@ fn print_self_check() {
     println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
+    println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
@@ -303,6 +307,20 @@ fn print_voice_status() {
     let one_shot = VoiceInputPolicy::one_shot_default();
     let push_to_talk = VoiceInputPolicy::push_to_talk_default();
     let future_wake = VoiceInputPolicy::future_wake_word_disabled();
+
+    let mut ptt = PushToTalkStateMachine::new_push_to_talk();
+    let idle = ptt.snapshot();
+
+    ptt.arm();
+    let armed = ptt.snapshot();
+
+    ptt.start_recording()
+        .expect("static push-to-talk status should start recording");
+    let recording = ptt.snapshot();
+
+    ptt.stop_recording()
+        .expect("static push-to-talk status should stop recording");
+    let processing = ptt.snapshot();
 
     println!("Project Iris voice status");
     println!("Output backend: {:?}", voice_profile.backend);
@@ -323,10 +341,137 @@ fn print_voice_status() {
         "Future wake word default safe: {}",
         future_wake.is_safe_for_v0_1_default()
     );
+    println!("PTT idle label: {}", idle.label);
+    println!("PTT idle microphone active: {}", idle.microphone_active);
+    println!(
+        "PTT idle visible status required: {}",
+        idle.visible_status_required
+    );
+    println!("PTT armed label: {}", armed.label);
+    println!("PTT armed microphone active: {}", armed.microphone_active);
+    println!(
+        "PTT armed visible status required: {}",
+        armed.visible_status_required
+    );
+    println!("PTT recording label: {}", recording.label);
+    println!(
+        "PTT recording microphone active: {}",
+        recording.microphone_active
+    );
+    println!(
+        "PTT recording visible status required: {}",
+        recording.visible_status_required
+    );
+    println!("PTT processing label: {}", processing.label);
+    println!(
+        "PTT processing microphone active: {}",
+        processing.microphone_active
+    );
+    println!(
+        "PTT processing visible status required: {}",
+        processing.visible_status_required
+    );
     println!(
         "Wake word requirement: future optional local-only mode, disabled by default until PTT and visible listening state are stable"
     );
     println!("No always-listening default: true");
+    println!("Result: PASS");
+}
+
+fn run_voice_ptt_state_test() {
+    let mut ptt = PushToTalkStateMachine::new_push_to_talk();
+
+    println!("Project Iris push-to-talk visible-state test");
+
+    if ptt.state() != VoiceListenState::Idle {
+        panic!("Push-to-talk should start idle");
+    }
+
+    println!("Initial state: {:?}", ptt.state());
+    println!("Initial label: {}", ptt.snapshot().label);
+    println!(
+        "Initial microphone active: {}",
+        ptt.snapshot().microphone_active
+    );
+
+    ptt.arm();
+
+    if ptt.state() != VoiceListenState::Armed {
+        panic!("Push-to-talk should enter armed state");
+    }
+
+    println!("After arm: {:?}", ptt.state());
+    println!(
+        "Visible status required: {}",
+        ptt.snapshot().visible_status_required
+    );
+
+    ptt.start_recording()
+        .expect("Push-to-talk recording should start from armed");
+
+    if ptt.state() != VoiceListenState::Recording {
+        panic!("Push-to-talk should enter recording state");
+    }
+
+    if !ptt.snapshot().microphone_active {
+        panic!("Microphone must be active only during recording");
+    }
+
+    println!("After start recording: {:?}", ptt.state());
+    println!("Microphone active: {}", ptt.snapshot().microphone_active);
+    println!(
+        "Visible status required: {}",
+        ptt.snapshot().visible_status_required
+    );
+
+    ptt.stop_recording()
+        .expect("Push-to-talk recording should stop from recording");
+
+    if ptt.state() != VoiceListenState::ProcessingTranscript {
+        panic!("Push-to-talk should process transcript after recording stops");
+    }
+
+    if ptt.snapshot().microphone_active {
+        panic!("Microphone must not be active while processing transcript");
+    }
+
+    println!("After stop recording: {:?}", ptt.state());
+    println!("Microphone active: {}", ptt.snapshot().microphone_active);
+
+    ptt.begin_speaking()
+        .expect("Speech output should begin after transcript processing");
+
+    if ptt.state() != VoiceListenState::Speaking {
+        panic!("Push-to-talk should enter speaking state");
+    }
+
+    println!("After begin speaking: {:?}", ptt.state());
+
+    ptt.finish_speaking();
+
+    if ptt.state() != VoiceListenState::Idle {
+        panic!("Push-to-talk should return to idle after speaking");
+    }
+
+    println!("After finish speaking: {:?}", ptt.state());
+
+    ptt.start_recording()
+        .expect("Push-to-talk recording should restart from idle");
+    ptt.panic_stop();
+
+    if ptt.state() != VoiceListenState::Stopped {
+        panic!("Panic Stop should force stopped voice state");
+    }
+
+    if ptt.snapshot().microphone_active {
+        panic!("Microphone must not be active after Panic Stop");
+    }
+
+    println!("After Panic Stop: {:?}", ptt.state());
+    println!(
+        "Microphone active after Panic Stop: {}",
+        ptt.snapshot().microphone_active
+    );
     println!("Result: PASS");
 }
 

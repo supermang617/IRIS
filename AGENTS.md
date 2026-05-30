@@ -826,3 +826,17 @@ Only Recording means the microphone is active.
 Every non-idle state must be visible to the user in the future UI.
 
 Do not implement always-listening voice as the default runtime path.
+
+## Runtime push-to-talk status rule
+
+iris-runtime must expose push-to-talk visible-state status.
+
+Required commands:
+cargo run -p iris-runtime -- voice-status
+cargo run -p iris-runtime -- voice-ptt-state-test
+
+Only the Recording state may report microphone_active = true.
+
+Panic Stop must force the voice state to Stopped and microphone_active = false.
+
+Do not add wake word runtime before this remains stable.

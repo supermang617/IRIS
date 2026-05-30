@@ -18,7 +18,12 @@ Iris has reached:
 
 ## Current architecture step
 
-The `iris-voice` crate now owns push-to-talk and visible listening state metadata.
+Runtime now exposes push-to-talk visible-state metadata.
+
+Useful commands:
+
+cargo run -p iris-runtime -- voice-status
+cargo run -p iris-runtime -- voice-ptt-state-test
 
 ## Wake word requirement
 
@@ -40,9 +45,9 @@ Correct order:
 
 ## Do next
 
-Wire push-to-talk visible-state metadata into runtime voice-status.
+Run Kokoro voice milestone verification again.
 
-Then rerun Kokoro voice milestone verification.
+Then add a small manual voice session command that tests typed prompt and one-shot spoken prompt in one clean flow.
 
 ## Do not do yet
 
