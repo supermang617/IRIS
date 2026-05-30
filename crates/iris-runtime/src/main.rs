@@ -150,7 +150,7 @@ fn main() {
         Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
         Some("addressee-intent-test") => run_addressee_intent_test(),
         Some("deictic-role-test") => run_deictic_role_test_v2(),
-        Some("assistant-role-repair-test") => run_assistant_role_response_repair_test_v3(),
+        Some("assistant-role-repair-test") => run_assistant_role_response_repair_test_v4(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
@@ -539,7 +539,7 @@ fn run_hud_submit_test(parts: Vec<String>) {
         "Path: HudModel -> runtime responder -> ContextGate -> PromptBuilder -> local model -> ResponsePostChecker"
     );
 
-    match checked_local_response_for_hud_v3(&input) {
+    match checked_local_response_for_hud_v4(&input) {
         Ok(reply) => {
             println!("Response post-check: PASS");
             println!("HUD response:");
@@ -557,7 +557,7 @@ fn run_hud_submit_test(parts: Vec<String>) {
 
 fn run_hud() {
     if let Err(error) = iris_ui::run_minimal_hud_with_responder(Box::new(|prompt| {
-        checked_local_response_for_hud_v3(prompt)
+        checked_local_response_for_hud_v4(prompt)
     })) {
         eprintln!("Project Iris HUD failed: {error}");
         std::process::exit(1);

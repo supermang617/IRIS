@@ -1194,3 +1194,19 @@ This path must apply:
 - ResponsePostChecker
 
 Do not route HUD responses through older unchecked or partially repaired response helpers.
+
+## HUD checked response path rule
+
+All HUD typed-prompt responses must use:
+
+checked_local_response_for_hud_v4
+
+This path must apply:
+- deterministic Iris-directed replies
+- assistant output profanity marker normalization
+- assistant user/Iris role repair
+- ResponsePostChecker
+
+Do not route HUD responses through older unchecked or partially repaired response helpers.
+
+Do not reference helper names before the helper exists.
