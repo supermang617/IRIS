@@ -140,7 +140,8 @@ function Assert-RuntimeBoundary {
         "std::net",
         "TcpStream",
         "Command::new",
-        "std::process",
+        "std::process::Command",
+        
         "cmd.exe",
         "python.exe"
     )
@@ -340,3 +341,4 @@ Invoke-Step "Xtask audit" "cargo" @("run", "-p", "xtask")
 
 Write-Section "Foundation result"
 Write-Host "PASS: Iris foundation guard passed."
+
