@@ -1,52 +1,43 @@
 # Iris Runtime Manifest Example
 
-# This file is documentation/config scaffolding.
-# Runtime wiring will be added after the open voice-to-spoken milestone is stable.
-
 [manifest]
 schema_version = 1
-status = "development"
+status = "example"
+architecture = "unified_dense_multimodal"
 model_agnostic = true
 runner_agnostic = true
 
 [current]
-hardware_tier = "desktop_8gb_vram"
 runner = "ollama"
-text_model = "qwen3-vl:4b"
-vision_model = "qwen3-vl:4b"
-asr_backend = "current_local_push_to_talk"
+active_model_id = "huihui_ai/qwen3.5-abliterated:9b"
+text_model_id = "huihui_ai/qwen3.5-abliterated:9b"
+vision_model_id = "huihui_ai/qwen3.5-abliterated:9b"
+unified_text_and_vision = true
+model_class = "dense_multimodal"
+num_ctx = 8192
+context_limit_tokens = 8192
+hardware_tier = "desktop_8gb_vram"
+asr_backend = "isolated_local_push_to_talk"
 tts_backend = "kokoro_onnx"
-embeddings_backend = "disabled"
-context_limit_tokens = 4096
+memory_access = "iris_broker_retrieval_only"
 
 [runner.ollama]
-kind = "loopback_dev_runner"
+kind = "loopback_development_runner"
 endpoint = "127.0.0.1:11434"
-runtime_status = "development_only"
+development_only = true
 
-[tier.desktop_8gb_vram]
-max_dense_parameters = "9B"
-preferred_parameters = "2B_to_4B_for_multimodal"
-allow_14b_dense = false
-context_limit_tokens = 4096
-thermal_policy = "conservative"
+[architecture_rules]
+prefer_single_active_model = true
+text_and_vision_keys_should_match = true
+split_text_vision_pipeline = false
+reject_omni_class_for_current_hardware = true
+reject_moe_class_for_current_hardware = true
 
-[tier.desktop_4gb_vram]
-max_dense_parameters = "4B"
-preferred_parameters = "0.8B_to_2B"
-allow_7b_dense = false
-context_limit_tokens = 2048
-thermal_policy = "conservative"
-
-[tier.mobile_low]
-max_dense_parameters = "2B"
-preferred_parameters = "0.8B_to_1.7B"
-context_limit_tokens = 1024
-thermal_policy = "strict"
-
-[subsystem_policy]
-voice_input = "isolated_asr_to_text"
-voice_output = "kokoro_until_replacement_validated"
-vision = "model_manifest_selected_but_evidence_only"
-screen_authority = "untrusted_evidence_only"
-runtime_actions = "forbidden"
+[safety]
+runtime_external_network = "forbidden"
+shell_process_execution = "forbidden"
+input_simulation = "forbidden"
+clip_buffer_access = "absent"
+plugins = "unsupported"
+screen_content_authority = "evidence_only"
+computer_use = "unsupported"

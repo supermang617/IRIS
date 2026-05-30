@@ -1,43 +1,46 @@
-# Iris Provider Manifest Strategy
+# Provider Manifest Strategy
 
-Status: active architecture plan.
+Status: active.
 
-## Purpose
+## Current provider
 
-The manifest lets Iris change models and runners without rewriting core runtime code.
+Ollama loopback runner for local development.
 
-## Manifest-owned decisions
+## Current active model
 
-- runner kind
-- runner endpoint or local path
-- text model
-- vision model
-- ASR backend
-- TTS backend
-- embedding backend
-- context cap
-- hardware tier
-- thermal safety limits
+huihui_ai/qwen3.5-abliterated:9b
 
-## Current rule
+## Unified one-to-one rule
 
-The runtime should read model and runner choices from config.
+For the current development target:
 
-Hardcoded model strings are temporary development scaffolding only.
+text_model_id = vision_model_id = active_model_id
 
-## Backend classes
+This prevents Iris from loading multiple inference models at once.
 
-- ollama: current development runner
-- llama_cpp: future local packaged runner candidate
-- bundled: future Iris-managed runner candidate
-- disabled: safe fallback
+## Capability ownership
 
-## Subsystems stay decoupled
+Iris owns:
 
-Typed input, ASR transcript, screen evidence, memory, and diagnostics all enter through the Context Gate.
+- context gating
+- memory retrieval
+- redaction
+- provenance labeling
+- evidence labeling
+- response safety checks
+- TTS routing
+- ASR transcript routing
 
-TTS remains output-only.
+The model owns:
 
-Vision remains evidence-only.
+- local reasoning over bounded context
+- text response generation
+- image understanding when image payload support is validated
 
-No subsystem may introduce action capabilities.
+The model does not own:
+
+- memory calls
+- tool calls
+- system actions
+- file access
+- computer control

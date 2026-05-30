@@ -1,33 +1,29 @@
 # Current Track
 
-## Active architecture checkpoint
+## Active checkpoint
 
-Provider manifest and model/runtime future-proofing are now the active plan.
+Dense Qwen 3.5 9B unified intelligence lock-in.
 
-## Selected development model
+## Current model
 
-qwen3-vl:4b
+huihui_ai/qwen3.5-abliterated:9b
+
+## Current context clamp
+
+8192
 
 ## Current runner
 
-Ollama, development only.
+Ollama loopback development runner.
 
-## Locked rule
+## Current architecture
 
-Iris is not an Ollama app and not a Qwen-only app.
+Single active dense multimodal model.
 
-Iris is a local-first read-only assistant shell with a swappable provider manifest.
+No split text/vision model loading.
 
-## Next milestone after this
+No Omni-class or MoE-class model for current development.
 
-Return to the open voice-to-spoken conversation milestone:
+## Next after this passes
 
-spoken prompt
--> transcript quality gate
--> checked Iris model response
--> natural speech rendering
--> Kokoro spoken answer
-
-## Branch point
-
-Branch only after the open voice-to-spoken response is sensible and not deterministic.
+Return to the open voice-to-spoken conversation milestone.

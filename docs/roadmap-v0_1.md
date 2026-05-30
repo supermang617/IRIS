@@ -51,7 +51,7 @@ Implemented or scaffolded:
 
 Selected test model:
 
-qwen3-vl:4b
+huihui_ai/qwen3.5-abliterated:9b
 
 This model is used only through explicit local test commands.
 
@@ -133,4 +133,5 @@ This is not the default runtime path.
 ## Next planned command
 
 Add Panic Stop skeleton before adding more voice or TTS behavior.
+
 

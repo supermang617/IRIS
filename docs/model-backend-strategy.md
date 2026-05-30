@@ -65,7 +65,7 @@ The likely long-term direction is:
 
 Selected Windows development model:
 
-qwen3-vl:4b
+huihui_ai/qwen3.5-abliterated:9b
 
 This is not yet the final production packaging decision.
 
@@ -76,4 +76,5 @@ Ollama is not the final app runtime.
 Ollama is a local developer bridge.
 
 llama.cpp/GGUF remains the production target.
+
 

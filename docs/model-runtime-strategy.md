@@ -1,57 +1,35 @@
-# Iris Model Runtime Strategy
+# Model Runtime Strategy
 
-Status: locked planning direction.
+Status: locked for current development.
 
-## Core rule
+## Current runner
 
-Iris is a thin, local-first assistant shell.
+Ollama is the current development runner.
 
-The Iris binary must not contain model weights.
+Ollama is not the final Iris product identity.
 
-Iris must not be hardcoded to one model family, one runner, or one vendor.
+## Current model
 
-## Current development runner
+huihui_ai/qwen3.5-abliterated:9b
 
-Ollama is allowed as the current development runner.
+## Current architecture
 
-Ollama is not the final product identity.
+Unified dense multimodal model.
 
-## Current selected development model
+One active inference model at a time.
 
-qwen3-vl:4b
+## Manifest rule
 
-## Preferred model family
+Model strings must live in local config files.
 
-Qwen is the preferred current model family because it has strong local text and multimodal direction.
+Runtime code must not hardcode the selected model.
 
-Qwen is not mandatory. Iris must remain model-agnostic.
+## Current context clamp
 
-## Provider boundary
+8192 tokens.
 
-Iris core talks to a provider boundary:
+## Future model updates
 
-Iris runtime
--> local inference provider
--> selected local runner
--> selected model
+Future model swaps happen by changing the manifest and rerunning validation.
 
-## Current voice decision
-
-Keep the current verified voice stack:
-
-- ASR: current local transcription path for push-to-talk testing
-- TTS: Kokoro ONNX
-
-Do not replace Kokoro or ASR with Qwen Omni until a local candidate proves it is smaller, faster, stable, packageable, and safe.
-
-## Runtime safety
-
-The Iris runtime remains read-only.
-
-No shell execution.
-No arbitrary process execution.
-No clipboard.
-No input simulation.
-No plugins.
-No runtime network.
-No computer-use agent behavior.
+Any attempt to move to Omni-class or MoE-class models requires formal hardware re-validation and is considered non-compliant for the current 8GB VRAM development target unless explicitly approved later.
