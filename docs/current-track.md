@@ -1,25 +1,31 @@
 # Current Track
 
-## Current checkpoint
+## Active milestone
 
-Natural speech rendering.
+Voice input to spoken Iris response.
 
 Command:
 
-cargo run -p iris-runtime -- natural-speech-rendering-test
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_to_spoken_turn.ps1
 
-## Why this matters
+## Current status
 
-Before full back-and-forth voice, Iris speech must avoid robotic symbol reading.
+Passed:
 
-Speech text should sound natural while display text can remain exact.
+- HUD typed text response
+- role handling
+- foundation guard
+- speech plan
+- text-to-spoken Kokoro turn
+- voice input boundary
 
-## Next after this passes
-
-Continue voice-input-to-spoken-response wiring:
+Now verifying:
 
 voice input
 -> transcript
--> checked response
--> natural speech rendering
--> Kokoro spoken answer
+-> Iris response
+-> spoken Kokoro answer
+
+## Branch point
+
+After this passes cleanly, this is the next conversation branch-off checkpoint.

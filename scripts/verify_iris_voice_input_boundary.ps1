@@ -107,5 +107,10 @@ if ($transcript.Length -lt 3) {
     throw "Transcript is too short to be useful."
 }
 
+$transcriptPath = ".iris-dev\voice\last-transcript.txt"
+Set-Content -Encoding UTF8 -Path $transcriptPath -Value $transcript
+
 Write-Host ""
+Write-Host "Transcript file: $transcriptPath"
 Write-Host "Result: PASS"
+

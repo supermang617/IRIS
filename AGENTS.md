@@ -1381,3 +1381,19 @@ char::from(35) for number sign
 char::from(42) for asterisk
 
 This avoids broken character literals after scripted edits.
+
+## Voice-to-spoken milestone rule
+
+The next branch-off checkpoint is reached when this passes:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_to_spoken_turn.ps1
+
+This proves:
+- spoken user prompt capture
+- transcript extraction
+- checked Iris response
+- role repair
+- natural speech rendering
+- Kokoro spoken answer
+
+Keep this as a development boundary until permanent TTS/runtime architecture is approved.
