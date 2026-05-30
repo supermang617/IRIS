@@ -301,7 +301,7 @@ fn print_self_check() {
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
     println!("UI status: use cargo run -p iris-runtime -- ui-status");
     println!("HUD: use cargo run -p iris-runtime -- hud");
-    println!("HUD submit test: use cargo run -p iris-runtime -- hud-submit-test "hello iris"");
+    println!("HUD submit test: use cargo run -p iris-runtime -- hud-submit-test <prompt>");
     println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
@@ -313,13 +313,13 @@ fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
     let prompt = build_prompt_from_input(input);
 
     let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, SELECTED_LOCAL_MODEL)
-        .map_err(|error| format!("failed to configure local loopback model: {error}"))?;
+        .map_err(|error| format!("failed to configure local loopback model: {error:?}"))?;
 
     let client = OllamaLoopbackClient::new(config);
 
     let response = client
         .infer(LocalInferenceRequest::new(prompt))
-        .map_err(|error| format!("local model request failed: {error}"))?;
+        .map_err(|error| format!("local model request failed: {error:?}"))?;
 
     let checker = ResponsePostChecker::new();
     let report = checker.check(&response.text);
@@ -347,7 +347,9 @@ fn run_hud_submit_test(parts: Vec<String>) {
 
     println!("Project Iris HUD submit test");
     println!("Input source: HUD typed prompt simulation");
-    println!("Path: HudModel -> runtime responder -> ContextGate -> PromptBuilder -> local model -> ResponsePostChecker");
+    println!(
+        "Path: HudModel -> runtime responder -> ContextGate -> PromptBuilder -> local model -> ResponsePostChecker"
+    );
 
     match checked_local_response_for_hud(&input) {
         Ok(reply) => {
@@ -676,4 +678,3 @@ fn print_model_plan() {
     println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
     println!("Result: PASS");
 }
-

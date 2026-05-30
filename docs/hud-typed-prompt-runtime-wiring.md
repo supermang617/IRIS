@@ -2,9 +2,14 @@
 
 Status: active HUD integration slice.
 
-## Purpose
+## Current fix
 
-The HUD typed prompt field now connects to the existing checked Iris response path.
+The HUD typed prompt wiring had two Rust issues:
+
+1. A malformed `println!` string used nested unescaped quotes.
+2. `LoopbackInferenceError` was formatted with Display instead of Debug.
+
+Both are fixed.
 
 ## Current path
 
@@ -18,35 +23,14 @@ HUD typed prompt
 
 ## Commands
 
-Open HUD:
-
-cargo run -p iris-runtime -- hud
-
 Command-line HUD responder test:
 
 cargo run -p iris-runtime -- hud-submit-test "hello iris"
 
-## Current limitation
+Open HUD:
 
-The HUD response path is synchronous.
+cargo run -p iris-runtime -- hud
 
-The window may pause while the local model responds.
+## Rule
 
-This is acceptable for the first wiring slice.
-
-Next improvement is cancellation/worker-thread separation.
-
-## Boundary
-
-This slice does not add:
-
-- Kokoro speech from HUD
-- screen capture
-- OCR
-- memory database
-- dashboard
-- wake word runtime
-- always-listening voice
-- input simulation
-- clipboard access
-- system control
+Do not add Kokoro speech from HUD until the typed text response path is stable.

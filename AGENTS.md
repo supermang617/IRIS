@@ -1054,3 +1054,20 @@ HUD typed prompt
 Do not add Kokoro speech from HUD until the typed text response path is stable.
 
 Do not add screen capture, OCR, memory database, dashboard, wake word runtime, input simulation, or system control in this slice.
+
+## Rust string and custom error formatting rule
+
+Do not place nested unescaped quotes inside Rust string literals.
+
+Bad:
+println!("command "hello iris"");
+
+Good:
+println!("command <prompt>");
+
+For custom errors that do not implement Display, use Debug formatting.
+
+Good:
+format!("local model request failed: {error:?}")
+
+Do not commit code that fails cargo fmt or cargo build.
