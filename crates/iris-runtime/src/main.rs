@@ -32,6 +32,7 @@ fn main() {
         Some("response-check-test") => run_response_check_test(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
+        Some("hud") => run_hud(),
         Some("voice-ptt-state-test") => run_voice_ptt_state_test(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
@@ -298,11 +299,19 @@ fn print_self_check() {
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
     println!("UI status: use cargo run -p iris-runtime -- ui-status");
+    println!("HUD: use cargo run -p iris-runtime -- hud");
     println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
     println!("Result: PASS");
+}
+
+fn run_hud() {
+    if let Err(error) = iris_ui::run_minimal_hud() {
+        eprintln!("Project Iris HUD failed: {error}");
+        std::process::exit(1);
+    }
 }
 
 fn print_ui_status() {

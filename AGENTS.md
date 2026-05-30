@@ -977,3 +977,25 @@ The first real HUD slice must stay minimal:
 - visible voice state label
 
 No screen capture, OCR, memory database, dashboard, wake word, or system-control features in the first HUD slice.
+
+## Minimal desktop HUD rule
+
+The first desktop HUD slice may show:
+- safety absence language
+- typed prompt input
+- response display
+- visible voice state
+
+The first HUD slice must not add:
+- screen capture
+- OCR
+- memory database
+- full dashboard
+- wake word runtime
+- always-listening voice
+- input simulation
+- clipboard access
+- system control
+
+The HUD command is:
+cargo run -p iris-runtime -- hud

@@ -170,6 +170,111 @@ impl Default for HudModel {
     }
 }
 
+#[derive(Debug)]
+pub struct IrisHudApp {
+    hud: HudModel,
+    draft_text: String,
+}
+
+impl Default for IrisHudApp {
+    fn default() -> Self {
+        let mut hud = HudModel::new();
+        hud.push_response(
+            "Iris HUD scaffold is running. Typed prompts are captured locally; runtime model wiring comes next.",
+            false,
+        );
+
+        Self {
+            hud,
+            draft_text: String::new(),
+        }
+    }
+}
+
+impl eframe::App for IrisHudApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Project Iris");
+            ui.label("Local-first read-only assistant HUD");
+
+            ui.separator();
+
+            ui.heading("Safety status");
+            egui::Grid::new("iris_safety_status")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    for line in self.hud.safety.lines() {
+                        ui.label(line.label);
+                        ui.label(line.value);
+                        ui.end_row();
+                    }
+                });
+
+            ui.separator();
+
+            ui.heading("Voice state");
+            ui.label(format!("State: {}", self.hud.voice.label));
+            ui.label(format!(
+                "Microphone active: {}",
+                self.hud.voice.microphone_active
+            ));
+            ui.label(format!(
+                "Visible state required: {}",
+                self.hud.voice.visible_status_required
+            ));
+
+            ui.separator();
+
+            ui.heading("Typed prompt");
+            ui.horizontal(|ui| {
+                let response = ui.text_edit_singleline(&mut self.draft_text);
+                let enter_pressed = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+
+                if ui.button("Send").clicked() || enter_pressed {
+                    let trimmed = self.draft_text.trim().to_string();
+
+                    if !trimmed.is_empty() {
+                        self.hud.set_typed_input(trimmed.clone());
+                        self.hud.push_response(
+                            format!(
+                                "HUD captured typed prompt locally: {trimmed}. Model wiring comes next."
+                            ),
+                            false,
+                        );
+                        self.draft_text.clear();
+                    }
+                }
+            });
+
+            ui.separator();
+
+            ui.heading("Responses");
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for response in &self.hud.responses {
+                    let spoken = if response.spoken { "spoken" } else { "text" };
+                    ui.label(format!("[{spoken}] {}", response.text));
+                }
+            });
+        });
+    }
+}
+
+pub fn run_minimal_hud() -> Result<(), eframe::Error> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Project Iris HUD")
+            .with_inner_size([760.0, 620.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Project Iris HUD",
+        options,
+        Box::new(|_cc| Ok(Box::<IrisHudApp>::default())),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

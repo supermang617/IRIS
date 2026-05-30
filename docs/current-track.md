@@ -9,8 +9,6 @@ Iris has reached:
 - local model response
 - response post-check
 - Kokoro ONNX voice output
-- default voice: af_heart
-- default speed: 0.95
 - explicit one-shot voice input helper
 - typed prompt helper
 - Panic Stop skeleton
@@ -19,33 +17,29 @@ Iris has reached:
 - iris-ui scaffold
 - runtime ui-status
 - clean milestone diagnostics script
+- first minimal desktop HUD slice
 
-## Current checkpoint
+## Current HUD command
 
-HUD dependency readiness gate.
+cargo run -p iris-runtime -- hud
 
-Command:
+## Current HUD scope
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_hud_readiness.ps1
+The first HUD slice shows:
 
-## Next decision
-
-Approve or reject adding the minimal GUI dependencies:
-
-- winit
-- egui
-
-## If approved
-
-Build the smallest real desktop HUD slice:
-
-- window
 - safety absence language
-- typed prompt field
-- response area
-- visible voice state label
-- no dashboard yet
+- typed prompt input
+- response display area
+- visible voice state
+
+Typed prompt capture is local to the HUD model for now.
+
+## Do next
+
+Wire HUD typed prompt submission to the existing checked Iris text response path.
+
+Then wire checked response text into Kokoro TTS only after the text path is stable.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, or GUI dependencies before explicit approval.
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.
