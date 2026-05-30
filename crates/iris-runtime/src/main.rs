@@ -19,7 +19,7 @@ use iris_voice::{
     PushToTalkStateMachine, VoiceInputPolicy, VoiceListenState, VoiceOutputPlan, VoiceOutputProfile,
 };
 
-const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen3.5-abliterated";
+const SELECTED_LOCAL_MODEL: &str = "huihui_ai/qwen3.5-abliterated:9b";
 const OLLAMA_LOOPBACK_ENDPOINT: &str = "127.0.0.1:11434";
 
 const IRIS_ADDRESSEE_POLICY: &str = r#"
@@ -292,28 +292,191 @@ fn contains_deictic_word(haystack: &str, needle: &str) -> bool {
         .split(|character: char| !character.is_alphanumeric() && character != '\'')
         .any(|word| word == needle)
 }
+// IRIS_BOUNDED_OLLAMA_CHAT_BEGIN
+fn iris_selected_local_model_id_v1() -> String {
+    std::env::var("IRIS_MODEL_ID")
+        .or_else(|_| std::env::var("IRIS_OLLAMA_MODEL"))
+        .or_else(|_| std::env::var("IRIS_LOCAL_MODEL"))
+        .unwrap_or_else(|_| "huihui_ai/qwen3.5-abliterated:9b:9b".to_string())
+}
 
-fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
-    if let Some(reply) = try_direct_iris_addressee_reply(input) {
-        return post_checked_hud_text(reply);
+fn iris_local_model_num_ctx_v1() -> usize {
+    std::env::var("IRIS_MODEL_NUM_CTX")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8192)
+}
+
+fn iris_local_model_num_predict_v1() -> usize {
+    std::env::var("IRIS_MODEL_NUM_PREDICT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(160)
+}
+
+fn iris_json_escape_v1(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 16);
+
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
     }
 
-    let prompt = build_prompt_from_input(input);
-
-    let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, SELECTED_LOCAL_MODEL)
-        .map_err(|error| format!("failed to configure local loopback model: {error:?}"))?;
-
-    let client = OllamaLoopbackClient::new(config);
-
-    let response = client
-        .infer(LocalInferenceRequest::new(prompt))
-        .map_err(|error| format!("local model request failed: {error:?}"))?;
-
-    let profanity_normalized = normalize_assistant_text_for_display_and_tts(&response.text);
-    let role_repaired = normalize_assistant_role_response_for_input(input, &profanity_normalized);
-
-    post_checked_hud_text(role_repaired)
+    out
 }
+
+fn iris_extract_json_string_field_v1(body: &str, field: &str) -> Option<String> {
+    let key = format!("\"{}\"", field);
+    let key_index = body.find(&key)?;
+    let after_key = &body[key_index + key.len()..];
+    let colon_index = after_key.find(':')?;
+    let after_colon = after_key[colon_index + 1..].trim_start();
+
+    if !after_colon.starts_with('"') {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut escape = false;
+
+    for ch in after_colon[1..].chars() {
+        if escape {
+            match ch {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' => out.push('\u{0008}'),
+                'f' => out.push('\u{000c}'),
+                other => out.push(other),
+            }
+
+            escape = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            escape = true;
+            continue;
+        }
+
+        if ch == '"' {
+            return Some(out);
+        }
+
+        out.push(ch);
+    }
+
+    None
+}
+
+fn iris_http_body_v1(raw: &str) -> Result<&str, String> {
+    let separator = "\r\n\r\n";
+    let index = raw
+        .find(separator)
+        .ok_or_else(|| "InvalidResponse".to_string())?;
+
+    Ok(&raw[index + separator.len()..])
+}
+
+fn iris_strip_thinking_v1(text: &str) -> String {
+    let mut cleaned = text.trim().to_string();
+
+    loop {
+        let lower = cleaned.to_lowercase();
+        let Some(start) = lower.find("<think>") else {
+            break;
+        };
+
+        let Some(relative_end) = lower[start..].find("</think>") else {
+            cleaned = cleaned[..start].trim().to_string();
+            break;
+        };
+
+        let end = start + relative_end + "</think>".len();
+        cleaned.replace_range(start..end, "");
+        cleaned = cleaned.trim().to_string();
+    }
+
+    cleaned
+}
+
+fn iris_bounded_ollama_chat_v1(input: &str) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let model = iris_selected_local_model_id_v1();
+    let num_ctx = iris_local_model_num_ctx_v1();
+    let num_predict = iris_local_model_num_predict_v1();
+
+    let system = "You are Iris. Reply only with the final answer. Do not show reasoning, thinking, analysis, drafts, bullets, or explanations. Do not censor profanity with asterisks. Keep the reply concise.";
+    let body = format!(
+        "{{\"model\":\"{}\",\"messages\":[{{\"role\":\"system\",\"content\":\"{}\"}},{{\"role\":\"user\",\"content\":\"{}\"}}],\"stream\":false,\"think\":false,\"options\":{{\"num_ctx\":{},\"num_predict\":{},\"temperature\":0.2,\"top_p\":0.8,\"repeat_penalty\":1.1}}}}",
+        iris_json_escape_v1(&model),
+        iris_json_escape_v1(system),
+        iris_json_escape_v1(input),
+        num_ctx,
+        num_predict
+    );
+
+    let mut stream = TcpStream::connect("127.0.0.1:11434").map_err(|_| "ReadFailed".to_string())?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_secs(75)))
+        .map_err(|_| "ReadFailed".to_string())?;
+
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|_| "ReadFailed".to_string())?;
+
+    let request = format!(
+        "POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1:11434\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.as_bytes().len(),
+        body
+    );
+
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|_| "ReadFailed".to_string())?;
+
+    let mut raw = String::new();
+    stream
+        .read_to_string(&mut raw)
+        .map_err(|_| "ReadFailed".to_string())?;
+
+    if !(raw.starts_with("HTTP/1.1 200") || raw.starts_with("HTTP/1.0 200")) {
+        return Err("InvalidResponse".to_string());
+    }
+
+    let body = iris_http_body_v1(&raw)?;
+
+    let text = iris_extract_json_string_field_v1(body, "content")
+        .or_else(|| iris_extract_json_string_field_v1(body, "response"))
+        .ok_or_else(|| "InvalidResponse".to_string())?;
+
+    let cleaned = iris_strip_thinking_v1(&text);
+
+    if cleaned.trim().is_empty() {
+        return Err("InvalidResponse".to_string());
+    }
+
+    Ok(cleaned)
+}
+
+fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
+    iris_bounded_ollama_chat_v1(input)
+}
+// IRIS_BOUNDED_OLLAMA_CHAT_END
 
 fn post_checked_hud_text(text: String) -> Result<String, String> {
     let checker = ResponsePostChecker::new();

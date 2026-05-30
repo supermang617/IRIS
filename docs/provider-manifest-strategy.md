@@ -8,7 +8,7 @@ Ollama loopback runner for local development.
 
 ## Current active model
 
-huihui_ai/qwen3.5-abliterated
+huihui_ai/qwen3.5-abliterated:9b
 
 ## Unified one-to-one rule
 
@@ -44,4 +44,5 @@ The model does not own:
 - system actions
 - file access
 - computer control
+
 

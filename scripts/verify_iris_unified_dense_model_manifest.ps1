@@ -1,5 +1,5 @@
 param(
-    [string] $ExpectedModel = "huihui_ai/qwen3.5-abliterated",
+    [string] $ExpectedModel = "huihui_ai/qwen3.5-abliterated:9b",
     [int] $ExpectedContext = 8192
 )
 
@@ -39,4 +39,5 @@ foreach ($path in $paths) {
 }
 
 Write-Host "PASS: unified dense model manifest verified"
+
 

@@ -6,7 +6,7 @@ Dense Qwen 3.5 9B unified intelligence lock-in.
 
 ## Current model
 
-huihui_ai/qwen3.5-abliterated
+huihui_ai/qwen3.5-abliterated:9b
 
 ## Current context clamp
 
@@ -27,4 +27,5 @@ No Omni-class or MoE-class model for current development.
 ## Next after this passes
 
 Return to the open voice-to-spoken conversation milestone.
+
 
