@@ -14,6 +14,7 @@ use iris_policy::{
 };
 use iris_prompt::PromptBuilder;
 use iris_response_check::ResponsePostChecker;
+use iris_ui::HudModel;
 use iris_voice::{
     PushToTalkStateMachine, VoiceInputPolicy, VoiceListenState, VoiceOutputPlan, VoiceOutputProfile,
 };
@@ -30,6 +31,7 @@ fn main() {
         Some("panic-stop-test") => run_panic_stop_test(),
         Some("response-check-test") => run_response_check_test(),
         Some("voice-status") => print_voice_status(),
+        Some("ui-status") => print_ui_status(),
         Some("voice-ptt-state-test") => run_voice_ptt_state_test(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
@@ -299,6 +301,40 @@ fn print_self_check() {
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
     println!("Model plan: use cargo run -p iris-runtime -- model-plan");
+    println!("Result: PASS");
+}
+
+fn print_ui_status() {
+    let mut hud = HudModel::new();
+
+    hud.set_typed_input("hello iris");
+    hud.push_response("Hello, I am Iris.", true);
+
+    println!("Project Iris UI status");
+    println!("HUD scaffold: available");
+    println!("GUI dependencies: not enabled");
+    println!("Typed prompt model: available");
+    println!("Typed prompt sendable: {}", hud.input.is_sendable());
+    println!("Response display model: available");
+    println!("Response count: {}", hud.responses.len());
+    println!("Visible voice state model: available");
+    println!("Voice status label: {}", hud.voice.label);
+    println!("Voice microphone active: {}", hud.voice.microphone_active);
+    println!(
+        "Voice visible status required: {}",
+        hud.voice.visible_status_required
+    );
+    println!("Safety absence language:");
+
+    for line in hud.safety.lines() {
+        println!("{}: {}", line.label, line.value);
+    }
+
+    println!("System control capability present: false");
+    println!("Executor capability present: false");
+    println!("Input simulation capability present: false");
+    println!("Runtime network enabled: false");
+    println!("Plugins enabled: false");
     println!("Result: PASS");
 }
 

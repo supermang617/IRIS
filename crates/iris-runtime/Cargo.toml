@@ -14,3 +14,5 @@ iris-local-inference = { path = "../iris-local-inference" }
 iris-panic-stop = { path = "../iris-panic-stop" }
 iris-response-check = { path = "../iris-response-check" }
 iris-voice = { path = "../iris-voice" }
+iris-ui = { path = "../iris-ui" }
+

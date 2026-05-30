@@ -86,6 +86,7 @@ dependencies = [
  "iris-policy",
  "iris-prompt",
  "iris-response-check",
+ "iris-ui",
  "iris-voice",
 ]
 

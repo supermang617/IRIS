@@ -16,30 +16,28 @@ Iris has reached:
 - Panic Stop skeleton
 - runtime voice-status
 - runtime push-to-talk visible-state test
+- iris-ui scaffold
 
 ## Current architecture step
 
-Add the smallest `iris-ui` scaffold without GUI dependencies.
+Runtime now exposes UI scaffold status.
 
-This creates the HUD-facing state model for:
+Useful command:
 
-- typed prompt
-- response lines
-- safety absence language
-- visible voice status
+cargo run -p iris-runtime -- ui-status
 
 ## Why this is next
 
-The v0.1 plan requires Iris-owned typed input, visible PTT state, and explicit absence language in UI.
+The v0.1 plan requires Iris-owned typed input, visible PTT state, and explicit absence language in the UI.
 
-We are not adding `egui/winit` yet.
+We are still avoiding GUI dependencies until the UI model and safety language are stable.
 
 ## Do next
 
-Wire `iris-ui` into runtime status.
+Run the UI runtime status check.
 
-Then decide when to add actual GUI dependencies.
+Then decide whether to add the smallest real desktop HUD dependency slice.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, or GUI dependencies before this scaffold is stable.
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, or wake word runtime before the HUD and visible voice-state path are stable.

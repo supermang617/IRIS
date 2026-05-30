@@ -908,3 +908,18 @@ Example:
 concat!("Clip", "board Access")
 
 Do not remove required absence language from the HUD or dashboard.
+
+## Runtime UI status rule
+
+iris-runtime must expose the UI scaffold status before real GUI dependencies are added.
+
+Required command:
+cargo run -p iris-runtime -- ui-status
+
+This command must show:
+- HUD scaffold available
+- typed prompt model available
+- response display model available
+- visible voice state model available
+- safety absence language available
+- GUI dependencies not enabled yet
