@@ -23,38 +23,26 @@ Iris has reached:
 
 cargo run -p iris-runtime -- hud
 
-## Current UI architecture
+## Current HUD submit test
 
-Active path:
+cargo run -p iris-runtime -- hud-submit-test "hello iris"
 
-- Rust-native HUD
-- egui
-- eframe
+## Current HUD path
 
-Do not switch to Tauri right now.
+HUD typed prompt
+-> runtime responder
+-> ContextGate
+-> PromptBuilder
+-> selected local model loopback
+-> ResponsePostChecker
+-> HUD response text
 
-## Future UI polish note
+## Do next
 
-Native material/backdrop effects are desirable later.
+Test the HUD typed prompt path manually.
 
-Preferred Windows target:
-
-Mica
-
-Reason:
-
-- subtle Windows 11 look
-- low overhead
-- good thermal-safe fit
-
-Do not add Mica, Acrylic, Tauri, window-vibrancy, or transparent-window work yet.
-
-## Current next implementation target
-
-Wire HUD typed prompt submission to the existing checked Iris text response path.
-
-Then wire checked response text into Kokoro TTS after the text path is stable.
+Then add Kokoro speech output from HUD only after text response is stable.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, Tauri, native material effects, input simulation, clipboard access, or system control.
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, wake word runtime, input simulation, clipboard access, or system control.

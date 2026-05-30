@@ -1038,3 +1038,19 @@ Future visual polish may use native platform materials:
 - iOS: System Materials
 
 Do not implement native material/backdrop effects until the minimal HUD is functionally wired to typed prompt, checked response display, Kokoro speech path, visible voice state, and Panic Stop status.
+
+## HUD typed prompt wiring rule
+
+The first real HUD integration must wire typed prompt only.
+
+Allowed path:
+HUD typed prompt
+-> ContextGate
+-> PromptBuilder
+-> selected local model loopback
+-> ResponsePostChecker
+-> HUD text response
+
+Do not add Kokoro speech from HUD until the typed text response path is stable.
+
+Do not add screen capture, OCR, memory database, dashboard, wake word runtime, input simulation, or system control in this slice.

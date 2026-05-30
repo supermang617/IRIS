@@ -170,24 +170,66 @@ impl Default for HudModel {
     }
 }
 
-#[derive(Debug)]
+pub type HudResponder = Box<dyn FnMut(&str) -> Result<String, String>>;
+
 pub struct IrisHudApp {
     hud: HudModel,
     draft_text: String,
+    responder: HudResponder,
+    busy: bool,
+    last_error: Option<String>,
 }
 
-impl Default for IrisHudApp {
-    fn default() -> Self {
+impl IrisHudApp {
+    pub fn new(responder: HudResponder) -> Self {
         let mut hud = HudModel::new();
-        hud.push_response(
-            "Iris HUD scaffold is running. Typed prompts are captured locally; runtime model wiring comes next.",
-            false,
-        );
+        hud.push_response("Iris HUD is running. Type a prompt and press Send.", false);
 
         Self {
             hud,
             draft_text: String::new(),
+            responder,
+            busy: false,
+            last_error: None,
         }
+    }
+
+    fn submit_typed_prompt(&mut self) {
+        let prompt = self.draft_text.trim().to_string();
+
+        if prompt.is_empty() || self.busy {
+            return;
+        }
+
+        self.busy = true;
+        self.last_error = None;
+        self.hud.set_typed_input(prompt.clone());
+        self.hud
+            .push_response(format!("You typed: {prompt}"), false);
+
+        match (self.responder)(&prompt) {
+            Ok(reply) => {
+                self.hud.push_response(reply, false);
+                self.draft_text.clear();
+            }
+            Err(error) => {
+                self.last_error = Some(error.clone());
+                self.hud
+                    .push_response(format!("Iris error: {error}"), false);
+            }
+        }
+
+        self.busy = false;
+    }
+}
+
+impl Default for IrisHudApp {
+    fn default() -> Self {
+        Self::new(Box::new(|prompt| {
+            Ok(format!(
+                "HUD captured typed prompt locally: {prompt}. Runtime responder was not connected."
+            ))
+        }))
     }
 }
 
@@ -229,23 +271,25 @@ impl eframe::App for IrisHudApp {
             ui.heading("Typed prompt");
             ui.horizontal(|ui| {
                 let response = ui.text_edit_singleline(&mut self.draft_text);
-                let enter_pressed = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                let enter_pressed =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
 
-                if ui.button("Send").clicked() || enter_pressed {
-                    let trimmed = self.draft_text.trim().to_string();
+                let send_clicked = ui
+                    .add_enabled(!self.busy, egui::Button::new("Send"))
+                    .clicked();
 
-                    if !trimmed.is_empty() {
-                        self.hud.set_typed_input(trimmed.clone());
-                        self.hud.push_response(
-                            format!(
-                                "HUD captured typed prompt locally: {trimmed}. Model wiring comes next."
-                            ),
-                            false,
-                        );
-                        self.draft_text.clear();
-                    }
+                if send_clicked || enter_pressed {
+                    self.submit_typed_prompt();
                 }
             });
+
+            if self.busy {
+                ui.label("Iris is thinking...");
+            }
+
+            if let Some(error) = &self.last_error {
+                ui.label(format!("Last error: {error}"));
+            }
 
             ui.separator();
 
@@ -261,6 +305,14 @@ impl eframe::App for IrisHudApp {
 }
 
 pub fn run_minimal_hud() -> Result<(), eframe::Error> {
+    run_minimal_hud_with_responder(Box::new(|prompt| {
+        Ok(format!(
+            "HUD captured typed prompt locally: {prompt}. Runtime responder was not connected."
+        ))
+    }))
+}
+
+pub fn run_minimal_hud_with_responder(responder: HudResponder) -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Project Iris HUD")
@@ -268,10 +320,17 @@ pub fn run_minimal_hud() -> Result<(), eframe::Error> {
         ..Default::default()
     };
 
+    let mut responder = Some(responder);
+
     eframe::run_native(
         "Project Iris HUD",
         options,
-        Box::new(|_cc| Ok(Box::<IrisHudApp>::default())),
+        Box::new(move |_cc| {
+            let responder = responder
+                .take()
+                .expect("Iris HUD responder should be initialized once");
+            Ok(Box::new(IrisHudApp::new(responder)))
+        }),
     )
 }
 
@@ -350,5 +409,37 @@ mod tests {
 
         assert_eq!(hud.input.kind, HudInputKind::TypedPrompt);
         assert!(!hud.input.is_sendable());
+    }
+
+    #[test]
+    fn hud_responder_can_return_checked_text() {
+        let mut app = IrisHudApp::new(Box::new(|prompt| Ok(format!("Iris heard: {prompt}"))));
+
+        app.draft_text = "hello iris".to_string();
+        app.submit_typed_prompt();
+
+        assert_eq!(
+            app.hud.responses.last().unwrap().text,
+            "Iris heard: hello iris"
+        );
+        assert!(app.last_error.is_none());
+    }
+
+    #[test]
+    fn hud_responder_error_is_displayed() {
+        let mut app = IrisHudApp::new(Box::new(|_prompt| Err("model unavailable".to_string())));
+
+        app.draft_text = "hello iris".to_string();
+        app.submit_typed_prompt();
+
+        assert_eq!(app.last_error.as_deref(), Some("model unavailable"));
+        assert!(
+            app.hud
+                .responses
+                .last()
+                .unwrap()
+                .text
+                .contains("model unavailable")
+        );
     }
 }

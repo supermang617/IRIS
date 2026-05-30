@@ -33,6 +33,7 @@ fn main() {
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
+        Some("hud-submit-test") => run_hud_submit_test(args.collect()),
         Some("voice-ptt-state-test") => run_voice_ptt_state_test(),
         Some("model-plan") => print_model_plan(),
         Some("ask") => run_ask_mode(args.collect()),
@@ -300,6 +301,7 @@ fn print_self_check() {
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
     println!("UI status: use cargo run -p iris-runtime -- ui-status");
     println!("HUD: use cargo run -p iris-runtime -- hud");
+    println!("HUD submit test: use cargo run -p iris-runtime -- hud-submit-test "hello iris"");
     println!("Voice PTT state test: use cargo run -p iris-runtime -- voice-ptt-state-test");
     println!("Ollama test: use cargo run -p iris-runtime -- ollama-test <model> \"hello iris\"");
     println!("Capability audit: use cargo run -p xtask");
@@ -307,8 +309,66 @@ fn print_self_check() {
     println!("Result: PASS");
 }
 
+fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
+    let prompt = build_prompt_from_input(input);
+
+    let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, SELECTED_LOCAL_MODEL)
+        .map_err(|error| format!("failed to configure local loopback model: {error}"))?;
+
+    let client = OllamaLoopbackClient::new(config);
+
+    let response = client
+        .infer(LocalInferenceRequest::new(prompt))
+        .map_err(|error| format!("local model request failed: {error}"))?;
+
+    let checker = ResponsePostChecker::new();
+    let report = checker.check(&response.text);
+
+    if !report.approved {
+        let findings = report
+            .findings
+            .iter()
+            .map(|finding| format!("{:?}:{:?}", finding.risk, finding.matched_phrase))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        return Err(format!("response blocked by post-check: {findings}"));
+    }
+
+    Ok(response.text)
+}
+
+fn run_hud_submit_test(parts: Vec<String>) {
+    let input = if parts.is_empty() {
+        "Hello Iris. Confirm the HUD typed prompt path is connected.".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    println!("Project Iris HUD submit test");
+    println!("Input source: HUD typed prompt simulation");
+    println!("Path: HudModel -> runtime responder -> ContextGate -> PromptBuilder -> local model -> ResponsePostChecker");
+
+    match checked_local_response_for_hud(&input) {
+        Ok(reply) => {
+            println!("Response post-check: PASS");
+            println!("HUD response:");
+            println!("{reply}");
+            println!("Result: PASS");
+        }
+        Err(error) => {
+            println!("Response post-check: BLOCKED_OR_FAILED");
+            println!("HUD error:");
+            println!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn run_hud() {
-    if let Err(error) = iris_ui::run_minimal_hud() {
+    if let Err(error) = iris_ui::run_minimal_hud_with_responder(Box::new(|prompt| {
+        checked_local_response_for_hud(prompt)
+    })) {
         eprintln!("Project Iris HUD failed: {error}");
         std::process::exit(1);
     }
@@ -616,3 +676,4 @@ fn print_model_plan() {
     println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
     println!("Result: PASS");
 }
+
