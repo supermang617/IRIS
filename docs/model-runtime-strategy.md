@@ -10,7 +10,7 @@ Ollama is not the final Iris product identity.
 
 ## Current model
 
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated:9b:9b
 
 ## Current architecture
 
@@ -33,5 +33,6 @@ Runtime code must not hardcode the selected model.
 Future model swaps happen by changing the manifest and rerunning validation.
 
 Any attempt to move to Omni-class or MoE-class models requires formal hardware re-validation and is considered non-compliant for the current 8GB VRAM development target unless explicitly approved later.
+
 
 

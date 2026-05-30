@@ -8,7 +8,7 @@ No runtime model downloading happens by default.
 
 Default local test model:
 
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated:9b:9b
 
 This is the selected Ollama model tag for the user's first local-thinking test path.
 
@@ -51,6 +51,7 @@ The selected model may be used for local testing, but Iris must remain read-only
 Iris may respond.
 
 Iris may not act on the computer.
+
 
 
 

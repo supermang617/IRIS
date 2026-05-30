@@ -384,7 +384,7 @@ This script is a development test helper. It does not make Ollama the default ru
 ## Selected Qwen2.5-VL test model rule
 
 The selected local test model is:
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated:9b:9b
 
 Use scripts/setup_iris_qwen_vl_ollama.ps1 to pull it through Ollama and run the first Iris local-thinking test.
 
@@ -399,7 +399,7 @@ The default runtime remains disabled stub unless an explicit test command opts i
 Use scripts/smoke_test_selected_qwen_model.ps1 after the selected Qwen2.5-VL model is installed.
 
 Selected model:
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated:9b:9b
 
 This is the first repeatable local-thinking smoke test.
 
@@ -1473,7 +1473,7 @@ The purpose of this gate is to prevent obvious STT failures from reaching Iris w
 Iris must remain model-agnostic and runner-agnostic.
 
 Current development model:
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated:9b:9b
 
 Current development runner:
 Ollama
@@ -1495,7 +1495,7 @@ Manifest files:
 ## Current intelligence core rule
 
 Current development model:
-huihui_ai/qwen3.5-abliterated:9b
+huihui_ai/qwen3.5-abliterated:9b:9b
 
 Current development architecture:
 unified dense multimodal model
@@ -1511,6 +1511,7 @@ Rules:
 - Do not let the model call memory directly.
 - Memory retrieval is Iris-owned broker context only.
 - Do not add action, tool, shell, input simulation, plugin, or computer-use capabilities.
+
 
 
 
