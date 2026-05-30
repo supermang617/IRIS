@@ -754,3 +754,20 @@ Runtime self-check must show:
 - wake word disabled by default
 
 Voice output must be allowed only after ResponsePostChecker approves the response.
+
+## Runtime voice status rule
+
+iris-runtime must expose voice policy status from iris-voice.
+
+Required command:
+cargo run -p iris-runtime -- voice-status
+
+The runtime must show:
+- Kokoro backend
+- af_heart voice
+- 0.95 speed
+- wake signal and silence defaults
+- one-shot voice policy
+- push-to-talk policy
+- future wake word disabled by default
+- no always-listening default

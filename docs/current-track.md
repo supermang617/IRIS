@@ -15,13 +15,15 @@ Iris has reached:
 - typed prompt helper
 - Panic Stop skeleton
 
-## Current next step
+## Current architecture step
 
-Runtime now exposes voice metadata through:
+Runtime now reads voice defaults from the iris-voice crate.
 
-cargo run -p iris-runtime -- voice-plan
+Useful runtime commands:
 
-This keeps voice defaults visible in Rust, not only in PowerShell scripts.
+cargo run -p iris-runtime -- self-check
+cargo run -p iris-runtime -- voice-status
+cargo run -p iris-runtime -- response-check-test
 
 ## Wake word requirement
 
@@ -43,9 +45,9 @@ Correct order:
 
 ## Do next
 
-Rerun Kokoro voice milestone verification.
+Run Kokoro voice milestone verification again.
 
-Then add the smallest push-to-talk policy/test surface.
+Then start push-to-talk metadata and visible listening state scaffolding.
 
 ## Do not do yet
 
