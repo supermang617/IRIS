@@ -1,31 +1,19 @@
 # Current Track
 
-## Active milestone
+## Current checkpoint
 
-Voice input to spoken Iris response.
+Voice input transcript quality gate.
 
 Command:
 
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_to_spoken_turn.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_voice_input_boundary.ps1 -ExpectedPhrase "Hello Iris."
 
-## Current status
+## Why this matters
 
-Passed:
+Iris should not answer bad transcripts.
 
-- HUD typed text response
-- role handling
-- foundation guard
-- speech plan
-- text-to-spoken Kokoro turn
-- voice input boundary
+If STT hears "Brewers" when the user said "Hello Iris", the transcript should fail before Iris responds.
 
-Now verifying:
+## Next after this passes
 
-voice input
--> transcript
--> Iris response
--> spoken Kokoro answer
-
-## Branch point
-
-After this passes cleanly, this is the next conversation branch-off checkpoint.
+Run the voice-to-spoken milestone again using the verified transcript.

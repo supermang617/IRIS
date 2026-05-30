@@ -1397,3 +1397,19 @@ This proves:
 - Kokoro spoken answer
 
 Keep this as a development boundary until permanent TTS/runtime architecture is approved.
+
+## Voice transcript quality gate rule
+
+Voice input must pass a transcript quality gate before Iris responds.
+
+If a milestone test asks the user to say "Hello Iris", the captured transcript must contain hello and an Iris-like token.
+
+Accepted Iris-like tokens for this early boundary:
+- iris
+- irish
+- heiress
+
+Rejected example:
+- Brewers
+
+Do not let a bad transcript proceed into the model or TTS path.
