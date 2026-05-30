@@ -2,27 +2,21 @@
 
 Status: active pre-audio checkpoint.
 
-## Purpose
-
-Before the HUD speaks with Kokoro, Iris must prove that the text sent to speech is safe and correct.
-
-## Current command
+## Command
 
 cargo run -p iris-runtime -- hud-speech-plan-test "Iris, your voice sounds awesome."
 
-## What it verifies
+## Purpose
 
-- HUD typed prompt reaches the checked response path
-- ResponsePostChecker approves the response before speech
-- assistant output does not contain censor-marker asterisks
-- Iris says "my voice" when referring to her own voice
-- the speech path is a plan only
-- Rust runtime does not spawn PowerShell, Python, shell, or external processes
+Before the HUD speaks with Kokoro, Iris must prove that the exact text sent to speech is:
 
-## Architecture rule
+- checked by ResponsePostChecker
+- role-repaired
+- free of censor-marker asterisks
+- speakable by voice policy
 
-Runtime may create a `VoiceOutputPlan`.
+## Runtime boundary
 
-Runtime must not execute shell/process commands to speak.
+This is a speech plan only.
 
-Actual Kokoro playback must be wired through an approved local TTS boundary, not ad-hoc process spawning from the runtime.
+The Rust runtime must not spawn shell, PowerShell, Python, or external processes to speak.

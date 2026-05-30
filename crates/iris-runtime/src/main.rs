@@ -536,6 +536,66 @@ fn run_hud_submit_test(parts: Vec<String>) {
     }
 }
 
+fn run_hud_speech_plan_test(parts: Vec<String>) {
+    let input = if parts.is_empty() {
+        "Iris, your voice sounds awesome.".to_string()
+    } else {
+        parts.join(" ")
+    };
+
+    println!("Project Iris HUD speech plan test");
+    println!("Input source: HUD typed prompt simulation");
+    println!("Speech boundary: plan only, no process execution");
+    println!("Path: HUD prompt -> checked response -> VoiceOutputPlan");
+
+    let reply =
+        checked_local_response_for_hud(&input).expect("HUD checked response should succeed");
+
+    let checker = ResponsePostChecker::new();
+    let report = checker.check(&reply);
+
+    if !report.approved {
+        panic!("HUD speech plan must not speak blocked responses");
+    }
+
+    let voice_plan = VoiceOutputPlan::from_checked_response(
+        reply.clone(),
+        report.approved,
+        VoiceOutputProfile::iris_default(),
+    );
+
+    println!("HUD response:");
+    println!("{reply}");
+    println!("Voice output permission: {:?}", voice_plan.permission);
+    println!("Voice may speak: {}", voice_plan.may_speak());
+    println!("Speech text:");
+    println!("{reply}");
+
+    if !voice_plan.may_speak() {
+        panic!("Safe checked HUD response should be speakable");
+    }
+
+    let input_lower = input.to_ascii_lowercase();
+    let speech_lower = reply.to_ascii_lowercase();
+
+    if speech_lower.contains("your voice sounds good") {
+        panic!("Iris must not speak 'your voice sounds good' when referring to her own voice");
+    }
+
+    if input_lower.contains("your voice") && !speech_lower.contains("my voice") {
+        panic!("Iris must speak 'my voice' when the user praises Iris's voice");
+    }
+
+    if speech_lower.contains("f*ck")
+        || speech_lower.contains("f**k")
+        || speech_lower.contains("sh*t")
+    {
+        panic!("Iris must not send censor-marker profanity to speech");
+    }
+
+    println!("Result: PASS");
+}
+
 fn run_safety_spine(input: &str) {
     println!("Project Iris initialized.");
     println!("Runtime mode: read-only local safety spine");

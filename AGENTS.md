@@ -1288,3 +1288,17 @@ The speech plan must use checked and repaired assistant text.
 Runtime may create a VoiceOutputPlan.
 
 Runtime must not spawn PowerShell, Python, shell, or external processes to speak.
+
+## Single-write file edit rule
+
+When editing a file from a loaded string buffer, do not use Add-Content on that same file before Set-Content writes the buffer back.
+
+Reason:
+Set-Content can overwrite the newly appended text with the older in-memory buffer.
+
+Correct pattern:
+- load file into variable
+- modify the variable
+- Set-Content once
+
+This prevents missing function bodies after adding match arms.
