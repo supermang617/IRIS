@@ -3,6 +3,7 @@ param(
     [string] $Text = "Iris Kokoro voice provider is working.",
     [string] $OutWav = ".iris-dev\diagnostics\kokoro-direct-validation.wav",
     [string] $Voice = "af_heart,af_bella,af_sky,am_adam",
+    [int] $PlaybackSeconds = 6,
     [switch] $NoPlay
 )
 
@@ -12,6 +13,19 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $resolver = Join-Path $PSScriptRoot "resolve_iris_kokoro_provider.ps1"
 $helper = Join-Path $PSScriptRoot "invoke_iris_kokoro_tts.py"
+$boundedPlayer = Join-Path $PSScriptRoot "play_iris_wav_bounded.ps1"
+
+if (-not (Test-Path $resolver)) {
+    throw "Missing Kokoro resolver: $resolver"
+}
+
+if (-not (Test-Path $helper)) {
+    throw "Missing Kokoro Python helper: $helper"
+}
+
+if (-not (Test-Path $boundedPlayer)) {
+    throw "Missing bounded WAV player: $boundedPlayer"
+}
 
 $provider = (& $resolver -AsJson) | ConvertFrom-Json
 
@@ -24,11 +38,13 @@ $pythonArgsPrefix = @()
 
 if (-not (Test-Path $pythonExe)) {
     $py = Get-Command "py" -ErrorAction SilentlyContinue
+
     if ($py) {
         $pythonExe = $py.Source
         $pythonArgsPrefix = @("-3")
     } else {
         $python = Get-Command "python" -ErrorAction SilentlyContinue
+
         if ($python) {
             $pythonExe = $python.Source
             $pythonArgsPrefix = @()
@@ -46,9 +62,9 @@ $outFull = if ([System.IO.Path]::IsPathRooted($OutWav)) {
 
 New-Item -ItemType Directory -Force (Split-Path -Parent $outFull) | Out-Null
 
-$args = @()
-$args += $pythonArgsPrefix
-$args += @(
+$pythonCommandArgs = @()
+$pythonCommandArgs += $pythonArgsPrefix
+$pythonCommandArgs += @(
     $helper,
     "--model", $provider.model_path,
     "--voices", $provider.voices_path,
@@ -57,7 +73,7 @@ $args += @(
     "--voice", $Voice
 )
 
-& $pythonExe @args
+& $pythonExe @pythonCommandArgs
 
 if ($LASTEXITCODE -ne 0) {
     throw "Kokoro Python helper failed with exit code $LASTEXITCODE"
@@ -68,6 +84,7 @@ if (-not (Test-Path $outFull)) {
 }
 
 $wav = Get-Item $outFull
+
 if ($wav.Length -lt 1000) {
     throw "Kokoro WAV output is too small: $($wav.Length) bytes"
 }
@@ -76,13 +93,14 @@ Write-Host "Model: $($provider.model_relative_path)"
 Write-Host "Voices: $($provider.voices_relative_path)"
 Write-Host "WAV: $outFull"
 
-if (-not $NoPlay) {
-    $player = New-Object System.Media.SoundPlayer $outFull
-    $player.Load()
-    $player.PlaySync()
-    Write-Host "Playback: completed"
-} else {
+if ($NoPlay) {
     Write-Host "Playback: skipped"
+} else {
+    powershell -NoProfile -ExecutionPolicy Bypass -File $boundedPlayer -Path $outFull -Seconds $PlaybackSeconds
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Bounded WAV playback failed with exit code $LASTEXITCODE"
+    }
 }
 
 Write-Host "Result: PASS"

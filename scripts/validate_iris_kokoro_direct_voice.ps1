@@ -6,7 +6,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $resolver = Join-Path $PSScriptRoot "resolve_iris_kokoro_provider.ps1"
 $speak = Join-Path $PSScriptRoot "speak_iris_kokoro.ps1"
 
@@ -14,6 +13,7 @@ Write-Host "=== Iris Kokoro direct voice validation ==="
 
 $provider = (& $resolver -AsJson) | ConvertFrom-Json
 
+Write-Host "Provider OK: $($provider.ok)"
 Write-Host "Model candidates: $($provider.model_candidate_count)"
 Write-Host "Voice candidates: $($provider.voice_candidate_count)"
 Write-Host "Model: $($provider.model_relative_path)"
@@ -24,21 +24,22 @@ if (-not $provider.ok) {
 }
 
 Write-Host ""
-Write-Host "=== Direct Kokoro speech ==="
+Write-Host "=== Kokoro speech synthesis and playback ==="
 
-$args = @(
+$speakArgs = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", $speak,
     "-Text", "Iris Kokoro voice provider is working.",
-    "-OutWav", ".iris-dev\diagnostics\kokoro-direct-validation.wav"
+    "-OutWav", ".iris-dev\diagnostics\kokoro-direct-validation.wav",
+    "-PlaybackSeconds", "6"
 )
 
 if ($NoPlay) {
-    $args += "-NoPlay"
+    $speakArgs += "-NoPlay"
 }
 
-& powershell @args
+powershell @speakArgs
 
 if ($LASTEXITCODE -ne 0) {
     throw "Direct Kokoro speech failed with exit code $LASTEXITCODE"
