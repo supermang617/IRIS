@@ -4,11 +4,47 @@ Use this file to avoid drifting from the roadmap.
 
 ## Current goal
 
-Validate and harden the first basic text and voice response milestone.
+Stabilize the first text and voice response milestone, then upgrade voice quality.
+
+## Voice direction
+
+Production TTS target:
+
+Kokoro ONNX with a natural female voice.
+
+Initial Kokoro test voice:
+
+af_heart
+
+Current setup status:
+
+Kokoro helper scripts are added but installation/download is explicit and separate.
+
+## Kokoro commands
+
+Dry-run setup:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_tts.ps1 -DryRun
+
+Install full Kokoro model:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_tts.ps1 -Install
+
+Install smaller int8 Kokoro model:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup_iris_kokoro_tts.ps1 -Install -UseInt8
+
+Speak text with Kokoro:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\speak_iris_kokoro.ps1 -Text "Hello, I am Iris."
+
+Speak checked Iris response with Kokoro:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_kokoro_response.ps1 -Prompt "hello iris"
 
 ## Backend direction
 
-Long-term production backend:
+Long-term production LLM backend:
 
 llama.cpp / GGUF
 
@@ -16,53 +52,14 @@ Current development bridge:
 
 Ollama loopback at 127.0.0.1:11434
 
-Ollama is only being used to test local model behavior quickly on Windows.
-
-Do not make Ollama a required production dependency.
-
-## Voice direction
-
-Long-term production TTS target:
-
-Kokoro ONNX with a natural female voice.
-
-Current development speech output:
-
-Windows local speech synthesis helper with selectable installed voice.
-
-Use this to test voice preference now without adding heavy architecture.
-
-## Useful commands
-
-List installed Windows voices:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\list_iris_windows_voices.ps1
-
-Text to selected voice:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_text_voice_response.ps1 -Prompt "hello iris" -VoiceName "VOICE NAME HERE"
-
-Voice input to selected voice:
-
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test_iris_voice_text_response.ps1 -TimeoutSeconds 8 -VoiceName "VOICE NAME HERE"
-
-Other commands:
-
-cargo run -p iris-runtime -- self-check
-cargo run -p iris-runtime -- panic-stop-test
-cargo run -p iris-runtime -- response-check-test
-cargo run -p iris-runtime -- model-plan
-cargo run -p iris-runtime -- prompt-preview "hello iris"
-cargo run -p iris-runtime -- ask-local "hello iris"
-cargo run -p iris-runtime -- chat-local
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_voice_milestone.ps1
+Ollama is not the final production dependency.
 
 ## Do next
 
-List installed Windows voices and pick the best current female voice for temporary development testing.
+Run Kokoro setup install when ready.
 
-Then continue toward the iris-voice abstraction and Kokoro ONNX later.
+Then compare Kokoro af_heart against Windows voice output.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or full Kokoro integration before the basic text/voice milestone is stable.
+Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or full Rust Kokoro integration before the text/voice milestone and Kokoro helper are stable.

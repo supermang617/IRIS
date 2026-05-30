@@ -654,3 +654,19 @@ This does not replace the production target:
 Kokoro ONNX with a natural female voice.
 
 Do not add heavy TTS architecture until the basic text/voice milestone is stable.
+
+## Kokoro ONNX setup rule
+
+Kokoro ONNX is the planned production-quality local female voice path.
+
+Current Kokoro scripts are explicit development helpers only.
+
+Do not run package installs or model downloads unless the user explicitly asks.
+
+Do not make Kokoro downloads part of normal Iris runtime.
+
+Do not speak blocked model output.
+
+Prefer voice `af_heart` for initial Iris female voice testing.
+
+Use tools/kokoro for local Kokoro helper files.
