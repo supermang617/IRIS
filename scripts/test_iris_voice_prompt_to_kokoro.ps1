@@ -1,8 +1,10 @@
+[CmdletBinding()]
 param(
-    [string[]] $ExpectedWords = @("hello", "iris"),
+    [string[]] $ExpectedWords = @("testing", "iris", "voice", "test"),
     [switch] $NoPlay
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 Set-Location -Path "C:\Projects\IRIS"
 
@@ -32,9 +34,7 @@ function Invoke-Captured {
         if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host $stdout.TrimEnd() }
         if (-not [string]::IsNullOrWhiteSpace($stderr)) { Write-Host $stderr.TrimEnd() }
 
-        if ($process.ExitCode -ne 0) {
-            throw "$Name failed with exit code $($process.ExitCode)"
-        }
+        if ($process.ExitCode -ne 0) { throw "$Name failed with exit code $($process.ExitCode)" }
 
         return $stdout
     } finally {
@@ -52,6 +52,8 @@ Write-Section "Required files"
 
 $required = @(
     "scripts\verify_iris_voice_input_boundary.ps1",
+    "scripts\listen_iris_local_speak.ps1",
+    "scripts\ask_iris_local_speak.ps1",
     "scripts\speak_iris_kokoro.ps1",
     "scripts\resolve_iris_kokoro_provider.ps1",
     "scripts\play_iris_wav_bounded.ps1",
@@ -59,11 +61,7 @@ $required = @(
 )
 
 foreach ($file in $required) {
-    if (Test-Path $file) {
-        Write-Host "FOUND: $file"
-    } else {
-        throw "Missing required file: $file"
-    }
+    if (Test-Path $file) { Write-Host "FOUND: $file" } else { throw "Missing required file: $file" }
 }
 
 Write-Section "Resolve Kokoro provider"
@@ -75,55 +73,32 @@ Write-Host "Provider OK: $($provider.ok)"
 Write-Host "Model: $($provider.model_relative_path)"
 Write-Host "Voices: $($provider.voices_relative_path)"
 
-if (-not $provider.ok) {
-    throw "Kokoro provider is incomplete."
-}
+if (-not $provider.ok) { throw "Kokoro provider is incomplete." }
 
 Write-Section "Voice capture instruction"
-Write-Host "When prompted, say clearly: Hello Iris voice test"
-Write-Host "The transcript must contain: $($ExpectedWords -join ", ")"
+Write-Host "When prompted, say clearly: Testing now, Iris local voice test."
+Write-Host "Required transcript words: $($ExpectedWords -join ", ")"
 
 $before = Get-Date
 
 Write-Section "Run Iris voice input boundary"
 
-$voiceArgs = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", "scripts\verify_iris_voice_input_boundary.ps1"
-)
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\verify_iris_voice_input_boundary.ps1"
 
-powershell @voiceArgs
-
-if ($LASTEXITCODE -ne 0) {
-    throw "Voice input boundary failed. Do not continue to model response."
-}
+if ($LASTEXITCODE -ne 0) { throw "Voice input boundary failed. Do not continue to model response." }
 
 Write-Section "Find captured transcript"
 
-$voiceDir = ".iris-dev\voice"
-$transcriptFiles = @()
-
-if (Test-Path $voiceDir) {
-    $transcriptFiles = Get-ChildItem -Path $voiceDir -File -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Name -match "transcript" -and
-            $_.LastWriteTime -ge $before.AddMinutes(-2)
-        } |
-        Sort-Object LastWriteTime -Descending
-}
+$transcriptFiles = Get-ChildItem -Path ".iris-dev" -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.FullName -notmatch "\\diagnostics\\backups\\" -and
+        $_.Name -match "transcript" -and
+        $_.LastWriteTime -ge $before.AddMinutes(-5)
+    } |
+    Sort-Object LastWriteTime -Descending
 
 if (-not $transcriptFiles -or $transcriptFiles.Count -eq 0) {
-    $transcriptFiles = Get-ChildItem -Path ".iris-dev" -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.FullName -notmatch "\\diagnostics\\backups\\" -and
-            $_.Name -match "transcript"
-        } |
-        Sort-Object LastWriteTime -Descending
-}
-
-if (-not $transcriptFiles -or $transcriptFiles.Count -eq 0) {
-    throw "No transcript file found after voice input boundary passed."
+    throw "No recent transcript file found after voice input boundary passed."
 }
 
 $transcriptPath = $transcriptFiles[0].FullName
@@ -134,9 +109,7 @@ $transcript = $transcript.Trim()
 Write-Host "Transcript file: $transcriptPath"
 Write-Host "Transcript: $transcript"
 
-if ([string]::IsNullOrWhiteSpace($transcript)) {
-    throw "Transcript was empty."
-}
+if ([string]::IsNullOrWhiteSpace($transcript)) { throw "Transcript was empty." }
 
 $normalized = $transcript.ToLowerInvariant()
 
@@ -157,28 +130,19 @@ $responseOutput = Invoke-Captured "Iris response from voice transcript" "cargo" 
     $transcript
 )
 
-if ($responseOutput -notmatch "Response post-check:\s+PASS") {
-    throw "Iris response post-check did not pass."
-}
+if ($responseOutput -notmatch "Response post-check:\s+PASS") { throw "Iris response post-check did not pass." }
 
 $match = [regex]::Match($responseOutput, "HUD response:\s*(?<response>[\s\S]*?)\r?\nResult:\s*PASS")
 
-if (-not $match.Success) {
-    throw "Could not extract HUD response from Iris output."
-}
+if (-not $match.Success) { throw "Could not extract HUD response from Iris output." }
 
 $reply = $match.Groups["response"].Value.Trim()
 $reply = $reply -replace "`0", ""
 $reply = $reply -replace "\x1B\[[0-9;]*[A-Za-z]", ""
 $reply = $reply.Trim()
 
-if ([string]::IsNullOrWhiteSpace($reply)) {
-    throw "Iris produced an empty reply."
-}
-
-if ($reply.Length -gt 300) {
-    throw "Iris reply is too long for this milestone: $($reply.Length) characters."
-}
+if ([string]::IsNullOrWhiteSpace($reply)) { throw "Iris produced an empty reply." }
+if ($reply.Length -gt 300) { throw "Iris reply is too long for this milestone: $($reply.Length) characters." }
 
 Write-Section "Extracted Iris reply"
 Write-Host $reply
@@ -194,15 +158,11 @@ $speakArgs = @(
     "-PlaybackSeconds", "6"
 )
 
-if ($NoPlay) {
-    $speakArgs += "-NoPlay"
-}
+if ($NoPlay) { $speakArgs += "-NoPlay" }
 
 powershell @speakArgs
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Kokoro speech failed."
-}
+if ($LASTEXITCODE -ne 0) { throw "Kokoro speech failed." }
 
 Write-Section "Result"
 Write-Host "PASS: voice input -> transcript -> Iris/Qwen response -> Kokoro speech completed."
