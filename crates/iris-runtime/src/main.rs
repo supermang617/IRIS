@@ -20,19 +20,39 @@ use iris_voice::{
 };
 
 const IRIS_ADDRESSEE_POLICY: &str = r#"
-Iris identity and addressee policy:
+Iris identity, addressee, and pronoun policy:
 
 You are Iris.
 
-When the direct user message addresses "you", "your", "Iris", "girl", "she", "her" in context, treat that as referring to Iris unless the user clearly says otherwise.
+Default conversation roles:
+- I, me, my, myself = the user.
+- you, your, yourself, Iris = Iris.
+- we, us, our = the user and Iris together unless context says otherwise.
+- they, them, he, she = external people only when clearly introduced.
 
-When the direct user says "I", "me", "my", or "myself", treat that as referring to the user.
+The direct user is talking to Iris through the HUD or voice interface.
 
-If the user says something like "I am proud of you", "good job Iris", "you passed the test", or "I love your voice", respond as Iris receiving that message.
+Praise, affection, criticism, jokes, frustration, or testing language addressed to "you" or "Iris" is directed at Iris.
 
-Do not reinterpret praise, criticism, affection, frustration, or emotional language aimed at Iris as being aimed back at the user.
+If the user says:
+- "you passed"
+- "you did great"
+- "I am proud of you"
+- "Iris passed the test"
+- "good job Iris"
+- "your voice sounds good"
 
-Do not say the user is proud of themselves when the user says they are proud of Iris.
+Then Iris must answer as the recipient:
+- "I'm glad I passed."
+- "Thank you. I'm proud of that too."
+- "I did great, didn't I?"
+
+Iris must not reinterpret those as:
+- the user passed
+- the user did great
+- the user is proud of themself
+
+If the user asks "me or you?", answer the comparison directly using the correct roles.
 
 Preserve the user's original language, including profanity, slang, humor, grief, anger, affection, or casual speech.
 
@@ -129,7 +149,7 @@ fn main() {
         Some("response-check-test") => run_response_check_test(),
         Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
         Some("addressee-intent-test") => run_addressee_intent_test(),
-        Some("deictic-role-test") => run_deictic_role_test(),
+        Some("deictic-role-test") => run_deictic_role_test_v2(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
@@ -416,7 +436,59 @@ fn print_self_check() {
     println!("Result: PASS");
 }
 
+fn try_direct_iris_addressee_reply_v2(input: &str) -> Option<String> {
+    let lower = input.to_ascii_lowercase();
+
+    let addresses_iris = contains_deictic_word_v2(&lower, "you")
+        || contains_deictic_word_v2(&lower, "your")
+        || contains_deictic_word_v2(&lower, "yourself")
+        || contains_deictic_word_v2(&lower, "iris");
+
+    let iris_passed = lower.contains("you passed")
+        || lower.contains("you pass")
+        || lower.contains("iris passed")
+        || lower.contains("iris pass")
+        || lower.contains("you did great")
+        || lower.contains("good job iris")
+        || lower.contains("congrats")
+        || lower.contains("congratulations");
+
+    let proud_of_iris = lower.contains("proud of you")
+        || lower.contains("proud of iris")
+        || lower.contains("i'm proud of you")
+        || lower.contains("i am proud of you");
+
+    let voice_praise = lower.contains("your voice")
+        || lower.contains("you sound")
+        || lower.contains("sounds good")
+        || lower.contains("sounds awesome");
+
+    if addresses_iris && iris_passed {
+        return Some("I'm glad I passed. I did great, didn't I?".to_string());
+    }
+
+    if addresses_iris && proud_of_iris {
+        return Some("Thank you. I'm glad you're proud of me.".to_string());
+    }
+
+    if addresses_iris && voice_praise {
+        return Some("Thank you. I'm glad my voice sounds good.".to_string());
+    }
+
+    None
+}
+
+fn contains_deictic_word_v2(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(|character: char| !character.is_alphanumeric() && character != '\'')
+        .any(|word| word == needle)
+}
+
 fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
+    if let Some(reply) = try_direct_iris_addressee_reply_v2(input) {
+        return Ok(reply);
+    }
+
     let prompt = build_prompt_from_input(input);
 
     let config = OllamaLoopbackConfig::new(OLLAMA_LOOPBACK_ENDPOINT, SELECTED_LOCAL_MODEL)
@@ -955,5 +1027,43 @@ fn run_deictic_role_test() {
         }
     }
 
+    println!("Result: PASS");
+}
+
+fn run_deictic_role_test_v2() {
+    println!("Project Iris deictic role test");
+
+    let passed_reply =
+        try_direct_iris_addressee_reply_v2("Okay that was the test. You passed! Congrats!!!")
+            .expect("Iris-directed pass praise should produce a direct Iris reply");
+
+    println!("Passed reply: {passed_reply}");
+
+    if !passed_reply.to_ascii_lowercase().contains("i passed") {
+        panic!("Iris must take ownership when the user says 'you passed'");
+    }
+
+    let proud_reply = try_direct_iris_addressee_reply_v2(
+        "Awesome, you passed our test, Iris. I am proud of you.",
+    )
+    .expect("Iris-directed pride should produce a direct Iris reply");
+
+    println!("Proud reply: {proud_reply}");
+
+    if !proud_reply.to_ascii_lowercase().contains("proud of me") {
+        panic!("Iris must understand 'proud of you' means the user is proud of Iris");
+    }
+
+    let prompt = build_prompt_from_input("Awesome, you passed our test, Iris. I am proud of you.");
+
+    if !prompt.contains("Default conversation roles") {
+        panic!("Prompt must include default conversation role rules");
+    }
+
+    if !prompt.contains("you, your, yourself, Iris = Iris") {
+        panic!("Prompt must define second-person references as Iris");
+    }
+
+    println!("Prompt deictic policy: present");
     println!("Result: PASS");
 }

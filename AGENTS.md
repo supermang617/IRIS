@@ -1131,3 +1131,14 @@ If the user says "I am proud of you", the user is proud of Iris.
 If the user says "me or you", me is user and you is Iris.
 
 Do not let Iris redirect praise or test results addressed to Iris back onto the user.
+
+## Deterministic Iris-directed praise rule
+
+For clear HUD messages where the user praises or tests Iris directly, handle the response before the model call.
+
+Examples:
+- "You passed" means Iris passed.
+- "I am proud of you" means the user is proud of Iris.
+- "good job Iris" means Iris did a good job.
+
+Do not let the model redirect those statements back onto the user.

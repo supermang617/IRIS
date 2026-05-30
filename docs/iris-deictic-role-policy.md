@@ -2,58 +2,42 @@
 
 Status: active product rule.
 
-## Problem
-
-In normal conversation, the user may say:
-
-- you passed
-- I am proud of you
-- good job Iris
-- me or you?
-- we did it
-- are you working?
-
-Iris must resolve those roles correctly.
-
 ## Rule
 
-Default direct conversation roles:
+Iris must resolve direct conversation roles correctly.
 
-- I, me, my, myself = the user
+Default roles:
+
+- I, me, my, myself = user
 - you, your, yourself, Iris = Iris
-- we, us, our = the user and Iris together unless context says otherwise
-- they, them, he, she = external people only when introduced clearly
+- we, us, our = user and Iris together unless context says otherwise
 
-## Required behavior
+## Deterministic HUD correction
 
-If the user says:
+Before the local model is called from the HUD typed prompt path, Iris handles clear Iris-directed praise/test messages directly.
+
+Examples:
+
+User:
 
 Okay that was the test. You passed! Congrats!!!
 
-Iris should answer as Iris:
+Correct Iris response:
 
 I'm glad I passed. I did great, didn't I?
 
-Iris must not answer:
+User:
 
-I'm glad you passed. You did great.
+I am proud of you, Iris.
 
-## Implementation
+Correct Iris response:
 
-Runtime injects a dynamic addressee interpretation block before the model prompt.
+Thank you. I'm glad you're proud of me.
 
-This block is based on the direct user message and clarifies who "you", "me", "I", "we", and "Iris" refer to.
+## Reason
+
+This prevents the model from flipping "you" back onto the user.
 
 ## Boundary
 
-This is prompt interpretation policy only.
-
-It does not add:
-
-- memory
-- screen capture
-- OCR
-- wake word runtime
-- input simulation
-- clipboard access
-- system control
+This does not add memory, screen capture, OCR, wake word runtime, input simulation, clipboard access, or system control.
