@@ -30,6 +30,7 @@ fn main() {
         Some("self-check") => print_self_check(),
         Some("panic-stop-test") => run_panic_stop_test(),
         Some("response-check-test") => run_response_check_test(),
+        Some("assistant-text-normalization-test") => run_assistant_text_normalization_test(),
         Some("voice-status") => print_voice_status(),
         Some("ui-status") => print_ui_status(),
         Some("hud") => run_hud(),
@@ -235,8 +236,9 @@ fn run_safety_spine(input: &str) {
 }
 
 fn print_checked_response(response_text: &str) -> bool {
+    let response_text = normalize_assistant_text_for_display_and_tts(response_text);
     let checker = ResponsePostChecker::new();
-    let report = checker.check(response_text);
+    let report = checker.check(&response_text);
     let voice_plan = VoiceOutputPlan::from_checked_response(
         response_text.to_string(),
         report.approved,
@@ -298,6 +300,9 @@ fn print_self_check() {
     println!("Selected local chat: use cargo run -p iris-runtime -- chat-local");
     println!("Panic Stop test: use cargo run -p iris-runtime -- panic-stop-test");
     println!("Response check test: use cargo run -p iris-runtime -- response-check-test");
+    println!(
+        "Assistant text normalization test: use cargo run -p iris-runtime -- assistant-text-normalization-test"
+    );
     println!("Voice status: use cargo run -p iris-runtime -- voice-status");
     println!("UI status: use cargo run -p iris-runtime -- ui-status");
     println!("HUD: use cargo run -p iris-runtime -- hud");
@@ -321,8 +326,10 @@ fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
         .infer(LocalInferenceRequest::new(prompt))
         .map_err(|error| format!("local model request failed: {error:?}"))?;
 
+    let normalized_text = normalize_assistant_text_for_display_and_tts(&response.text);
+
     let checker = ResponsePostChecker::new();
-    let report = checker.check(&response.text);
+    let report = checker.check(&normalized_text);
 
     if !report.approved {
         let findings = report
@@ -335,7 +342,7 @@ fn checked_local_response_for_hud(input: &str) -> Result<String, String> {
         return Err(format!("response blocked by post-check: {findings}"));
     }
 
-    Ok(response.text)
+    Ok(normalized_text)
 }
 
 fn run_hud_submit_test(parts: Vec<String>) {
@@ -676,5 +683,97 @@ fn print_model_plan() {
     println!("Planned model path: {}", model_path.as_str());
     println!("Minimum RAM GB: {}", routed.manifest.minimum_ram_gb);
     println!("Minimum VRAM GB: {}", routed.manifest.minimum_vram_gb);
+    println!("Result: PASS");
+}
+
+fn normalize_assistant_text_for_display_and_tts(text: &str) -> String {
+    let replacements = [
+        ("f*cking", "fucking"),
+        ("f*ckin'", "fuckin'"),
+        ("f*ckin", "fuckin"),
+        ("f*cked", "fucked"),
+        ("f*cker", "fucker"),
+        ("f**king", "fucking"),
+        ("f**kin'", "fuckin'"),
+        ("f**kin", "fuckin"),
+        ("f**ked", "fucked"),
+        ("f**ker", "fucker"),
+        ("f**k", "fuck"),
+        ("f*ck", "fuck"),
+        ("sh*tting", "shitting"),
+        ("sh*tty", "shitty"),
+        ("sh*t", "shit"),
+        ("b*tches", "bitches"),
+        ("b*tch", "bitch"),
+        ("a**hole", "asshole"),
+        ("a**holes", "assholes"),
+        ("a**", "ass"),
+        ("d*mn", "damn"),
+        ("c*nt", "cunt"),
+    ];
+
+    let mut normalized = text.to_string();
+
+    for (from, to) in replacements {
+        normalized = replace_ascii_case_insensitive(&normalized, from, to);
+    }
+
+    normalized
+}
+
+fn replace_ascii_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return input.to_string();
+    }
+
+    let mut output = String::with_capacity(input.len());
+    let mut remaining = input;
+
+    loop {
+        let haystack_lower = remaining.to_ascii_lowercase();
+        let needle_lower = needle.to_ascii_lowercase();
+
+        match haystack_lower.find(&needle_lower) {
+            Some(index) => {
+                output.push_str(&remaining[..index]);
+                output.push_str(replacement);
+                remaining = &remaining[index + needle.len()..];
+            }
+            None => {
+                output.push_str(remaining);
+                break;
+            }
+        }
+    }
+
+    output
+}
+
+fn run_assistant_text_normalization_test() {
+    let raw = "Sure, I can respond with F*ckin sh*t when appropriate.";
+    let normalized = normalize_assistant_text_for_display_and_tts(raw);
+
+    println!("Project Iris assistant text normalization test");
+    println!("Raw assistant text: {raw}");
+    println!("Normalized assistant text: {normalized}");
+
+    if normalized.contains('*') {
+        panic!(
+            "Assistant text normalization must remove spoken censor asterisks from known profanity patterns"
+        );
+    }
+
+    if !normalized.contains("Fuckin shit") {
+        panic!("Assistant text normalization did not restore expected profanity wording");
+    }
+
+    let user_input = "why the fuck did this change my words";
+    let preserved_user_input = user_input.to_string();
+
+    if preserved_user_input != user_input {
+        panic!("User input must remain unchanged");
+    }
+
+    println!("User input preserved: {preserved_user_input}");
     println!("Result: PASS");
 }

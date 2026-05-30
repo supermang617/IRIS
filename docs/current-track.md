@@ -19,14 +19,14 @@ Iris has reached:
 - clean milestone diagnostics script
 - first minimal desktop HUD slice
 - HUD typed prompt to checked response wiring
+- user input fidelity policy
+- assistant output anti-asterisk normalization
 
-## Current product rule
+## Current product rules
 
 Direct user input must be preserved.
 
-Typed input must not be censored, softened, paraphrased, or profanity-filtered.
-
-Voice input may be misrecognized by ASR, but Iris should not intentionally sanitize it.
+Assistant output must not speak censor asterisks for common profanity patterns.
 
 ## Current HUD command
 
@@ -36,11 +36,18 @@ cargo run -p iris-runtime -- hud
 
 cargo run -p iris-runtime -- hud-submit-test "hello iris"
 
+## Current output normalization test
+
+cargo run -p iris-runtime -- assistant-text-normalization-test
+
 ## Do next
 
-Run the manual HUD typed prompt test.
+Run the manual HUD typed prompt test again.
 
-Verify the HUD preserves typed user text and shows checked response text.
+Verify:
+- user typed text is preserved
+- assistant response does not show f*ckin-style censor markers for common profanity
+- response still passes ResponsePostChecker
 
 Then add Kokoro speech output from HUD only after text response is stable.
 

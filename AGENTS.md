@@ -1081,3 +1081,13 @@ Typed HUD input must not be censored, softened, paraphrased, profanity-filtered,
 Redaction may protect secrets and sensitive data, but profanity is not sensitive data.
 
 Voice transcripts may contain ASR mistakes, but Iris must not intentionally sanitize or rewrite the user's language.
+
+## Assistant output fidelity rule
+
+Assistant output must not speak visual censor markers.
+
+If the model returns common self-censored profanity patterns such as f*ck, f**k, sh*t, or b*tch, normalize those patterns before HUD display and before TTS.
+
+This rule applies to assistant-generated output only.
+
+Do not alter direct user input.
