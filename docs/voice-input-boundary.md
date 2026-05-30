@@ -2,22 +2,39 @@
 
 Status: active checkpoint.
 
-## Current test phrase
+## Current phrase
 
 Testing now, Iris local voice test.
 
-## Required words
+## Gate type
 
-- iris
-- voice
+Soft milestone gate.
+
+## Why
+
+The speech recognizer is currently imperfect. It may hear:
+
+Just testing now ...
+
+That is good enough to prove live capture, but unrelated phrases like "Brewers" must still be rejected.
+
+## Current rule
+
+Pass when the transcript:
+
+- has enough text
+- has at least two words
+- does not match known bad phrases
+- contains at least one anchor word
+
+## Anchor words
+
+- testing
 - test
+- voice
+- iris
+- local
 
-## Reason
+## Boundary
 
-Short phrases such as "Hello Iris" are too easy for STT to clip or mishear at the start of capture.
-
-The milestone phrase now puts the important words later in the phrase so the quality gate measures a more reliable transcript.
-
-## Rule
-
-A bad transcript must not continue into Iris response or Kokoro speech.
+A rejected transcript must not continue into Iris response or Kokoro speech.

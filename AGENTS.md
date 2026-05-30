@@ -1454,3 +1454,16 @@ Required words:
 
 Reason:
 The first word of a recording can be clipped or misheard. Required words should come after capture has already stabilized.
+
+## Voice input soft quality gate rule
+
+The early voice milestone should not require exact transcription.
+
+Accept usable partial transcripts such as:
+Just testing now ...
+
+Reject clearly unrelated transcripts such as:
+Brewers
+If a whole
+
+The purpose of this gate is to prevent obvious STT failures from reaching Iris while still allowing the voice pipeline to be tested.

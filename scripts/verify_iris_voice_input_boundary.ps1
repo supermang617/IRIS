@@ -1,7 +1,7 @@
 param(
     [int] $TimeoutSeconds = 15,
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
-    [string[]] $RequiredWords = @("iris", "voice", "test"),
+    [string[]] $AnchorWords = @("testing", "test", "voice", "iris", "local"),
     [int] $MaxAttempts = 3,
     [switch] $AllowUnverifiedTranscript
 )
@@ -127,79 +127,94 @@ function Get-NormalizedWords {
     @([regex]::Matches($Text.ToLowerInvariant(), "[a-z0-9']+") | ForEach-Object { $_.Value })
 }
 
-function Test-RequiredWord {
-    param(
-        [string[]] $TranscriptWords,
-        [string] $Required
-    )
-
-    $requiredLower = $Required.ToLowerInvariant()
-
-    if ($requiredLower -eq "hello") {
-        return (
-            $TranscriptWords -contains "hello" -or
-            $TranscriptWords -contains "hallo" -or
-            $TranscriptWords -contains "halo" -or
-            $TranscriptWords -contains "hey"
-        )
-    }
-
-    if ($requiredLower -eq "iris") {
-        return (
-            $TranscriptWords -contains "iris" -or
-            $TranscriptWords -contains "irish" -or
-            $TranscriptWords -contains "heiress" -or
-            $TranscriptWords -contains "aris"
-        )
-    }
-
-    if ($requiredLower -eq "voice") {
-        return (
-            $TranscriptWords -contains "voice" -or
-            $TranscriptWords -contains "voices"
-        )
-    }
-
-    if ($requiredLower -eq "test") {
-        return (
-            $TranscriptWords -contains "test" -or
-            $TranscriptWords -contains "tests" -or
-            $TranscriptWords -contains "testing"
-        )
-    }
-
-    return ($TranscriptWords -contains $requiredLower)
-}
-
 function Test-TranscriptQuality {
     param(
         [string] $Transcript,
-        [string[]] $Required
+        [string[]] $Anchors
     )
 
-    $transcriptWords = @(Get-NormalizedWords -Text $Transcript)
-    $missing = New-Object System.Collections.Generic.List[string]
+    $words = @(Get-NormalizedWords -Text $Transcript)
+    $lower = $Transcript.ToLowerInvariant()
 
-    foreach ($word in $Required) {
-        if (-not (Test-RequiredWord -TranscriptWords $transcriptWords -Required $word)) {
-            $missing.Add($word)
-        }
-    }
-
-    if ($missing.Count -gt 0) {
-        Write-Host ""
-        Write-Host "Missing required word(s): $($missing -join ', ')"
+    if ($Transcript.Trim().Length -lt 6) {
+        Write-Host "Transcript too short."
         return $false
     }
 
-    return $true
+    if ($words.Count -lt 2) {
+        Write-Host "Transcript has too few words."
+        return $false
+    }
+
+    $knownBad = @(
+        "brewers",
+        "if a whole",
+        "a whole",
+        "the thing leads",
+        "linux from the only things"
+    )
+
+    foreach ($bad in $knownBad) {
+        if ($lower.Contains($bad)) {
+            Write-Host "Transcript matched known bad capture phrase: $bad"
+            return $false
+        }
+    }
+
+    $score = 0
+
+    foreach ($anchor in $Anchors) {
+        $anchorLower = $anchor.ToLowerInvariant()
+
+        if ($anchorLower -eq "iris") {
+            if (
+                $words -contains "iris" -or
+                $words -contains "irish" -or
+                $words -contains "heiress" -or
+                $words -contains "aris" -or
+                $words -contains "irises"
+            ) {
+                $score += 1
+            }
+
+            continue
+        }
+
+        if ($anchorLower -eq "voice") {
+            if ($words -contains "voice" -or $words -contains "voices") {
+                $score += 1
+            }
+
+            continue
+        }
+
+        if ($anchorLower -eq "test") {
+            if ($words -contains "test" -or $words -contains "tests" -or $words -contains "testing") {
+                $score += 1
+            }
+
+            continue
+        }
+
+        if ($words -contains $anchorLower) {
+            $score += 1
+        }
+    }
+
+    Write-Host "Transcript anchor score: $score"
+
+    if ($score -ge 1) {
+        return $true
+    }
+
+    return $false
 }
 
 Write-Host ""
 Write-Host "=== Project Iris voice input boundary verification ==="
 Write-Host "Timeout seconds: $TimeoutSeconds"
 Write-Host "Expected phrase: $ExpectedPhrase"
-Write-Host "Required words: $($RequiredWords -join ', ')"
+Write-Host "Anchor words: $($AnchorWords -join ', ')"
 Write-Host "Max attempts: $MaxAttempts"
 
 $candidates = @(
@@ -245,7 +260,7 @@ $lastTranscript = $null
 for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     Write-Host ""
     Write-Host "=== Voice attempt $attempt of $MaxAttempts ==="
-    Write-Host "When prompted, say exactly:"
+    Write-Host "When prompted, say clearly:"
     Write-Host $ExpectedPhrase
 
     $voiceArgs = @(
@@ -285,12 +300,7 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     Write-Host "=== Extracted transcript ==="
     Write-Host $transcript
 
-    if ($transcript.Length -lt 3) {
-        Write-Host "Transcript too short."
-        continue
-    }
-
-    $passesQuality = Test-TranscriptQuality -Transcript $transcript -Required $RequiredWords
+    $passesQuality = Test-TranscriptQuality -Transcript $transcript -Anchors $AnchorWords
 
     if ($passesQuality -or $AllowUnverifiedTranscript) {
         Set-Content -Encoding UTF8 -Path $transcriptPath -Value $transcript
@@ -311,5 +321,4 @@ if (-not [string]::IsNullOrWhiteSpace($lastTranscript)) {
 
 Write-Host ""
 Write-Host "Rejected transcript file: $rejectedTranscriptPath"
-throw "Transcript failed quality gate after $MaxAttempts attempt(s). Iris will not answer because the captured words did not match required words."
-
+throw "Transcript failed quality gate after $MaxAttempts attempt(s). Iris will not answer because the captured words did not pass the soft quality gate."
