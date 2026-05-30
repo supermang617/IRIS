@@ -547,3 +547,23 @@ This command must verify:
 - one-shot voice input to checked spoken response
 
 Do not move to screen capture, OCR, memory database, full UI, dashboard, or always-listening voice until this milestone is stable.
+
+## Backend strategy rule
+
+Ollama is the current Windows development bridge only.
+
+The long-term production inference backend is llama.cpp/GGUF through a future iris-model crate.
+
+Do not make Ollama a required production dependency.
+
+Do not add more Ollama-specific architecture beyond explicit local development test helpers unless approved.
+
+Phone/mobile users should not need Ollama. Mobile must eventually use a bundled or platform-compatible local inference backend.
+
+## PowerShell native command capture rule
+
+Do not capture Cargo/native command output with `2>&1` while `$ErrorActionPreference = "Stop"`.
+
+Cargo writes normal build/status text to stderr, and PowerShell may treat that as an error record.
+
+Use separate temporary stdout/stderr files when a script needs to parse runtime output.

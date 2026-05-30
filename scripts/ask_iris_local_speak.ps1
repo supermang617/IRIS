@@ -19,6 +19,7 @@ if ($DryRun) {
     Write-Host "Dry run only."
     Write-Host "This script will:"
     Write-Host "- send a text prompt through Iris ask-local"
+    Write-Host "- capture stdout and stderr separately"
     Write-Host "- require Response post-check: PASS"
     Write-Host "- extract the checked model response"
     Write-Host "- print the text response"
@@ -26,7 +27,7 @@ if ($DryRun) {
     Write-Host "No model call was made."
     Write-Host "No speech was played."
     Write-Host "Result: PASS"
-    exit 0
+    return
 }
 
 $stdoutPath = [System.IO.Path]::GetTempFileName()
@@ -55,15 +56,15 @@ try {
         throw "Iris ask-local failed with exit code $exitCode"
     }
 
-    if ($stdout -notmatch "Response post-check: PASS") {
-        throw "Response post-check did not pass. Refusing to speak model output."
-    }
-
     if ($stdout -match "Response post-check: BLOCKED") {
         throw "Response was blocked. Refusing to speak model output."
     }
 
-    $lines = $stdout -split "`r?`n"
+    if ($stdout -notmatch "Response post-check: PASS") {
+        throw "Response post-check did not pass. Refusing to speak model output."
+    }
+
+    $lines = $stdout -split '\r?\n'
     $startIndex = -1
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -105,7 +106,7 @@ try {
         Write-Host ""
         Write-Host "Speech skipped because -NoSpeak was provided."
         Write-Host "Result: PASS"
-        exit 0
+        return
     }
 
     Write-Host ""

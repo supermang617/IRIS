@@ -26,7 +26,7 @@ if ($DryRun) {
     Write-Host "No model call was made."
     Write-Host "No speech was played."
     Write-Host "Result: PASS"
-    exit 0
+    return
 }
 
 if ($TimeoutSeconds -lt 2) {
@@ -73,12 +73,7 @@ try {
 Write-Host ""
 Write-Host "=== Sending transcript to Iris ==="
 
-if ($NoSpeak) {
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -Prompt $transcript -NoSpeak -Rate $Rate -Volume $Volume
-} else {
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -Prompt $transcript -Rate $Rate -Volume $Volume
-}
-
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\ask_iris_local_speak.ps1" -Prompt $transcript -NoSpeak:$NoSpeak -Rate $Rate -Volume $Volume
 if ($LASTEXITCODE -ne 0) {
     throw "Iris voice input response test failed"
 }

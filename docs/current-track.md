@@ -6,6 +6,20 @@ Use this file to avoid drifting from the roadmap.
 
 Validate and harden the first basic text and voice response milestone.
 
+## Backend direction
+
+Long-term production backend:
+
+llama.cpp / GGUF
+
+Current development bridge:
+
+Ollama loopback at 127.0.0.1:11434
+
+Ollama is only being used to test local model behavior quickly on Windows.
+
+Do not make Ollama a required production dependency.
+
 ## Current status
 
 Iris supports:
@@ -18,7 +32,15 @@ Iris supports:
 - Panic Stop skeleton
 - safety spine verification
 
-Useful commands:
+## Current issue being fixed
+
+PowerShell scripts must not capture native Cargo output with `2>&1` while `$ErrorActionPreference = "Stop"`.
+
+Cargo writes normal build/status text to stderr.
+
+Scripts that parse runtime output must capture stdout and stderr into separate temporary files.
+
+## Useful commands
 
 cargo run -p iris-runtime -- self-check
 cargo run -p iris-runtime -- panic-stop-test
@@ -33,9 +55,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify_iris_text_voi
 
 ## Do next
 
-If milestone verification passes cleanly, improve voice reliability and cancellation boundaries.
+Fix and stabilize text/voice helper scripts.
 
-If it fails, fix the smallest failing helper first.
+Then rerun the first text and voice milestone verification.
 
 ## Do not do yet
 
