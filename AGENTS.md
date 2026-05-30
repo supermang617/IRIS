@@ -948,3 +948,15 @@ Write reports under:
 .iris-dev/diagnostics/
 
 Do not commit diagnostic output files.
+
+## Diagnostics native command capture rule
+
+Diagnostics scripts must not pipe native commands through `*>&1 | Tee-Object`.
+
+Use Start-Process with separate stdout and stderr files.
+
+Reason:
+Cargo writes normal progress/status text to stderr. PowerShell can display that as NativeCommandError even when Cargo succeeds.
+
+Required diagnostics script:
+scripts/diagnose_iris_current_milestone.ps1

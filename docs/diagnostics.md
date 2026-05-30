@@ -10,6 +10,16 @@ Run one command to catch build, test, audit, runtime status, UI status, voice st
 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose_iris_current_milestone.ps1
 
+## Native command handling
+
+Diagnostics must use Start-Process with separate stdout and stderr files.
+
+Do not use direct native-command redirection like:
+
+cargo build *>&1 | Tee-Object
+
+That causes PowerShell to display normal Cargo stderr as NativeCommandError.
+
 ## Output
 
 Diagnostics reports are written to:
@@ -17,18 +27,3 @@ Diagnostics reports are written to:
 .iris-dev\diagnostics\
 
 This directory is local development state and should not be committed.
-
-## What it checks
-
-- git status
-- cargo fmt
-- cargo build
-- cargo test
-- xtask audit
-- runtime self-check
-- runtime ui-status
-- runtime voice-status
-- runtime push-to-talk visible-state test
-- runtime response post-check test
-- Kokoro voice milestone verifier
-- live text/voice session dry-run
