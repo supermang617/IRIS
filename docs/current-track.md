@@ -15,15 +15,15 @@ Iris has reached:
 - typed prompt helper
 - Panic Stop skeleton
 - runtime voice-status
+- runtime push-to-talk visible-state test
 
-## Current architecture step
+## Main live test command
 
-Runtime now exposes push-to-talk visible-state metadata.
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_iris_live_text_voice_session.ps1
 
-Useful commands:
+## Faster live test command after baseline already passed
 
-cargo run -p iris-runtime -- voice-status
-cargo run -p iris-runtime -- voice-ptt-state-test
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_iris_live_text_voice_session.ps1 -SkipBuild
 
 ## Wake word requirement
 
@@ -45,10 +45,10 @@ Correct order:
 
 ## Do next
 
-Run Kokoro voice milestone verification again.
+Run the live text and voice session.
 
-Then add a small manual voice session command that tests typed prompt and one-shot spoken prompt in one clean flow.
+If it passes, start the smallest UI/HUD typed-input scaffold next, because the v0.1 plan requires Iris-owned typed input and visible status instead of only PowerShell helpers.
 
 ## Do not do yet
 
-Do not add screen capture, OCR, memory database, full UI, dashboard, always-listening voice, or wake word runtime before push-to-talk and visible voice state are stable.
+Do not add screen capture, OCR, memory database, full dashboard, always-listening voice, or wake word runtime before push-to-talk and visible voice state are stable.

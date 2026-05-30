@@ -854,3 +854,18 @@ Only the Recording state may report microphone_active = true.
 Panic Stop must force the voice state to Stopped and microphone_active = false.
 
 Do not add wake word runtime before this remains stable.
+
+## Live text and voice session rule
+
+Use this command to test the current user-facing milestone:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_iris_live_text_voice_session.ps1
+
+This validates:
+- typed prompt to Iris
+- explicit spoken prompt to Iris
+- checked local model response
+- Kokoro spoken response
+- no always-listening mode
+- no wake word runtime yet
+- no system-control capability
