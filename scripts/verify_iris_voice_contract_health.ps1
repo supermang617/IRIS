@@ -39,6 +39,7 @@ Write-Section "Voice script parse checks"
 $voiceScripts = @(
     "scripts\listen_iris_local_speak.ps1",
     "scripts\verify_iris_voice_input_boundary.ps1",
+    "scripts\verify_iris_transcript_quality_gate.ps1",
     "scripts\test_iris_voice_prompt_to_kokoro.ps1",
     "scripts\speak_iris_kokoro.ps1",
     "scripts\resolve_iris_kokoro_provider.ps1",
@@ -81,6 +82,21 @@ if (-not $csvUses) {
 }
 
 Write-Host "PASS: voice boundary uses AnchorWordsCsv only."
+
+Write-Section "Playback contract scan"
+
+$testText = Get-Content -Raw -Path "scripts\test_iris_voice_prompt_to_kokoro.ps1"
+$healthText = Get-Content -Raw -Path "scripts\verify_iris_voice_contract_health.ps1"
+
+if ($testText -match '(?<![A-Za-z0-9_])-WavPath(?![A-Za-z0-9_])') {
+    throw "test_iris_voice_prompt_to_kokoro.ps1 must not receive or pass WavPath directly."
+}
+
+if ($healthText -match '(?<![A-Za-z0-9_])-WavPath(?![A-Za-z0-9_])') {
+    throw "verify_iris_voice_contract_health.ps1 must not pass WavPath to the voice milestone script."
+}
+
+Write-Host "PASS: outer voice milestone scripts do not expose WavPath."
 
 Write-Section "Kokoro provider check"
 
