@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $WavPath,
     [int] $PlaybackSeconds = 10,
-    [int] $LeadSilenceMs = 750,
+    [int] $LeadSilenceMs = 1000,
     [int] $TrailSilenceMs = 250
 )
 
@@ -43,15 +43,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Add-Type -AssemblyName System
-Add-Type -AssemblyName System.Windows.Forms
 
-$player = New-Object System.Media.SoundPlayer
-$player.SoundLocation = $paddedWav
-$player.Load()
+$soundPlayer = New-Object System.Media.SoundPlayer
+$soundPlayer.SoundLocation = $paddedWav
+$soundPlayer.Load()
 
 Write-Host "Playback: start"
-$player.Play()
+$soundPlayer.Play()
 Start-Sleep -Seconds $PlaybackSeconds
-$player.Stop()
+$soundPlayer.Stop()
 Write-Host "Playback: bounded stop"
 Write-Host "Result: PASS"

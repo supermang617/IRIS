@@ -4,10 +4,13 @@ Status: active.
 
 Kokoro speech playback must not clip the start of generated speech.
 
-Current fix:
+Canonical rule:
 
+- scripts/play_iris_wav_bounded.ps1 accepts only WavPath.
+- Callers must use WavPath.
+- Do not add a Path alias unless an external compatibility requirement is proven.
 - Bounded playback pads generated WAV files with leading silence.
-- Default lead silence: 750 ms.
+- Default lead silence: 1000 ms.
 - Default trailing silence: 250 ms.
 - Playback remains bounded and stops after the requested playback window.
 
