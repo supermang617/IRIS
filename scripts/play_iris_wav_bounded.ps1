@@ -19,7 +19,7 @@ if (-not (Test-Path $WavPath)) {
 
 $resolvedWav = (Resolve-Path $WavPath).Path
 $diagDir = Join-Path $repoRoot ".iris-dev\diagnostics"
-New-Item -ItemType Directory -Force $diagDir | Out-Null
+New-Item -ItemType Directory -Force -Path $diagDir | Out-Null
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $paddedWav = Join-Path $diagDir ("playback-padded-" + $timestamp + ".wav")
@@ -43,7 +43,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Add-Type -AssemblyName System
-
 $soundPlayer = New-Object System.Media.SoundPlayer
 $soundPlayer.SoundLocation = $paddedWav
 $soundPlayer.Load()

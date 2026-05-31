@@ -14,15 +14,12 @@ Canonical rule:
 - Default trailing silence: 250 ms.
 - Playback remains bounded and stops after the requested playback window.
 
-Canonical scripts:
+Strict run policy:
 
-- scripts/speak_iris_kokoro.ps1
-- scripts/play_iris_wav_bounded.ps1
-- scripts/pad_iris_wav.py
-- scripts/validate_iris_kokoro_full_playback.ps1
+- Expected negative tests must not dump red stack traces during milestone runs.
+- Real subprocess failures must stop immediately.
+- Use captured subprocess execution for milestone validation.
 
 Validation phrase:
 
 Hello. This is Iris. This is a voice test.
-
-If the user hears only the end of the phrase, increase LeadSilenceMs before changing Kokoro, Qwen, or STT.

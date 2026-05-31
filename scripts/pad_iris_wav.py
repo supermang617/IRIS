@@ -6,7 +6,7 @@ def main():
     parser = argparse.ArgumentParser(description='Pad a PCM WAV with leading/trailing silence.')
     parser.add_argument('--inwav', required=True)
     parser.add_argument('--outwav', required=True)
-    parser.add_argument('--lead-ms', type=int, default=750)
+    parser.add_argument('--lead-ms', type=int, default=1000)
     parser.add_argument('--trail-ms', type=int, default=250)
     args = parser.parse_args()
 

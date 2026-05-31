@@ -96,7 +96,7 @@ Write-Host "WAV: $outFull"
 if ($NoPlay) {
     Write-Host "Playback: skipped"
 } else {
-    powershell -NoProfile -ExecutionPolicy Bypass -File $boundedPlayer -Path $outFull -Seconds $PlaybackSeconds
+    powershell -NoProfile -ExecutionPolicy Bypass -File $boundedPlayer -WavPath $outFull -Seconds $PlaybackSeconds
 
     if ($LASTEXITCODE -ne 0) {
         throw "Bounded WAV playback failed with exit code $LASTEXITCODE"

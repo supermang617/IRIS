@@ -12,7 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-Set-Location -Path "C:\Projects\IRIS"
+Set-Location -WavPath "C:\Projects\IRIS"
 
 function Write-Section {
     param([string] $Text)
@@ -35,8 +35,8 @@ function Invoke-Captured {
     try {
         $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
 
-        $stdout = if (Test-Path $outFile) { Get-Content -Raw -Path $outFile } else { "" }
-        $stderr = if (Test-Path $errFile) { Get-Content -Raw -Path $errFile } else { "" }
+        $stdout = if (Test-Path $outFile) { Get-Content -Raw -WavPath $outFile } else { "" }
+        $stderr = if (Test-Path $errFile) { Get-Content -Raw -WavPath $errFile } else { "" }
 
         if (-not [string]::IsNullOrWhiteSpace($stdout)) {
             Write-Host $stdout.TrimEnd()
@@ -143,7 +143,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Section "Load transcript"
 
 $transcriptPath = ".iris-dev\voice\last-transcript.txt"
-$transcript = (Get-Content -Raw -Path $transcriptPath).Trim()
+$transcript = (Get-Content -Raw -WavPath $transcriptPath).Trim()
 
 if ([string]::IsNullOrWhiteSpace($transcript)) {
     throw "Transcript is empty."
