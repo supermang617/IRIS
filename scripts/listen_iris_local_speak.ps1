@@ -5,7 +5,10 @@ param(
     [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
     [switch] $NoResponse,
-    [string] $SimulatedTranscript = ""
+    [string] $SimulatedTranscript = "",
+    [ValidateSet("Auto", "Phrase", "Dictation")]
+    [string] $RecognitionMode = "Auto",
+    [double] $MinConfidence = 0.35
 )
 
 Set-StrictMode -Version Latest
@@ -60,11 +63,15 @@ Write-Host ("Expected phrase: " + $ExpectedPhrase)
 Write-Host ("Anchor words for diagnostics: " + ($anchorWords -join ", "))
 Write-Host ("Timeout seconds: " + $TimeoutSeconds)
 Write-Host ("Max attempts: " + $MaxAttempts)
+Write-Host ("Recognition mode: " + $RecognitionMode)
+Write-Host ("Minimum confidence: " + $MinConfidence)
 Write-Host "Mode: explicit bounded voice input"
 
 Add-Diag "Project Iris voice input diagnostic"
 Add-Diag ("Expected phrase: " + $ExpectedPhrase)
 Add-Diag ("Anchor words: " + ($anchorWords -join ", "))
+Add-Diag ("Recognition mode: " + $RecognitionMode)
+Add-Diag ("Minimum confidence: " + $MinConfidence)
 
 if (-not [string]::IsNullOrWhiteSpace($SimulatedTranscript)) {
     Write-Host "Mode: simulated transcript"
@@ -89,9 +96,51 @@ try {
     $recognizer = New-Object System.Speech.Recognition.SpeechRecognitionEngine
     $recognizer.SetInputToDefaultAudioDevice()
 
-    $grammar = New-Object System.Speech.Recognition.DictationGrammar
-    $grammar.Name = "Iris dictation"
-    $recognizer.LoadGrammar($grammar)
+    $effectiveMode = $RecognitionMode
+
+    if ($effectiveMode -eq "Auto") {
+        if ([string]::IsNullOrWhiteSpace($ExpectedPhrase)) {
+            $effectiveMode = "Dictation"
+        }
+        else {
+            $effectiveMode = "Phrase"
+        }
+    }
+
+    if ($effectiveMode -eq "Phrase") {
+        $choices = New-Object System.Speech.Recognition.Choices
+
+        $cleanExpected = (($ExpectedPhrase -replace "[^A-Za-z0-9\s]", " ") -replace "\s+", " ").Trim()
+
+        $phraseOptions = @(
+            $ExpectedPhrase,
+            $cleanExpected,
+            "Testing now Iris local voice test",
+            "Iris local voice test",
+            "Testing Iris voice test"
+        ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
+        foreach ($phrase in $phraseOptions) {
+            [void] $choices.Add($phrase)
+        }
+
+        $grammarBuilder = New-Object System.Speech.Recognition.GrammarBuilder
+        $grammarBuilder.Append($choices)
+
+        $grammar = New-Object System.Speech.Recognition.Grammar($grammarBuilder)
+        $grammar.Name = "Iris bounded phrase grammar"
+        $recognizer.LoadGrammar($grammar)
+
+        Add-Diag ("Loaded grammar: phrase")
+        Add-Diag ("Phrase options: " + ($phraseOptions -join " | "))
+    }
+    else {
+        $grammar = New-Object System.Speech.Recognition.DictationGrammar
+        $grammar.Name = "Iris dictation"
+        $recognizer.LoadGrammar($grammar)
+
+        Add-Diag ("Loaded grammar: dictation")
+    }
 
     Add-Diag ("Recognizer: " + $recognizer.RecognizerInfo.Name)
     Add-Diag ("Culture: " + $recognizer.RecognizerInfo.Culture.Name)
@@ -110,23 +159,32 @@ try {
         }
 
         $candidate = ($result.Text).Trim()
+        $confidence = [double] $result.Confidence
 
         Write-Host ("Transcript candidate: " + $candidate)
-        Write-Host ("Confidence: " + $result.Confidence)
+        Write-Host ("Confidence: " + $confidence)
 
         Add-Diag ("Attempt " + $attempt + " transcript: " + $candidate)
-        Add-Diag ("Attempt " + $attempt + " confidence: " + $result.Confidence)
+        Add-Diag ("Attempt " + $attempt + " confidence: " + $confidence)
 
-        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-            $acceptedTranscript = $candidate
-            break
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
         }
+
+        if ($confidence -lt $MinConfidence) {
+            Write-Host ("Rejected low-confidence transcript. Required >= " + $MinConfidence)
+            Add-Diag ("Attempt " + $attempt + ": rejected low-confidence transcript.")
+            continue
+        }
+
+        $acceptedTranscript = $candidate
+        break
     }
 
     if ([string]::IsNullOrWhiteSpace($acceptedTranscript)) {
         Write-Host ""
         Write-Host ("Diagnostics: " + $diagPath)
-        throw "No speech was recognized. Check Windows default input device, microphone privacy permission, and microphone gain."
+        throw "No acceptable speech was recognized. Check Windows default input device, microphone privacy permission, microphone gain, and room noise."
     }
 
     Save-Transcript $acceptedTranscript

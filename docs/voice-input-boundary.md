@@ -8,14 +8,13 @@ Current milestone:
 
 voice input -> transcript -> Qwen response -> Kokoro speech
 
-Boundary contract:
+Recognition policy:
 
-- Use one `AnchorWordsCsv` string across nested PowerShell calls.
-- Do not pass repeated `-AnchorWords` parameters.
-- Do not pass raw `string[]` values into nested `powershell -File` calls.
-- Live voice tests require a non-empty transcript.
-- Anchor words are diagnostics by default because Windows Speech may mishear words.
-- Use `-StrictAnchorGate` only for calibration tests.
+- Test milestones use bounded phrase recognition by default.
+- Low-confidence transcripts are rejected before they reach Qwen.
+- Current default minimum confidence is `0.35`.
+- Anchor words are diagnostics unless `-StrictAnchorGate` is used.
+- If phrase recognition passes but dictation is poor, the remaining issue is STT quality, not Qwen or Kokoro.
 
 Canonical scripts:
 
