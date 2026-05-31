@@ -2,6 +2,7 @@
 param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
     [string] $AnchorWordsCsv = "testing,voice,test",
+    [int] $MinAnchorHits = 2,
     [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
     [string] $SimulatedTranscript = "",
@@ -16,7 +17,7 @@ Set-Location -Path "C:\Projects\IRIS"
 function Write-Section {
     param([string] $Text)
     Write-Host ""
-    Write-Host "=== $Text ==="
+    Write-Host ("=== " + $Text + " ===")
 }
 
 function Invoke-Captured {
@@ -66,6 +67,7 @@ Write-Section "Required files"
 
 $required = @(
     "scripts\verify_iris_voice_input_boundary.ps1",
+    "scripts\verify_iris_transcript_quality_gate.ps1",
     "scripts\listen_iris_local_speak.ps1",
     "scripts\speak_iris_kokoro.ps1",
     "scripts\resolve_iris_kokoro_provider.ps1",
@@ -75,7 +77,7 @@ $required = @(
 
 foreach ($file in $required) {
     if (Test-Path $file) {
-        Write-Host "FOUND: $file"
+        Write-Host ("FOUND: " + $file)
     }
     else {
         throw "Missing required file: $file"
@@ -85,11 +87,16 @@ foreach ($file in $required) {
 Write-Section "Resolve Kokoro provider"
 
 $providerJson = powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\resolve_iris_kokoro_provider.ps1" -AsJson
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Kokoro provider resolver failed."
+}
+
 $provider = $providerJson | ConvertFrom-Json
 
-Write-Host "Provider OK: $($provider.ok)"
-Write-Host "Model: $($provider.model_relative_path)"
-Write-Host "Voices: $($provider.voices_relative_path)"
+Write-Host ("Provider OK: " + $provider.ok)
+Write-Host ("Model: " + $provider.model_relative_path)
+Write-Host ("Voices: " + $provider.voices_relative_path)
 
 if (-not $provider.ok) {
     throw "Kokoro provider is incomplete."
@@ -125,14 +132,17 @@ if ($LASTEXITCODE -ne 0) {
     throw "Voice input boundary failed. Do not continue to model response."
 }
 
+Write-Section "Run transcript quality gate"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\verify_iris_transcript_quality_gate.ps1" -AnchorWordsCsv $AnchorWordsCsv -MinAnchorHits $MinAnchorHits
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Transcript quality gate failed. Do not continue to model response."
+}
+
 Write-Section "Load transcript"
 
 $transcriptPath = ".iris-dev\voice\last-transcript.txt"
-
-if (-not (Test-Path $transcriptPath)) {
-    throw "Transcript file missing: $transcriptPath"
-}
-
 $transcript = (Get-Content -Raw -Path $transcriptPath).Trim()
 
 if ([string]::IsNullOrWhiteSpace($transcript)) {
