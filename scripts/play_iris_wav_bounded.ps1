@@ -1,36 +1,57 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string] $Path,
-
-    [int] $Seconds = 6
+    [string] $WavPath,
+    [int] $PlaybackSeconds = 10,
+    [int] $LeadSilenceMs = 750,
+    [int] $TrailSilenceMs = 250
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if (-not (Test-Path $Path)) {
-    throw "WAV file not found: $Path"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location -Path $repoRoot
+
+if (-not (Test-Path $WavPath)) {
+    throw "Missing WAV file: $WavPath"
 }
 
-$resolved = (Resolve-Path $Path).Path
-$wav = Get-Item $resolved
+$resolvedWav = (Resolve-Path $WavPath).Path
+$diagDir = Join-Path $repoRoot ".iris-dev\diagnostics"
+New-Item -ItemType Directory -Force $diagDir | Out-Null
 
-if ($wav.Length -lt 1000) {
-    throw "WAV file is unexpectedly small: $($wav.Length) bytes"
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$paddedWav = Join-Path $diagDir ("playback-padded-" + $timestamp + ".wav")
+
+Write-Host "=== Iris bounded WAV playback ==="
+Write-Host ("Input WAV: " + $resolvedWav)
+Write-Host ("Padded WAV: " + $paddedWav)
+Write-Host ("Lead silence ms: " + $LeadSilenceMs)
+Write-Host ("Trail silence ms: " + $TrailSilenceMs)
+Write-Host ("Playback seconds: " + $PlaybackSeconds)
+
+$python = Get-Command python -ErrorAction SilentlyContinue
+if (-not $python) {
+    throw "Python is required for WAV padding but was not found on PATH."
 }
 
-$player = New-Object System.Media.SoundPlayer $resolved
+& python "scripts\pad_iris_wav.py" --inwav $resolvedWav --outwav $paddedWav --lead-ms $LeadSilenceMs --trail-ms $TrailSilenceMs
+
+if ($LASTEXITCODE -ne 0) {
+    throw "WAV padding failed."
+}
+
+Add-Type -AssemblyName System
+Add-Type -AssemblyName System.Windows.Forms
+
+$player = New-Object System.Media.SoundPlayer
+$player.SoundLocation = $paddedWav
 $player.Load()
+
+Write-Host "Playback: start"
 $player.Play()
-
-Start-Sleep -Seconds $Seconds
-
-try {
-    $player.Stop()
-} catch {
-}
-
-Write-Host "Playback: bounded"
-Write-Host "WAV: $resolved"
+Start-Sleep -Seconds $PlaybackSeconds
+$player.Stop()
+Write-Host "Playback: bounded stop"
 Write-Host "Result: PASS"
