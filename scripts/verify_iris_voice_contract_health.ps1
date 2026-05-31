@@ -56,7 +56,7 @@ $contractScripts = @(
     "scripts\test_iris_voice_prompt_to_kokoro.ps1"
 )
 
-$badExactAnchor = Select-String -Path $contractScripts -Pattern "(?<![A-Za-z0-9_])-AnchorWords(?![A-Za-z0-9_])" -ErrorAction SilentlyContinue
+$badExactAnchor = Select-String -Path $contractScripts -Pattern '(?<![A-Za-z0-9_])-AnchorWords(?![A-Za-z0-9_])' -ErrorAction SilentlyContinue
 
 if ($badExactAnchor) {
     $badExactAnchor | ForEach-Object {
@@ -65,7 +65,7 @@ if ($badExactAnchor) {
     throw "Raw -AnchorWords contract still exists. Use -AnchorWordsCsv only."
 }
 
-$badNestedArray = Select-String -Path $contractScripts -Pattern "\$args\s*\+=\s*\$AnchorWords|\$boundaryArgs\s*\+=\s*\$AnchorWords|\$powershellArgs\s*\+=\s*\$AnchorWords" -ErrorAction SilentlyContinue
+$badNestedArray = Select-String -Path $contractScripts -Pattern '\$args\s*\+=\s*\$AnchorWords|\$boundaryArgs\s*\+=\s*\$AnchorWords|\$powershellArgs\s*\+=\s*\$AnchorWords' -ErrorAction SilentlyContinue
 
 if ($badNestedArray) {
     $badNestedArray | ForEach-Object {
@@ -74,7 +74,7 @@ if ($badNestedArray) {
     throw "Nested string-array AnchorWords contract still exists."
 }
 
-$csvUses = Select-String -Path $contractScripts -Pattern "AnchorWordsCsv" -ErrorAction SilentlyContinue
+$csvUses = Select-String -Path $contractScripts -Pattern 'AnchorWordsCsv' -ErrorAction SilentlyContinue
 
 if (-not $csvUses) {
     throw "AnchorWordsCsv contract was not found."
