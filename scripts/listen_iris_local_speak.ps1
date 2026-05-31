@@ -44,6 +44,7 @@ function Save-Transcript {
     }
 
     $clean | Set-Content -Encoding UTF8 $transcriptPath
+
     Add-Diag ("Final transcript: " + $clean)
     Add-Diag ("Transcript file: " + $transcriptPath)
 
@@ -56,7 +57,7 @@ function Save-Transcript {
 
 Write-Host "=== Project Iris one-shot voice input ==="
 Write-Host ("Expected phrase: " + $ExpectedPhrase)
-Write-Host ("Anchor words: " + ($anchorWords -join ", "))
+Write-Host ("Anchor words for diagnostics: " + ($anchorWords -join ", "))
 Write-Host ("Timeout seconds: " + $TimeoutSeconds)
 Write-Host ("Max attempts: " + $MaxAttempts)
 Write-Host "Mode: explicit bounded voice input"
@@ -76,7 +77,8 @@ Write-Host "Speak only after: Listening now..."
 
 try {
     Add-Type -AssemblyName System.Speech
-} catch {
+}
+catch {
     throw "System.Speech is unavailable. Check Windows speech components."
 }
 

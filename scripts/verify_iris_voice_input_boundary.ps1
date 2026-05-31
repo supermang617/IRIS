@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
-    [string[]] $AnchorWords = @("testing", "voice", "test"),
+    [string] $AnchorWordsCsv = "testing,voice,test",
     [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
     [string] $SimulatedTranscript = "",
@@ -21,12 +21,16 @@ if (-not (Test-Path $listener)) {
     throw "Missing listener: $listener"
 }
 
-$anchorWordsCsv = ($AnchorWords -join ",")
+$anchorWords = @(
+    $AnchorWordsCsv -split "," |
+        ForEach-Object { $_.Trim().ToLowerInvariant() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
 
 Write-Host "=== Project Iris voice input boundary verification ==="
 Write-Host "When prompted, say clearly:"
 Write-Host $ExpectedPhrase
-Write-Host ("Anchor words for diagnostics: " + ($AnchorWords -join ", "))
+Write-Host ("Anchor words for diagnostics: " + ($anchorWords -join ", "))
 Write-Host ("Strict anchor gate: " + [bool]$StrictAnchorGate)
 
 $powershellArgs = @(
@@ -34,7 +38,7 @@ $powershellArgs = @(
     "-ExecutionPolicy", "Bypass",
     "-File", $listener,
     "-ExpectedPhrase", $ExpectedPhrase,
-    "-AnchorWordsCsv", $anchorWordsCsv,
+    "-AnchorWordsCsv", $AnchorWordsCsv,
     "-TimeoutSeconds", $TimeoutSeconds.ToString(),
     "-MaxAttempts", $MaxAttempts.ToString(),
     "-NoResponse"
@@ -64,7 +68,7 @@ if ([string]::IsNullOrWhiteSpace($transcript)) {
 $normalized = (($transcript.ToLowerInvariant() -replace "[^a-z0-9\s]", " ") -replace "\s+", " ").Trim()
 $missing = @()
 
-foreach ($word in $AnchorWords) {
+foreach ($word in $anchorWords) {
     $w = (($word.ToLowerInvariant() -replace "[^a-z0-9\s]", " ") -replace "\s+", " ").Trim()
 
     if (-not [string]::IsNullOrWhiteSpace($w) -and $normalized -notmatch [regex]::Escape($w)) {
@@ -81,7 +85,8 @@ if ($missing.Count -gt 0) {
     if ($StrictAnchorGate) {
         throw "Transcript is missing expected words: $($missing -join ", ")"
     }
-} else {
+}
+else {
     Write-Host "Anchor diagnostics: PASS"
 }
 

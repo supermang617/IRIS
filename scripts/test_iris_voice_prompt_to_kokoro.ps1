@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
     [string] $ExpectedPhrase = "Testing now, Iris local voice test.",
-    [string[]] $AnchorWords = @("testing", "voice", "test"),
+    [string] $AnchorWordsCsv = "testing,voice,test",
     [int] $TimeoutSeconds = 30,
     [int] $MaxAttempts = 3,
+    [string] $SimulatedTranscript = "",
     [switch] $NoPlay,
     [switch] $StrictAnchorGate
 )
@@ -75,7 +76,8 @@ $required = @(
 foreach ($file in $required) {
     if (Test-Path $file) {
         Write-Host "FOUND: $file"
-    } else {
+    }
+    else {
         throw "Missing required file: $file"
     }
 }
@@ -103,13 +105,14 @@ $boundaryArgs = @(
     "-ExecutionPolicy", "Bypass",
     "-File", "scripts\verify_iris_voice_input_boundary.ps1",
     "-ExpectedPhrase", $ExpectedPhrase,
+    "-AnchorWordsCsv", $AnchorWordsCsv,
     "-TimeoutSeconds", $TimeoutSeconds.ToString(),
     "-MaxAttempts", $MaxAttempts.ToString()
 )
 
-foreach ($word in $AnchorWords) {
-    $boundaryArgs += "-AnchorWords"
-    $boundaryArgs += $word
+if (-not [string]::IsNullOrWhiteSpace($SimulatedTranscript)) {
+    $boundaryArgs += "-SimulatedTranscript"
+    $boundaryArgs += $SimulatedTranscript
 }
 
 if ($StrictAnchorGate) {

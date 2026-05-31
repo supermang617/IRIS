@@ -8,12 +8,14 @@ Current milestone:
 
 voice input -> transcript -> Qwen response -> Kokoro speech
 
-Gate policy:
+Boundary contract:
 
+- Use one `AnchorWordsCsv` string across nested PowerShell calls.
+- Do not pass repeated `-AnchorWords` parameters.
+- Do not pass raw `string[]` values into nested `powershell -File` calls.
 - Live voice tests require a non-empty transcript.
-- Anchor words are diagnostics by default because Windows Speech recognition may mishear words.
-- Use `-StrictAnchorGate` only for strict calibration tests.
-- Do not block the pipeline just because Windows Speech misheard one word.
+- Anchor words are diagnostics by default because Windows Speech may mishear words.
+- Use `-StrictAnchorGate` only for calibration tests.
 
 Canonical scripts:
 
