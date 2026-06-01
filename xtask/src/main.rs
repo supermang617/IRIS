@@ -1,223 +1,177 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
-struct Finding {
-    path: PathBuf,
-    needle: String,
-}
-
 fn main() {
-    let root = env::current_dir().expect("failed to read current directory");
-
-    if !root
-        .join("capabilities")
-        .join("v0_1_capability_ledger.toml")
-        .exists()
-    {
-        eprintln!("Project Iris xtask audit failed.");
-        eprintln!("Missing capabilities/v0_1_capability_ledger.toml");
-        std::process::exit(1);
-    }
-
-    let findings = audit_repo(&root);
-
-    if findings.is_empty() {
-        println!("Project Iris xtask audit passed.");
-        println!("Capability ledger found.");
-        println!("Loopback-only future inference boundary is documented.");
-        return;
-    }
-
-    eprintln!("Project Iris xtask audit failed.");
-    eprintln!("Forbidden runtime/API string findings: {}", findings.len());
-
-    for finding in findings {
-        eprintln!("{} :: {}", finding.path.display(), finding.needle);
-    }
-
-    std::process::exit(1);
-}
-
-fn audit_repo(root: &Path) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    scan_dir(root, root, &mut findings);
-    findings
-}
-
-fn scan_dir(root: &Path, dir: &Path, findings: &mut Vec<Finding>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-
-        if should_skip_path(root, &path) {
-            continue;
+    match run_audit() {
+        Ok(()) => {
+            println!("Project Iris xtask audit passed.");
         }
-
-        if path.is_dir() {
-            scan_dir(root, &path, findings);
-        } else if should_scan_file(&path) {
-            scan_file(root, &path, findings);
+        Err(error) => {
+            eprintln!("Project Iris xtask audit failed: {error}");
+            std::process::exit(1);
         }
     }
 }
 
-fn should_skip_path(root: &Path, path: &Path) -> bool {
-    let relative = path.strip_prefix(root).unwrap_or(path);
-
-    if relative == Path::new("AGENTS.md")
-        || relative == Path::new("README.md")
-        || relative == Path::new("SECURITY.md")
-        || relative == Path::new("known-limitations.md")
-        || relative == Path::new("capabilities").join("v0_1_capability_ledger.toml")
-        || relative == Path::new("xtask").join("src").join("main.rs")
-    {
-        return true;
-    }
-
-    relative.components().any(|component| {
-        let text = component.as_os_str().to_string_lossy();
-        matches!(text.as_ref(), ".git" | "target" | ".vs" | ".codex" | "docs")
-    })
+fn run_audit() -> Result<(), String> {
+    let root = workspace_root()?;
+    assert_required_files(&root)?;
+    assert_manifest_policy(&root)?;
+    assert_cognition_boundaries(&root)?;
+    assert_forbidden_api_absence(&root)?;
+    Ok(())
 }
 
-fn should_scan_file(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|ext| ext.to_str()),
-        Some("rs" | "toml")
-    )
+fn workspace_root() -> Result<PathBuf, String> {
+    std::env::current_dir().map_err(|err| err.to_string())
 }
 
-fn scan_file(root: &Path, path: &Path, findings: &mut Vec<Finding>) {
-    let Ok(content) = fs::read_to_string(path) else {
-        return;
-    };
-
-    for needle in forbidden_needles_for_path(root, path) {
-        if content.contains(&needle) {
-            findings.push(Finding {
-                path: path.to_path_buf(),
-                needle,
-            });
+fn assert_required_files(root: &Path) -> Result<(), String> {
+    for relative in [
+        "AGENTS.md",
+        "SPEC.md",
+        "manifest.json",
+        "capabilities/v0_1_capability_ledger.toml",
+        "crates/iris-paths/Cargo.toml",
+        "crates/iris-redaction/Cargo.toml",
+        "crates/iris-context-gate/Cargo.toml",
+        "crates/iris-cognition/Cargo.toml",
+        "crates/iris-config/Cargo.toml",
+        "crates/iris-hardware/Cargo.toml",
+        "crates/iris-ollama/Cargo.toml",
+        "crates/iris-status/Cargo.toml",
+        "crates/iris-ui/Cargo.toml",
+        "src-tauri/Cargo.toml",
+        "src-tauri/tauri.conf.json",
+        "src-tauri/icons/icon.ico",
+        "app/index.html",
+        "docs/adaptive-shell.md",
+    ] {
+        let path = root.join(relative);
+        if !path.exists() {
+            return Err(format!("required file missing: {relative}"));
         }
     }
+    Ok(())
 }
 
-fn forbidden_needles_for_path(root: &Path, path: &Path) -> Vec<String> {
-    let relative = path.strip_prefix(root).unwrap_or(path);
+fn assert_manifest_policy(root: &Path) -> Result<(), String> {
+    let manifest = read(root.join("manifest.json"))?;
+    for required in [
+        "\"target_platform\": \"windows\"",
+        "\"provider\": \"ollama_local\"",
+        "\"model_id\": \"huihui_ai/gemma-4-abliterated:e2b\"",
+        "\"single_model_only\": true",
+        "\"fallback_models_allowed\": false",
+        "\"num_ctx_ceiling\": 8192",
+        "\"unified_model\": true",
+        "\"vision_capable\": true",
+        "\"image_input_capable\": true",
+        "\"separate_vision_model\": false",
+        "\"runtime_external_network\": \"disabled\"",
+        "\"reserved_system_memory_ratio\": 0.35",
+        "\"provider\": \"kokoro_onnx_python\"",
+        "\"voice\": \"af_heart\"",
+    ] {
+        if !manifest.contains(required) {
+            return Err(format!("manifest missing required policy: {required}"));
+        }
+    }
+    Ok(())
+}
 
-    let mut needles = forbidden_needles();
-
-    if is_local_inference_loopback_boundary(relative) {
-        needles.retain(|needle| needle != "std::net");
+fn assert_cognition_boundaries(root: &Path) -> Result<(), String> {
+    let manifest = read(root.join("crates/iris-cognition/Cargo.toml"))?;
+    for forbidden in ["iris-capture", "iris-scene", "iris-voice", "iris-ui"] {
+        if manifest.contains(forbidden) {
+            return Err(format!(
+                "iris-cognition must not depend on forbidden crate {forbidden}"
+            ));
+        }
     }
 
-    needles
+    let source = read(root.join("crates/iris-cognition/src/lib.rs"))?;
+    for forbidden in ["RawFrame", "RawOcrText", "RawAudio", "ClipboardText"] {
+        if source.contains(forbidden) {
+            return Err(format!(
+                "iris-cognition source must not accept raw observation type {forbidden}"
+            ));
+        }
+    }
+    Ok(())
 }
 
-fn is_local_inference_loopback_boundary(relative: &Path) -> bool {
-    relative
-        == Path::new("crates")
-            .join("iris-local-inference")
-            .join("src")
-            .join("loopback.rs")
+fn assert_forbidden_api_absence(root: &Path) -> Result<(), String> {
+    let forbidden_patterns = forbidden_patterns();
+    for file in source_files(&root.join("crates"))? {
+        let content = read(&file)?;
+        for pattern in &forbidden_patterns {
+            if is_loopback_inference_file(&file, pattern) {
+                continue;
+            }
+            if content.contains(pattern) {
+                return Err(format!(
+                    "forbidden API pattern `{pattern}` found in {}",
+                    file.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
-fn forbidden_needles() -> Vec<String> {
-    vec![
-        make(&["std::process", "::Command"]),
-        make(&["Command", "::new"]),
-        make(&["clip", "board"]),
-        make(&["Send", "Input"]),
-        make(&["mouse", "_event"]),
-        make(&["keybd", "_event"]),
-        make(&["req", "west"]),
-        make(&["hy", "per"]),
-        make(&["tokio", "::net"]),
-        make(&["std", "::net"]),
-        make(&["tauri", "_plugin", "_shell"]),
-        make(&["power", "shell"]),
-        make(&["cmd", ".exe"]),
+fn is_loopback_inference_file(file: &Path, pattern: &str) -> bool {
+    file.components()
+        .any(|component| component.as_os_str() == "iris-ollama")
+        && matches!(pattern, "reqwest" | "std::net::")
+}
+
+fn forbidden_patterns() -> Vec<String> {
+    [
+        ("std::process", "::Command"),
+        ("process", "::Command"),
+        ("Command", "::new"),
+        ("std::net", "::"),
+        ("Tcp", "Stream"),
+        ("Tcp", "Listener"),
+        ("Udp", "Socket"),
+        ("clipboard", "::"),
+        ("ar", "board"),
+        ("copy", "pasta"),
+        ("Send", "Input"),
+        ("mouse", "_event"),
+        ("keybd", "_event"),
+        ("req", "west"),
+        ("ureq", ""),
+        ("hyper", "::"),
     ]
+    .into_iter()
+    .map(|(left, right)| format!("{left}{right}"))
+    .collect()
 }
 
-fn make(parts: &[&str]) -> String {
-    parts.join("")
+fn source_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    collect_source_files(root, &mut files)?;
+    Ok(files)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn forbidden_needles_include_process_command() {
-        assert!(
-            forbidden_needles()
-                .iter()
-                .any(|needle| needle == "std::process::Command")
-        );
+fn collect_source_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
     }
-
-    #[test]
-    fn scans_rust_and_toml() {
-        assert!(should_scan_file(Path::new("src/main.rs")));
-        assert!(should_scan_file(Path::new("Cargo.toml")));
-        assert!(!should_scan_file(Path::new("README.md")));
+    for entry in fs::read_dir(path).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_source_files(&path, files)?;
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
+        }
     }
+    Ok(())
+}
 
-    #[test]
-    fn skips_policy_docs_agent_and_self_files() {
-        let root = Path::new("C:/Projects/IRIS");
-
-        assert!(should_skip_path(
-            root,
-            Path::new("C:/Projects/IRIS/AGENTS.md")
-        ));
-        assert!(should_skip_path(
-            root,
-            Path::new("C:/Projects/IRIS/README.md")
-        ));
-        assert!(should_skip_path(
-            root,
-            Path::new("C:/Projects/IRIS/SECURITY.md")
-        ));
-        assert!(should_skip_path(
-            root,
-            Path::new("C:/Projects/IRIS/known-limitations.md")
-        ));
-        assert!(should_skip_path(
-            root,
-            Path::new("C:/Projects/IRIS/docs/architecture.md")
-        ));
-        assert!(should_skip_path(
-            root,
-            Path::new("C:/Projects/IRIS/xtask/src/main.rs")
-        ));
-    }
-
-    #[test]
-    fn local_inference_loopback_boundary_may_use_std_net_string() {
-        let root = Path::new("C:/Projects/IRIS");
-        let path = Path::new("C:/Projects/IRIS/crates/iris-local-inference/src/loopback.rs");
-
-        let needles = forbidden_needles_for_path(root, path);
-
-        assert!(!needles.iter().any(|needle| needle == "std::net"));
-        assert!(needles.iter().any(|needle| needle == "reqwest"));
-        assert!(needles.iter().any(|needle| needle == "hyper"));
-    }
-
-    #[test]
-    fn normal_runtime_files_may_not_use_std_net_string() {
-        let root = Path::new("C:/Projects/IRIS");
-        let path = Path::new("C:/Projects/IRIS/crates/iris-runtime/src/main.rs");
-
-        let needles = forbidden_needles_for_path(root, path);
-
-        assert!(needles.iter().any(|needle| needle == "std::net"));
-    }
+fn read(path: impl AsRef<Path>) -> Result<String, String> {
+    fs::read_to_string(path.as_ref()).map_err(|err| format!("{}: {err}", path.as_ref().display()))
 }

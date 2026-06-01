@@ -1,149 +1,158 @@
+use std::fmt;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IrisPathError {
-    EmptyRelativePath,
-    AbsolutePathRejected,
-    ParentTraversalRejected,
+pub enum IrisPathArea {
+    Config,
+    Logs,
+    Cache,
+    Memory,
+    Models,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedPath {
+    area: IrisPathArea,
+    path: PathBuf,
+}
+
+impl OwnedPath {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn area(&self) -> &IrisPathArea {
+        &self.area
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathError {
+    AbsolutePathRejected,
+    TraversalRejected,
+    Io(String),
+    EscapeRejected,
+}
+
+impl fmt::Display for PathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AbsolutePathRejected => write!(f, "absolute paths are not accepted"),
+            Self::TraversalRejected => write!(f, "path traversal is not accepted"),
+            Self::Io(message) => write!(f, "{message}"),
+            Self::EscapeRejected => write!(f, "path escapes the Iris-owned root"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct IrisRoots {
     root: PathBuf,
 }
 
 impl IrisRoots {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+    pub fn new(root: impl Into<PathBuf>) -> Result<Self, PathError> {
+        let root = root.into();
+        fs::create_dir_all(&root).map_err(|err| PathError::Io(err.to_string()))?;
+        let root = root
+            .canonicalize()
+            .map_err(|err| PathError::Io(err.to_string()))?;
+        Ok(Self { root })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    pub fn resolve_child(&self, relative_path: impl AsRef<Path>) -> Result<PathBuf, IrisPathError> {
-        let relative_path = relative_path.as_ref();
-
-        if relative_path.as_os_str().is_empty() {
-            return Err(IrisPathError::EmptyRelativePath);
-        }
-
-        if relative_path.is_absolute() {
-            return Err(IrisPathError::AbsolutePathRejected);
-        }
-
-        for component in relative_path.components() {
-            match component {
-                Component::ParentDir => return Err(IrisPathError::ParentTraversalRejected),
-                Component::Prefix(_) | Component::RootDir => {
-                    return Err(IrisPathError::AbsolutePathRejected);
-                }
-                _ => {}
-            }
-        }
-
-        Ok(self.root.join(relative_path))
+    pub fn area_root(&self, area: &IrisPathArea) -> PathBuf {
+        let name = match area {
+            IrisPathArea::Config => "config",
+            IrisPathArea::Logs => "logs",
+            IrisPathArea::Cache => "cache",
+            IrisPathArea::Memory => "memory",
+            IrisPathArea::Models => "models",
+        };
+        self.root.join(name)
     }
 
-    pub fn config_path(
+    pub fn resolve_owned(
         &self,
-        relative_path: impl AsRef<Path>,
-    ) -> Result<ConfigPath, IrisPathError> {
-        Ok(ConfigPath(self.resolve_child(relative_path)?))
-    }
+        area: IrisPathArea,
+        relative: impl AsRef<Path>,
+    ) -> Result<OwnedPath, PathError> {
+        let relative = relative.as_ref();
+        if relative.is_absolute() {
+            return Err(PathError::AbsolutePathRejected);
+        }
+        reject_traversal(relative)?;
 
-    pub fn log_path(&self, relative_path: impl AsRef<Path>) -> Result<LogPath, IrisPathError> {
-        Ok(LogPath(self.resolve_child(relative_path)?))
-    }
-
-    pub fn cache_path(&self, relative_path: impl AsRef<Path>) -> Result<CachePath, IrisPathError> {
-        Ok(CachePath(self.resolve_child(relative_path)?))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigPath(PathBuf);
-
-impl ConfigPath {
-    pub fn as_path(&self) -> &Path {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogPath(PathBuf);
-
-impl LogPath {
-    pub fn as_path(&self) -> &Path {
-        &self.0
+        let area_root = self.area_root(&area);
+        fs::create_dir_all(&area_root).map_err(|err| PathError::Io(err.to_string()))?;
+        let candidate = area_root.join(relative);
+        if !candidate.starts_with(&self.root) {
+            return Err(PathError::EscapeRejected);
+        }
+        Ok(OwnedPath {
+            area,
+            path: candidate,
+        })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CachePath(PathBuf);
-
-impl CachePath {
-    pub fn as_path(&self) -> &Path {
-        &self.0
+fn reject_traversal(path: &Path) -> Result<(), PathError> {
+    for component in path.components() {
+        match component {
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(PathError::TraversalRejected);
+            }
+            Component::CurDir | Component::Normal(_) => {}
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn accepts_relative_path_inside_root() {
-        let roots = IrisRoots::new(PathBuf::from("C:/IrisData"));
-        let path = roots.config_path("config/settings.toml").unwrap();
+    fn test_root(name: &str) -> PathBuf {
+        let mut root = std::env::temp_dir();
+        root.push(format!(
+            "iris_paths_{name}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock works")
+                .as_nanos()
+        ));
+        root
+    }
 
-        assert_eq!(
-            path.as_path(),
-            Path::new("C:/IrisData").join("config/settings.toml")
-        );
+    #[test]
+    fn resolves_owned_child_path() {
+        let roots = IrisRoots::new(test_root("child")).expect("roots");
+        let path = roots
+            .resolve_owned(IrisPathArea::Config, "settings.json")
+            .expect("owned path");
+        assert!(path.path().starts_with(roots.root()));
+        assert_eq!(path.area(), &IrisPathArea::Config);
     }
 
     #[test]
     fn rejects_parent_traversal() {
-        let roots = IrisRoots::new(PathBuf::from("C:/IrisData"));
-        let err = roots.config_path("../outside.toml").unwrap_err();
-
-        assert_eq!(err, IrisPathError::ParentTraversalRejected);
-    }
-
-    #[test]
-    fn rejects_nested_parent_traversal() {
-        let roots = IrisRoots::new(PathBuf::from("C:/IrisData"));
-        let err = roots.log_path("logs/../../outside.log").unwrap_err();
-
-        assert_eq!(err, IrisPathError::ParentTraversalRejected);
-    }
-
-    #[test]
-    fn rejects_absolute_path_outside_root() {
-        let roots = IrisRoots::new(PathBuf::from("C:/IrisData"));
-
-        #[cfg(windows)]
+        let roots = IrisRoots::new(test_root("traversal")).expect("roots");
         let err = roots
-            .cache_path("C:/Windows/System32/file.bin")
-            .unwrap_err();
-
-        #[cfg(not(windows))]
-        let err = roots.cache_path("/etc/passwd").unwrap_err();
-
-        assert_eq!(err, IrisPathError::AbsolutePathRejected);
+            .resolve_owned(IrisPathArea::Logs, "../outside.log")
+            .expect_err("traversal must fail");
+        assert_eq!(err, PathError::TraversalRejected);
     }
 
     #[test]
-    fn typed_wrappers_preserve_paths() {
-        let roots = IrisRoots::new(PathBuf::from("C:/IrisData"));
-
-        let config = roots.config_path("config/app.toml").unwrap();
-        let log = roots.log_path("logs/app.log").unwrap();
-        let cache = roots.cache_path("cache/data.bin").unwrap();
-
-        assert_eq!(config.as_path(), Path::new("C:/IrisData/config/app.toml"));
-        assert_eq!(log.as_path(), Path::new("C:/IrisData/logs/app.log"));
-        assert_eq!(cache.as_path(), Path::new("C:/IrisData/cache/data.bin"));
+    fn rejects_absolute_paths() {
+        let roots = IrisRoots::new(test_root("absolute")).expect("roots");
+        let err = roots
+            .resolve_owned(IrisPathArea::Cache, roots.root().join("file.txt"))
+            .expect_err("absolute path must fail");
+        assert_eq!(err, PathError::AbsolutePathRejected);
     }
 }

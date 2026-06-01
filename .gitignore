@@ -1,9 +1,12 @@
 target/
+node_modules/
+src-tauri/gen/
+.cargo/
+.iris-data/
 .vs/
 .codex/
 .codex_backup*/
 *.tmp
 *.log
-
-# Local Iris development assets
-.iris-dev/
+diagnostics/
+models/

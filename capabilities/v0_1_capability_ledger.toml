@@ -1,77 +1,136 @@
-[crate.iris-core-types]
-allowed = ["domain_types", "provenance_types", "context_types", "reply_types"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["plain_domain_values"]
-may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
+# Project Iris v0.1 capability ledger.
+# This file is intentionally plain TOML-like metadata for xtask auditing.
 
-[crate.iris-policy]
-allowed = ["static_policy_constants", "capability_absence_language"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["none"]
-may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
+[crate.iris-core-types]
+allowed = ["domain_types"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "filesystem_arbitrary_read", "filesystem_arbitrary_write"]
+allowed_roots = []
+may_depend_on = []
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
 
 [crate.iris-paths]
-allowed = ["owned_path_validation", "typed_path_wrappers"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use", "arbitrary_filesystem_access"]
-may_receive = ["relative_paths"]
-may_not_receive = ["CommandRequest"]
+allowed = ["iris_owned_path_resolution"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network"]
+allowed_roots = ["iris_owned"]
+may_depend_on = []
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
+
+[crate.iris-policy]
+allowed = ["policy_constants", "capability_declarations"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network"]
+allowed_roots = []
+may_depend_on = []
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
 
 [crate.iris-redaction]
-allowed = ["deterministic_text_redaction", "redaction_findings"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["text"]
-may_not_receive = ["RawFrame", "RawAudio", "CommandRequest"]
+allowed = ["sensitive_text_detection", "safe_text_transformation"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network"]
+allowed_roots = []
+may_depend_on = ["iris-core-types"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
 
 [crate.iris-context-gate]
-allowed = ["context_gating", "provenance_labeling", "authority_assignment", "redaction_before_cognition"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["direct_user_text", "future_screen_ocr_text_as_untrusted_evidence", "future_asr_transcript"]
-may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
+allowed = ["context_gating", "provenance_labeling", "prompt_injection_hardening"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network"]
+allowed_roots = []
+may_depend_on = ["iris-core-types", "iris-redaction", "iris-policy"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
 
 [crate.iris-cognition]
-allowed = ["cognition_stub", "deterministic_response", "gated_context_only", "disabled_local_inference_stub"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use", "raw_ocr_input", "raw_audio_input", "raw_screen_frame_input"]
+allowed = ["dummy_cognition", "gated_context_response"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "filesystem_arbitrary_read", "filesystem_arbitrary_write"]
+allowed_roots = []
+may_depend_on = ["iris-core-types", "iris-context-gate", "iris-policy"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
 may_receive = ["GatedContextBundle"]
-may_not_receive = ["RawFrame", "RawOcrText", "RawAudio", "ClipboardText", "CommandRequest"]
+may_not_receive = ["RawFrame", "RawOcrText", "RawAudio", "ClipboardText"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
 
-[crate.iris-local-inference]
-allowed = ["disabled_inference_stub", "future_loopback_boundary_definition", "deterministic_stub_response", "future_127_0_0_1_loopback_client"]
-forbidden = ["cloud_api", "telemetry", "process_execution", "shell_execution", "browser_automation", "plugin_loading", "non_loopback_network"]
-may_receive = ["LocalInferenceRequest"]
-may_not_receive = ["RawAudio", "RawFrame", "ClipboardText", "CommandRequest", "ShellCommand"]
+[crate.iris-hardware]
+allowed = ["windows_system_resource_scan"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "filesystem_arbitrary_read", "filesystem_arbitrary_write"]
+allowed_roots = []
+may_depend_on = []
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
 
-[crate.iris-panic-stop]
-allowed = ["cancellation_flag", "stop_requested_state"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["stop_request"]
-may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
-
-[crate.iris-response-check]
-allowed = ["assistant_response_post_check", "unsafe_response_blocking"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["AssistantResponseText"]
-may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest"]
-
-[crate.iris-voice]
-allowed = ["voice_activation_metadata", "tts_backend_metadata", "checked_response_speech_contract", "future_push_to_talk_metadata", "future_wake_word_metadata_disabled_by_default"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use", "always_listening_default"]
-may_receive = ["CheckedAssistantResponseText", "AsrTranscriptMetadata"]
-may_not_receive = ["RawFrame", "ClipboardText", "CommandRequest", "ShellCommand"]
-
-[crate.iris-runtime]
-allowed = ["safe_local_flow_coordination", "startup", "policy_status_printing", "runtime_cli_test_modes"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["safe_demo_input", "command_line_test_input"]
-may_not_receive = ["CommandRequest", "ShellCommand", "ClipboardText"]
-
-[crate.xtask]
-allowed = ["development_audit", "forbidden_api_scan", "capability_ledger_presence_check", "loopback_boundary_audit_exception"]
-forbidden = ["runtime_input_simulation", "runtime_clipboard_access", "runtime_network", "runtime_browser_automation"]
-may_receive = ["repository_files"]
-may_not_receive = ["runtime_user_data"]
+[crate.iris-ollama]
+allowed = ["loopback_model_inference"]
+forbidden = ["screen_capture", "raw_audio_capture", "input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network_external", "filesystem_arbitrary_read", "filesystem_arbitrary_write"]
+allowed_roots = []
+may_depend_on = ["iris-config", "iris-core-types"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-ui"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = true
 
 [crate.iris-ui]
-allowed = ["hud_state_model", "typed_prompt_model", "response_display_model", "visible_voice_status_model", "safety_absence_language"]
-forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network", "browser_automation", "plugin_loading", "accessibility_control", "window_control", "autonomous_computer_use"]
-may_receive = ["HudText", "CheckedAssistantResponseText", "VoiceStatusSnapshot"]
-may_not_receive = ["RawFrame", "RawAudio", "ClipboardText", "CommandRequest", "ShellCommand"]
+allowed = ["phase0_text_hud", "safety_status_display"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network"]
+allowed_roots = []
+may_depend_on = ["iris-core-types", "iris-policy", "iris-context-gate", "iris-cognition"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
+
+[crate.iris-runtime]
+allowed = ["lifecycle_coordination", "phase0_demo_flow", "single_model_status"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "process_execution", "runtime_network_background", "plugin_loading"]
+allowed_roots = ["iris_owned"]
+may_depend_on = ["iris-core-types", "iris-policy", "iris-paths", "iris-redaction", "iris-context-gate", "iris-cognition", "iris-hardware", "iris-ollama", "iris-ui"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice"]
+may_access_raw_screen = false
+may_access_raw_audio = false
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false
+
+[crate.iris-tauri]
+allowed = ["dashboard_command_bridge", "typed_hud_command_bridge", "native_microphone_asr", "kokoro_tts_helper_process", "iris_owned_tts_temp_wav"]
+forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "runtime_network_background", "plugin_loading", "model_loading"]
+allowed_roots = ["iris_owned"]
+may_depend_on = ["iris-config", "iris-hardware", "iris-ollama", "iris-status", "iris-ui"]
+forbidden_dependencies = ["iris-capture", "iris-scene", "iris-voice", "iris-cognition"]
+may_access_raw_screen = false
+may_access_raw_audio = true
+may_access_persistent_memory = false
+may_write_logs = false
+may_call_model_inference = false

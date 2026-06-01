@@ -1,0 +1,55 @@
+{
+  "project": {
+    "name": "Project Iris",
+    "version": "v0.1",
+    "runtime_posture": "local_first_windows_read_only",
+    "target_platform": "windows"
+  },
+  "model_policy": {
+    "phase0_loads_model": false,
+    "provider": "ollama_local",
+    "model_id": "huihui_ai/gemma-4-abliterated:e2b",
+    "model_display_name": "Huihui Gemma 4 Abliterated E2B",
+    "parameter_size": "5.1B",
+    "num_ctx_ceiling": 8192,
+    "architecture": "gemma4",
+    "single_model_only": true,
+    "fallback_models_allowed": false,
+    "unified_model": true,
+    "vision_capable": true,
+    "image_input_capable": true,
+    "audio_capable": true,
+    "tool_capable": true,
+    "thinking_capable": true,
+    "enabled_runtime_capabilities": ["completion", "vision"],
+    "separate_vision_model": false,
+    "rejected_architectures": ["moe", "omni"]
+  },
+  "resource_policy": {
+    "reserved_system_memory_ratio": 0.35,
+    "scan_inputs": ["total_ram", "available_ram", "cpu_cores"]
+  },
+  "tts_policy": {
+    "provider": "kokoro_onnx_python",
+    "voice": "af_heart",
+    "lang": "en-us",
+    "speed": 1.0,
+    "model_path": "models/kokoro/kokoro-v1.0.onnx",
+    "voices_path": "models/kokoro/voices-v1.0.bin",
+    "helper_path": "tools/kokoro_tts.py"
+  },
+  "ipc_policy": {
+    "runtime_external_network": "disabled",
+    "loopback_only": true,
+    "allowed_hosts": ["127.0.0.1", "localhost"]
+  },
+  "safety_invariant": {
+    "system_control": "unsupported",
+    "executor": "not_present",
+    "input_simulation": "not_present",
+    "clipboard_access": "not_present",
+    "runtime_network": "disabled",
+    "plugins": "unsupported",
+    "screen_content_authority": "evidence_only"
+  }
+}

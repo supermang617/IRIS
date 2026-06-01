@@ -4,15 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+iris-config = { path = "../iris-config" }
+iris-core-types = { path = "../iris-core-types" }
 iris-context-gate = { path = "../iris-context-gate" }
 iris-cognition = { path = "../iris-cognition" }
+iris-hardware = { path = "../iris-hardware" }
+iris-ollama = { path = "../iris-ollama" }
 iris-policy = { path = "../iris-policy" }
-iris-model-router = { path = "../iris-model-router" }
-iris-model-store = { path = "../iris-model-store" }
-iris-prompt = { path = "../iris-prompt" }
-iris-local-inference = { path = "../iris-local-inference" }
-iris-panic-stop = { path = "../iris-panic-stop" }
-iris-response-check = { path = "../iris-response-check" }
-iris-voice = { path = "../iris-voice" }
+iris-redaction = { path = "../iris-redaction" }
+iris-status = { path = "../iris-status" }
 iris-ui = { path = "../iris-ui" }
-
+serde_json = "1.0.150"

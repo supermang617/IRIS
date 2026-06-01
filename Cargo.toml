@@ -1,22 +1,18 @@
 [workspace]
 members = [
     "crates/iris-core-types",
-    "crates/iris-policy",
-    "crates/iris-runtime",
     "crates/iris-paths",
+    "crates/iris-policy",
     "crates/iris-redaction",
     "crates/iris-context-gate",
     "crates/iris-cognition",
-    "crates/iris-local-inference",
-    "crates/iris-model-manifest",
-    "crates/iris-model-router",
-    "crates/iris-model-store",
-    "crates/iris-prompt",
-    "crates/iris-panic-stop",
-    "crates/iris-response-check",
-    "crates/iris-voice",
+    "crates/iris-config",
+    "crates/iris-hardware",
+    "crates/iris-ollama",
+    "crates/iris-status",
     "crates/iris-ui",
+    "crates/iris-runtime",
+    "src-tauri",
     "xtask"
 ]
 resolver = "2"
-

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Iris</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="iris-console" aria-label="Iris text and voice">
+        <form id="hud-form" class="hud-form">
+          <input id="hud-input" name="hud-input" autocomplete="off" placeholder="Message Iris" />
+          <button id="voice-button" class="icon-button" type="button" title="Push to talk" aria-label="Push to talk">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+              <path d="M19 11a7 7 0 0 1-14 0" />
+              <path d="M12 18v3" />
+              <path d="M8 21h8" />
+            </svg>
+          </button>
+          <button id="send-button" class="icon-button" type="submit" title="Send" aria-label="Send">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 12h14" />
+              <path d="m13 6 6 6-6 6" />
+            </svg>
+          </button>
+        </form>
+        <output id="hud-output" class="hud-output">Waiting for input.</output>
+        <p id="voice-status" class="voice-status">Wake word armed. Say Iris.</p>
+        <p id="voice-capability" class="voice-capability">Checking voice capability...</p>
+      </section>
+    </main>
+    <script src="./main.js" type="module"></script>
+  </body>
+</html>

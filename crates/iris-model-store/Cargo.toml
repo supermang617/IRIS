@@ -1,7 +1,0 @@
-[package]
-name = "iris-model-store"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-iris-model-manifest = { path = "../iris-model-manifest" }

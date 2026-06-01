@@ -1,0 +1,19 @@
+[package]
+name = "iris-tauri"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false, features = [] }
+
+[dependencies]
+cpal = "0.15.3"
+iris-config = { path = "../crates/iris-config" }
+iris-core-types = { path = "../crates/iris-core-types" }
+iris-hardware = { path = "../crates/iris-hardware" }
+iris-ollama = { path = "../crates/iris-ollama" }
+iris-status = { path = "../crates/iris-status" }
+iris-ui = { path = "../crates/iris-ui" }
+serde = { version = "1.0.228", features = ["derive"] }
+tauri = { version = "2", default-features = false, features = ["wry"] }
+whisper-rs = "0.16.0"

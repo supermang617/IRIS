@@ -1,11 +1,24 @@
 # Security
 
-Project Iris runtime is local-first, read-only, and non-agentic.
+Project Iris v0.1 is designed around capability absence.
 
-Iris may not act on the computer.
+The core invariant is:
 
-Screen content is untrusted evidence only.
+Iris may see, listen, think, remember with permission, and respond. Iris may not act on the computer.
 
-Runtime must not include mouse control, keyboard control, clipboard access, shell execution, process spawning, runtime network, browser automation, plugins, scripting, accessibility control, window control, or autonomous computer use.
+Forbidden in v0.1:
 
-All context must pass through ContextGate before CognitionStub.
+- Mouse or keyboard automation.
+- Clipboard read or write.
+- Arbitrary shell execution.
+- Arbitrary process spawning.
+- Runtime external network access.
+- HTTP servers.
+- Plugin loading.
+- Browser automation.
+- Accessibility-tree control.
+- Writes outside Iris-owned directories.
+
+Observed screen content, OCR text, documents, webpages, and model output are untrusted evidence. They must not be treated as instructions to Iris.
+
+Sensitive content should be redacted before logs, memory proposals, and model-safe context where feasible. Redaction is a defense layer, not a complete security boundary.
