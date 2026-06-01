@@ -7,7 +7,7 @@ use std::time::Duration;
 const DEFAULT_OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_KEEP_ALIVE: &str = "10m";
-const DEFAULT_NUM_PREDICT: u32 = 512;
+const DEFAULT_NUM_PREDICT: u32 = 384;
 const MAX_HISTORY_CHARS: usize = 6_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

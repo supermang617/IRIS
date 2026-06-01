@@ -25,7 +25,7 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 1. Confirm the app opens as a compact bottom Iris console, not the old dashboard.
 2. Confirm only two visible boxes are present: the text input bar and the output box underneath it.
 3. Type a short message and press the arrow button.
-4. Confirm Iris immediately says a short thinking cue, then returns a local model response and speaks it with Kokoro `af_heart`.
+4. Confirm Iris shows `Thinking locally...`, then returns a local model response and speaks it with Kokoro `af_heart`.
 5. Click the mic icon, say a short prompt, and confirm it submits through the same local model path.
 6. Without pressing the mic icon, say `Iris`.
 7. Confirm Iris acknowledges and stays ready for the next spoken request.

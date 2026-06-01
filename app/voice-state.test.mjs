@@ -110,8 +110,15 @@ test("speech interruption mode ignores non-interruption transcripts", () => {
   assert.equal(decision.source, "interruption");
 });
 
-test("music and silence captions are ignored in voice loop", () => {
-  for (const transcript of ["[MUSIC PLAYING]", "(upbeat music)", "[BLANK_AUDIO]", "[silence]"]) {
+test("ambient captions are ignored in voice loop", () => {
+  for (const transcript of [
+    "[MUSIC PLAYING]",
+    "(upbeat music)",
+    "[BLANK_AUDIO]",
+    "[silence]",
+    "[typing]",
+    "(keyboard clicking)"
+  ]) {
     const decision = classifyVoiceTranscript(transcript, {
       voiceLoop: true,
       wakeWord: true,

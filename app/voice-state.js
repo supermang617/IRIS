@@ -65,8 +65,16 @@ function isNoiseTranscript(text) {
     "[music playing]",
     "(music)",
     "(upbeat music)",
+    "[typing]",
+    "(typing)",
+    "[keyboard clicking]",
+    "(keyboard clicking)",
     "[silence]",
     "(silence)"
   ]);
-  return blocked.has(normalized) || normalized.includes("music playing");
+  return (
+    blocked.has(normalized) ||
+    normalized.includes("music playing") ||
+    normalized.includes("keyboard clicking")
+  );
 }

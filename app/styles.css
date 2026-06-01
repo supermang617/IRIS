@@ -54,7 +54,7 @@ input {
 .hud-form {
   order: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 58px 58px;
+  grid-template-columns: minmax(0, 1fr) 58px 58px 58px;
   gap: 10px;
   align-items: center;
   min-height: 80px;
@@ -136,7 +136,7 @@ input {
   }
 
   .hud-form {
-    grid-template-columns: minmax(0, 1fr) 50px 50px;
+    grid-template-columns: minmax(0, 1fr) 50px 50px 50px;
     min-height: 68px;
   }
 
