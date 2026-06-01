@@ -15,5 +15,6 @@ iris-ollama = { path = "../crates/iris-ollama" }
 iris-status = { path = "../crates/iris-status" }
 iris-ui = { path = "../crates/iris-ui" }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
 tauri = { version = "2", default-features = false, features = ["wry"] }
 whisper-rs = "0.16.0"

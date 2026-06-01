@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
-    process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    io::{BufRead, BufReader, Write},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -13,6 +13,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 struct HudCommandResponse {
@@ -46,6 +48,32 @@ struct TtsCommandResponse {
     wav_bytes: Vec<u8>,
     elapsed_ms: u128,
     voice: String,
+}
+
+#[derive(Debug, Clone)]
+struct KokoroSettings {
+    workspace_root: std::path::PathBuf,
+    model_path: std::path::PathBuf,
+    voices_path: std::path::PathBuf,
+    helper_path: std::path::PathBuf,
+    voice: String,
+    lang: String,
+    speed: f32,
+}
+
+struct KokoroWorker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KokoroWorkerResponse {
+    ok: bool,
+    #[serde(default)]
+    wav_b64: String,
+    #[serde(default)]
+    error: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,6 +182,21 @@ async fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
         .map_err(|err| err.to_string())?
 }
 
+#[tauri::command]
+async fn warm_kokoro_tts() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let settings = kokoro_settings()?;
+        let slot = KOKORO_WORKER.get_or_init(|| Mutex::new(None));
+        let mut guard = slot.lock().map_err(|err| err.to_string())?;
+        if guard.is_none() {
+            *guard = Some(start_kokoro_worker(&settings)?);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
 fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
     let started = Instant::now();
     let text = text.trim();
@@ -164,6 +207,17 @@ fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
         return Err("speech text is too long for one local Kokoro turn".to_string());
     }
 
+    let settings = kokoro_settings()?;
+    let wav_bytes = synthesize_with_warm_kokoro(&settings, text)
+        .or_else(|_| synthesize_with_one_shot_kokoro(&settings, text))?;
+    Ok(TtsCommandResponse {
+        wav_bytes,
+        elapsed_ms: started.elapsed().as_millis(),
+        voice: settings.voice,
+    })
+}
+
+fn kokoro_settings() -> Result<KokoroSettings, String> {
     let workspace_root = workspace_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
     let tts = manifest.tts_policy;
@@ -180,7 +234,111 @@ fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
         return Err(format!("missing Kokoro helper: {}", helper_path.display()));
     }
 
-    let tmp_dir = workspace_root.join("tmp/tts");
+    Ok(KokoroSettings {
+        workspace_root,
+        model_path,
+        voices_path,
+        helper_path,
+        voice: tts.voice,
+        lang: tts.lang,
+        speed: tts.speed,
+    })
+}
+
+fn synthesize_with_warm_kokoro(settings: &KokoroSettings, text: &str) -> Result<Vec<u8>, String> {
+    let slot = KOKORO_WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().map_err(|err| err.to_string())?;
+    if guard.is_none() {
+        *guard = Some(start_kokoro_worker(settings)?);
+    }
+
+    let result = match guard.as_mut() {
+        Some(worker) => worker.synthesize(text),
+        None => Err("Kokoro worker did not start".to_string()),
+    };
+    if result.is_err() {
+        *guard = None;
+    }
+    result
+}
+
+fn start_kokoro_worker(settings: &KokoroSettings) -> Result<KokoroWorker, String> {
+    let python = std::env::var("IRIS_PYTHON").unwrap_or_else(|_| "python".to_string());
+    let mut command = Command::new(python);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
+        .arg(&settings.helper_path)
+        .arg("--model")
+        .arg(&settings.model_path)
+        .arg("--voices")
+        .arg(&settings.voices_path)
+        .arg("--voice")
+        .arg(&settings.voice)
+        .arg("--lang")
+        .arg(&settings.lang)
+        .arg("--speed")
+        .arg(settings.speed.to_string())
+        .arg("--server")
+        .current_dir(&settings.workspace_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| format!("failed to start warm Kokoro helper: {err}"))?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open warm Kokoro stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to open warm Kokoro stdout".to_string())?;
+
+    Ok(KokoroWorker {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+    })
+}
+
+impl KokoroWorker {
+    fn synthesize(&mut self, text: &str) -> Result<Vec<u8>, String> {
+        if let Ok(Some(status)) = self.child.try_wait() {
+            return Err(format!("warm Kokoro helper exited: {status}"));
+        }
+        let request = serde_json::json!({
+            "id": timestamp_ms()?,
+            "text": text,
+        });
+        writeln!(self.stdin, "{request}")
+            .map_err(|err| format!("failed to send text to warm Kokoro: {err}"))?;
+        self.stdin
+            .flush()
+            .map_err(|err| format!("failed to flush warm Kokoro stdin: {err}"))?;
+
+        let mut line = String::new();
+        self.stdout
+            .read_line(&mut line)
+            .map_err(|err| format!("failed to read warm Kokoro response: {err}"))?;
+        if line.trim().is_empty() {
+            return Err("warm Kokoro returned no response".to_string());
+        }
+        let response = serde_json::from_str::<KokoroWorkerResponse>(&line)
+            .map_err(|err| format!("invalid warm Kokoro response: {err}"))?;
+        if !response.ok {
+            return Err(format!("warm Kokoro failed: {}", response.error));
+        }
+        base64_decode(&response.wav_b64)
+    }
+}
+
+fn synthesize_with_one_shot_kokoro(
+    settings: &KokoroSettings,
+    text: &str,
+) -> Result<Vec<u8>, String> {
+    let tmp_dir = settings.workspace_root.join("tmp/tts");
     fs::create_dir_all(&tmp_dir).map_err(|err| err.to_string())?;
     let output_path = tmp_dir.join(format!("iris-{}.wav", timestamp_ms()?));
     let python = std::env::var("IRIS_PYTHON").unwrap_or_else(|_| "python".to_string());
@@ -188,20 +346,20 @@ fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
-        .arg(&helper_path)
+        .arg(&settings.helper_path)
         .arg("--model")
-        .arg(&model_path)
+        .arg(&settings.model_path)
         .arg("--voices")
-        .arg(&voices_path)
+        .arg(&settings.voices_path)
         .arg("--voice")
-        .arg(&tts.voice)
+        .arg(&settings.voice)
         .arg("--lang")
-        .arg(&tts.lang)
+        .arg(&settings.lang)
         .arg("--speed")
-        .arg(tts.speed.to_string())
+        .arg(settings.speed.to_string())
         .arg("--output")
         .arg(&output_path)
-        .current_dir(&workspace_root)
+        .current_dir(&settings.workspace_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -228,11 +386,52 @@ fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
     let wav_bytes = fs::read(&output_path)
         .map_err(|err| format!("failed to read Kokoro wav {}: {err}", output_path.display()))?;
     let _ = fs::remove_file(&output_path);
-    Ok(TtsCommandResponse {
-        wav_bytes,
-        elapsed_ms: started.elapsed().as_millis(),
-        voice: tts.voice,
-    })
+    Ok(wav_bytes)
+}
+
+fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let cleaned = text
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    if cleaned.len() % 4 != 0 {
+        return Err("invalid base64 length".to_string());
+    }
+    let mut output = Vec::with_capacity(cleaned.len() / 4 * 3);
+    for chunk in cleaned.chunks(4) {
+        let a = value(chunk[0]).ok_or_else(|| "invalid base64 data".to_string())?;
+        let b = value(chunk[1]).ok_or_else(|| "invalid base64 data".to_string())?;
+        let c = if chunk[2] == b'=' {
+            0
+        } else {
+            value(chunk[2]).ok_or_else(|| "invalid base64 data".to_string())?
+        };
+        let d = if chunk[3] == b'=' {
+            0
+        } else {
+            value(chunk[3]).ok_or_else(|| "invalid base64 data".to_string())?
+        };
+        let n = ((a as u32) << 18) | ((b as u32) << 12) | ((c as u32) << 6) | d as u32;
+        output.push(((n >> 16) & 0xff) as u8);
+        if chunk[2] != b'=' {
+            output.push(((n >> 8) & 0xff) as u8);
+        }
+        if chunk[3] != b'=' {
+            output.push((n & 0xff) as u8);
+        }
+    }
+    Ok(output)
 }
 
 #[allow(dead_code)]
@@ -589,7 +788,8 @@ pub fn run() {
             log_voice_diagnostic,
             native_asr_listen_interrupt,
             native_asr_listen_once,
-            submit_typed_hud
+            submit_typed_hud,
+            warm_kokoro_tts
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Project Iris Tauri shell");

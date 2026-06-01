@@ -1661,6 +1661,7 @@ dependencies = [
  "iris-status",
  "iris-ui",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "whisper-rs",

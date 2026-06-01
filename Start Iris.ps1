@@ -8,6 +8,11 @@ New-Item -ItemType Directory -Force -Path $diagnosticsDir | Out-Null
 $logPath = Join-Path $diagnosticsDir "manual-launch.log"
 
 try {
+    $shortcutInstaller = Join-Path $repoRoot "Install Iris Shortcuts.ps1"
+    if (Test-Path -LiteralPath $shortcutInstaller) {
+        & $shortcutInstaller *>> $logPath
+    }
+
     "[$(Get-Date -Format o)] Building standalone Iris debug shell." | Out-File -FilePath $logPath -Encoding utf8
     cmd.exe /c "cargo build -p iris-tauri >> `"$logPath`" 2>&1"
     $buildExitCode = $LASTEXITCODE

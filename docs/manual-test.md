@@ -6,6 +6,8 @@ Run this launcher from the repository root:
 C:\Projects\IRIS\Start Iris.vbs
 ```
 
+The launcher also refreshes Iris shortcuts on your user Desktop, Start Menu, and Windows pinned-taskbar shortcut folder. Windows may still require manually choosing "Pin to taskbar" from the visible shortcut if Explorer does not honor programmatic pinning.
+
 Do not open `target\debug\iris-tauri.exe` directly after a `tauri dev` run. A dev-built debug executable can try to load `127.0.0.1` and show a connection-refused page if the dev server is not running. The launcher rebuilds the standalone debug shell first, then starts Iris.
 
 If the launcher fails, check:

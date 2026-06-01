@@ -105,6 +105,16 @@ async function refreshDashboard() {
   }
 }
 
+async function warmVoice() {
+  try {
+    logVoice("kokoro_warm_start");
+    await call("warm_kokoro_tts");
+    logVoice("kokoro_warm_ready");
+  } catch (error) {
+    logVoice("kokoro_warm_error", String(error));
+  }
+}
+
 async function submitMessage(text, source = "typed") {
   if (thinking || speaking) {
     return;
@@ -397,4 +407,5 @@ elements.voiceButton.addEventListener("click", () => {
 renderVoiceCapability();
 logVoice("app_started");
 refreshDashboard();
+warmVoice();
 restartListeningIfReady(500);
