@@ -27,6 +27,13 @@ let activeListenMode = "idle";
 let stopListeningRequested = false;
 const conversationHistory = [];
 const maxHistoryTurns = 12;
+const thinkingCues = [
+  "Sure, give me a second.",
+  "Let me check on that.",
+  "One second, I am looking.",
+  "Got it. Let me think."
+];
+let thinkingCueActive = false;
 
 async function call(command, args = {}) {
   if (!invoke) {
@@ -114,9 +121,11 @@ async function submitMessage(text, source = "typed") {
   logVoice("submit_start", source);
   setInputsDisabled(true);
   elements.hudOutput.textContent = `${text}\n\nThinking locally...`;
+  playThinkingCue();
   try {
     const history = conversationHistory.slice();
     const response = await call("submit_typed_hud", { text, history });
+    cancelThinkingCue();
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", text);
     rememberTurn("iris", response.text);
@@ -128,6 +137,7 @@ async function submitMessage(text, source = "typed") {
     setInputsDisabled(false);
     await speak(response.text);
   } catch (error) {
+    cancelThinkingCue();
     elements.hudOutput.textContent = String(error);
     logVoice(
       "turn_error",
@@ -138,6 +148,44 @@ async function submitMessage(text, source = "typed") {
     setInputsDisabled(false);
     logVoice("submit_end", source);
     restartListeningIfReady();
+  }
+}
+
+function playThinkingCue() {
+  if (!speakReplies || !("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
+    return;
+  }
+  const cue = thinkingCues[Math.floor(Math.random() * thinkingCues.length)];
+  thinkingCueActive = true;
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(cue);
+    utterance.rate = 1.03;
+    utterance.volume = 0.85;
+    utterance.onend = () => {
+      thinkingCueActive = false;
+    };
+    utterance.onerror = () => {
+      thinkingCueActive = false;
+    };
+    logVoice("thinking_cue_start", cue);
+    window.speechSynthesis.speak(utterance);
+  } catch (error) {
+    thinkingCueActive = false;
+    logVoice("thinking_cue_error", String(error));
+  }
+}
+
+function cancelThinkingCue() {
+  if (!thinkingCueActive || !("speechSynthesis" in window)) {
+    return;
+  }
+  try {
+    window.speechSynthesis.cancel();
+  } catch (error) {
+    logVoice("thinking_cue_cancel_error", String(error));
+  } finally {
+    thinkingCueActive = false;
   }
 }
 

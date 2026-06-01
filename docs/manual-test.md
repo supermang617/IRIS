@@ -1,9 +1,17 @@
 # Iris Manual Test
 
-Run this app:
+Run this launcher from the repository root:
 
-```powershell
-C:\Projects\IRIS\target\debug\iris-tauri.exe
+```text
+C:\Projects\IRIS\Start Iris.vbs
+```
+
+Do not open `target\debug\iris-tauri.exe` directly after a `tauri dev` run. A dev-built debug executable can try to load `127.0.0.1` and show a connection-refused page if the dev server is not running. The launcher rebuilds the standalone debug shell first, then starts Iris.
+
+If the launcher fails, check:
+
+```text
+C:\Projects\IRIS\diagnostics\manual-launch.log
 ```
 
 Diagnostics are written automatically while the app is open:
@@ -17,7 +25,7 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 1. Confirm the app opens as a compact bottom Iris console, not the old dashboard.
 2. Confirm only two visible boxes are present: the text input bar and the output box underneath it.
 3. Type a short message and press the arrow button.
-4. Confirm Iris returns a local model response and speaks it with Kokoro `af_heart`.
+4. Confirm Iris immediately says a short thinking cue, then returns a local model response and speaks it with Kokoro `af_heart`.
 5. Click the mic icon, say a short prompt, and confirm it submits through the same local model path.
 6. Without pressing the mic icon, say `Iris`.
 7. Confirm Iris acknowledges and stays ready for the next spoken request.
