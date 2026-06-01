@@ -25,6 +25,8 @@ let activeAudio = null;
 let activeSpeechResolve = null;
 let activeListenMode = "idle";
 let stopListeningRequested = false;
+const conversationHistory = [];
+const maxHistoryTurns = 12;
 
 async function call(command, args = {}) {
   if (!invoke) {
@@ -64,7 +66,30 @@ function isUsableTranscript(transcript) {
   if (!normalized) {
     return false;
   }
-  return !["[blank_audio]", "[music]", "(music)", "[silence]"].includes(normalized);
+  const blocked = new Set([
+    "[blank_audio]",
+    "[music]",
+    "[music playing]",
+    "(music)",
+    "(upbeat music)",
+    "[silence]",
+    "(silence)"
+  ]);
+  if (blocked.has(normalized)) {
+    return false;
+  }
+  return !normalized.includes("music playing");
+}
+
+function rememberTurn(role, text) {
+  const clean = String(text || "").trim();
+  if (!clean) {
+    return;
+  }
+  conversationHistory.push({ role, text: clean });
+  while (conversationHistory.length > maxHistoryTurns) {
+    conversationHistory.shift();
+  }
 }
 
 async function refreshDashboard() {
@@ -90,8 +115,11 @@ async function submitMessage(text, source = "typed") {
   setInputsDisabled(true);
   elements.hudOutput.textContent = `${text}\n\nThinking locally...`;
   try {
-    const response = await call("submit_typed_hud", { text });
+    const history = conversationHistory.slice();
+    const response = await call("submit_typed_hud", { text, history });
     elements.hudOutput.textContent = response.text;
+    rememberTurn("user", text);
+    rememberTurn("iris", response.text);
     logVoice(
       "turn_complete",
       `${source}; model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`

@@ -3,6 +3,9 @@ export function classifyVoiceTranscript(transcript, state) {
   if (!normalized) {
     return { action: "ignore", prompt: "", source: "voice", status: "No speech transcript captured." };
   }
+  if (isNoiseTranscript(normalized)) {
+    return { action: "ignore", prompt: "", source: "voice", status: "No speech transcript captured." };
+  }
 
   if (state.interruptionOnly) {
     if (isInterruption(normalized) || isBareWakeWord(normalized)) {
@@ -52,4 +55,18 @@ function isInterruption(text) {
 
 function isBareWakeWord(text) {
   return /^iris[\s,.:;!?-]*$/i.test(text);
+}
+
+function isNoiseTranscript(text) {
+  const normalized = text.trim().toLowerCase();
+  const blocked = new Set([
+    "[blank_audio]",
+    "[music]",
+    "[music playing]",
+    "(music)",
+    "(upbeat music)",
+    "[silence]",
+    "(silence)"
+  ]);
+  return blocked.has(normalized) || normalized.includes("music playing");
 }

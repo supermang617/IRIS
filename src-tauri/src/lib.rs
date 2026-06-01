@@ -8,11 +8,30 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[derive(Debug, Clone, Serialize)]
 struct HudCommandResponse {
     text: String,
     cancelled: bool,
     model_elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ConversationRole {
+    User,
+    Iris,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ConversationTurn {
+    role: ConversationRole,
+    text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,9 +80,26 @@ fn current_dashboard_snapshot() -> Result<iris_status::DashboardSnapshot, String
 }
 
 #[tauri::command]
-fn submit_typed_hud(text: String) -> HudCommandResponse {
+async fn submit_typed_hud(
+    text: String,
+    history: Option<Vec<ConversationTurn>>,
+) -> HudCommandResponse {
+    tauri::async_runtime::spawn_blocking(move || submit_typed_hud_blocking(text, history))
+        .await
+        .unwrap_or_else(|err| HudCommandResponse {
+            text: format!("Local model unavailable: {err}"),
+            cancelled: false,
+            model_elapsed_ms: 0,
+        })
+}
+
+fn submit_typed_hud_blocking(
+    text: String,
+    history: Option<Vec<ConversationTurn>>,
+) -> HudCommandResponse {
     let started = Instant::now();
-    let response = match model_response(&text) {
+    let history = history.unwrap_or_default();
+    let response = match model_response(&text, &history) {
         Ok(response) => response,
         Err(error) => iris_core_types::AssistantResponse::text_only(format!(
             "Local model unavailable: {error}"
@@ -77,19 +113,25 @@ fn submit_typed_hud(text: String) -> HudCommandResponse {
 }
 
 #[tauri::command]
-fn native_asr_listen_once() -> Result<AsrCommandResponse, String> {
-    native_asr_listen_for(
-        9_000,
-        CaptureEndpoint::Speech {
-            min_ms: 1_200,
-            trailing_silence_ms: 900,
-        },
-    )
+async fn native_asr_listen_once() -> Result<AsrCommandResponse, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        native_asr_listen_for(
+            9_000,
+            CaptureEndpoint::Speech {
+                min_ms: 1_200,
+                trailing_silence_ms: 900,
+            },
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
-fn native_asr_listen_interrupt() -> Result<AsrCommandResponse, String> {
-    native_asr_listen_for(1_500, CaptureEndpoint::Fixed)
+async fn native_asr_listen_interrupt() -> Result<AsrCommandResponse, String> {
+    tauri::async_runtime::spawn_blocking(|| native_asr_listen_for(1_500, CaptureEndpoint::Fixed))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 fn native_asr_listen_for(
@@ -106,13 +148,19 @@ fn native_asr_listen_for(
 }
 
 #[tauri::command]
-fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
+async fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || kokoro_tts_wav_blocking(text))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
     let started = Instant::now();
     let text = text.trim();
     if text.is_empty() {
         return Err("cannot synthesize empty speech".to_string());
     }
-    if text.chars().count() > 1_200 {
+    if text.chars().count() > 4_000 {
         return Err("speech text is too long for one local Kokoro turn".to_string());
     }
 
@@ -136,7 +184,10 @@ fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
     fs::create_dir_all(&tmp_dir).map_err(|err| err.to_string())?;
     let output_path = tmp_dir.join(format!("iris-{}.wav", timestamp_ms()?));
     let python = std::env::var("IRIS_PYTHON").unwrap_or_else(|_| "python".to_string());
-    let mut child = Command::new(python)
+    let mut command = Command::new(python);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
         .arg(&helper_path)
         .arg("--model")
         .arg(&model_path)
@@ -182,6 +233,17 @@ fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
         elapsed_ms: started.elapsed().as_millis(),
         voice: tts.voice,
     })
+}
+
+#[allow(dead_code)]
+fn _old_signature_anchor() {
+    let _ = (
+        9_000,
+        CaptureEndpoint::Speech {
+            min_ms: 1_200,
+            trailing_silence_ms: 900,
+        },
+    );
 }
 
 #[tauri::command]
@@ -240,13 +302,26 @@ fn workspace_root() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "manifest path has no parent".to_string())
 }
 
-fn model_response(text: &str) -> Result<iris_core_types::AssistantResponse, String> {
+fn model_response(
+    text: &str,
+    history: &[ConversationTurn],
+) -> Result<iris_core_types::AssistantResponse, String> {
     let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
     let manifest = iris_config::load_manifest_from_workspace(&cwd)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
     let gated_context = iris_ui::gate_typed_text(text);
-    Ok(client.respond(&gated_context))
+    let ollama_history = history
+        .iter()
+        .map(|turn| iris_ollama::ConversationTurn {
+            role: match turn.role {
+                ConversationRole::User => iris_ollama::ConversationRole::User,
+                ConversationRole::Iris => iris_ollama::ConversationRole::Iris,
+            },
+            text: turn.text.clone(),
+        })
+        .collect::<Vec<_>>();
+    Ok(client.respond_with_history(&gated_context, &ollama_history))
 }
 
 #[derive(Debug, Clone, Copy)]
