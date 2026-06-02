@@ -6,7 +6,11 @@ const elements = {
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
+  memoryAddButton: document.querySelector("#memory-add-button"),
+  memoryAddInput: document.querySelector("#memory-add-input"),
   memoryButton: document.querySelector("#memory-button"),
+  memoryList: document.querySelector("#memory-list"),
+  memoryPanel: document.querySelector("#memory-panel"),
   visionButton: document.querySelector("#vision-button"),
   visionFileInput: document.querySelector("#vision-file-input"),
   voiceButton: document.querySelector("#voice-button"),
@@ -30,6 +34,7 @@ let activeListenMode = "idle";
 let stopListeningRequested = false;
 let pendingVoiceLatency = null;
 let selectedVisionImage = null;
+let memoryPanelOpen = false;
 const conversationHistory = [];
 const maxHistoryTurns = 12;
 const maxVisionImageBytes = 8 * 1024 * 1024;
@@ -337,6 +342,106 @@ function formatMemories(memories) {
   return memories.map((memory) => `${memory.id}. ${memory.text}`).join("\n");
 }
 
+async function toggleMemoryPanel() {
+  memoryPanelOpen = !memoryPanelOpen;
+  elements.memoryPanel.hidden = !memoryPanelOpen;
+  elements.memoryButton.classList.toggle("listening", memoryPanelOpen);
+  elements.memoryButton.setAttribute("aria-pressed", memoryPanelOpen ? "true" : "false");
+  if (memoryPanelOpen) {
+    await refreshMemoryPanel();
+  }
+}
+
+async function refreshMemoryPanel() {
+  const memories = await call("list_memories");
+  renderMemoryPanel(memories);
+}
+
+function renderMemoryPanel(memories) {
+  elements.memoryList.innerHTML = "";
+  if (!Array.isArray(memories) || memories.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "memory-empty";
+    empty.textContent = "No memories saved.";
+    elements.memoryList.append(empty);
+    return;
+  }
+
+  for (const memory of memories) {
+    const row = document.createElement("div");
+    row.className = "memory-row";
+
+    const input = document.createElement("input");
+    input.maxLength = 240;
+    input.value = memory.text;
+    input.setAttribute("aria-label", `Edit memory ${memory.id}`);
+
+    const save = document.createElement("button");
+    save.className = "memory-action";
+    save.type = "button";
+    save.title = "Save memory";
+    save.setAttribute("aria-label", `Save memory ${memory.id}`);
+    save.textContent = "+";
+    save.addEventListener("click", async () => {
+      await editMemoryFromPanel(memory.id, input.value);
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "memory-action";
+    remove.type = "button";
+    remove.title = "Delete memory";
+    remove.setAttribute("aria-label", `Delete memory ${memory.id}`);
+    remove.textContent = "-";
+    remove.addEventListener("click", async () => {
+      await deleteMemoryFromPanel(memory.id);
+    });
+
+    row.append(input, save, remove);
+    elements.memoryList.append(row);
+  }
+}
+
+async function addMemoryFromPanel() {
+  const text = elements.memoryAddInput.value.trim();
+  if (!text) {
+    elements.hudOutput.textContent = "Type a memory first.";
+    return;
+  }
+  try {
+    const memories = await call("add_memory", { text });
+    elements.memoryAddInput.value = "";
+    renderMemoryPanel(memories);
+    elements.hudOutput.textContent = "Memory added.";
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+  }
+}
+
+async function editMemoryFromPanel(id, text) {
+  const clean = String(text || "").trim();
+  if (!clean) {
+    elements.hudOutput.textContent = "Memory cannot be empty.";
+    return;
+  }
+  try {
+    const memories = await call("edit_memory", { id, text: clean });
+    renderMemoryPanel(memories);
+    elements.hudOutput.textContent = "Memory saved.";
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+  }
+}
+
+async function deleteMemoryFromPanel(id) {
+  try {
+    const memories = await call("delete_memory", { id });
+    renderMemoryPanel(memories);
+    elements.hudOutput.textContent = "Memory deleted.";
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+  }
+}
+
 function cancelSpeech() {
   speechRunId += 1;
   speaking = false;
@@ -478,6 +583,9 @@ function setInputsDisabled(disabled) {
   elements.sendButton.disabled = disabled;
   elements.voiceButton.disabled = false;
   elements.visionButton.disabled = disabled;
+  elements.memoryButton.disabled = disabled;
+  elements.memoryAddButton.disabled = disabled;
+  elements.memoryAddInput.disabled = disabled;
 }
 
 function setListening(nextListening) {
@@ -612,13 +720,20 @@ elements.voiceButton.addEventListener("click", () => {
   listenOnce("push");
 });
 
-elements.memoryButton.addEventListener("click", async () => {
-  try {
-    const memories = await call("list_memories");
-    elements.hudOutput.textContent =
-      `${formatMemories(memories)}\n\nremember: <text>\nmemory edit <number>: <text>\nmemory delete <number>`;
-  } catch (error) {
+elements.memoryButton.addEventListener("click", () => {
+  toggleMemoryPanel().catch((error) => {
     elements.hudOutput.textContent = String(error);
+  });
+});
+
+elements.memoryAddButton.addEventListener("click", () => {
+  addMemoryFromPanel();
+});
+
+elements.memoryAddInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    addMemoryFromPanel();
   }
 });
 

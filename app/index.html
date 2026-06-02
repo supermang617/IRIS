@@ -38,6 +38,14 @@
             </svg>
           </button>
         </form>
+        <section id="memory-panel" class="memory-panel" aria-label="Iris memories" hidden>
+          <div class="memory-help">Memories are short notes Iris can use later. Limit: 240 characters each.</div>
+          <div class="memory-add-row">
+            <input id="memory-add-input" maxlength="240" autocomplete="off" placeholder="Add a memory" />
+            <button id="memory-add-button" class="memory-action" type="button" title="Add memory" aria-label="Add memory">+</button>
+          </div>
+          <div id="memory-list" class="memory-list"></div>
+        </section>
         <output id="hud-output" class="hud-output">Waiting for input.</output>
         <p id="voice-status" class="voice-status">Wake word armed. Say Iris.</p>
         <p id="voice-capability" class="voice-capability">Checking voice capability...</p>
