@@ -36,6 +36,12 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 10. Try `Iris what can you do right now?` as one phrase and confirm only the request after `Iris` is sent.
 11. While Iris is speaking, say `Iris`, `stop`, or `Iris stop`.
 12. Confirm Iris stops speaking and returns to listening.
+13. Paste or drag a small png, jpg, jpeg, or webp image into the text bar.
+14. Confirm a small attachment preview appears above the text bar, then ask Iris what is in the image.
+15. Drag a small mp4, webm, or mov video into the text bar.
+16. Confirm Iris attaches one video frame preview for the next prompt.
+17. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
+18. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
 
 ## If Wake Word Fails
 
@@ -67,7 +73,7 @@ If Iris stops listening, the last few lines of this file should show whether nat
 - No fallback model should be used.
 - No model download should start.
 - No system control should occur.
-- No clipboard access should occur.
+- No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
 - The configured model remains `huihui_ai/gemma-4-abliterated:e2b`.
 - The configured TTS voice remains Kokoro `af_heart`.
 - Wake-word mode is armed by default.
