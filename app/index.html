@@ -9,7 +9,13 @@
   <body>
     <main class="shell">
       <section class="iris-console" aria-label="Iris text and voice">
+        <section id="attachment-strip" class="attachment-strip" aria-label="Attached prompt evidence" hidden>
+          <div id="attachment-preview" class="attachment-preview" aria-hidden="true"></div>
+          <div id="attachment-label" class="attachment-label"></div>
+          <button id="attachment-remove" class="memory-action" type="button" title="Remove attachment" aria-label="Remove attachment">-</button>
+        </section>
         <form id="hud-form" class="hud-form">
+          <div class="drag-handle" data-tauri-drag-region title="Move Iris" aria-label="Move Iris">::::</div>
           <input id="hud-input" name="hud-input" autocomplete="off" placeholder="Message Iris" />
           <button id="voice-button" class="icon-button" type="button" title="Push to talk" aria-label="Push to talk">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -25,7 +31,7 @@
               <circle cx="12" cy="13" r="3.25" />
             </svg>
           </button>
-          <input id="vision-file-input" class="hidden-file-input" type="file" accept="image/png,image/jpeg,image/webp" />
+          <input id="vision-file-input" class="hidden-file-input" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,text/plain,text/markdown,text/csv,application/json,.txt,.md,.csv,.json,.log,.rtf" />
           <button id="memory-button" class="icon-button" type="button" title="Memory commands" aria-label="Memory commands">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M6 4h12v16l-6-3-6 3Z" />
