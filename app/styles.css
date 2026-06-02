@@ -125,6 +125,10 @@ input {
   stroke-width: 2;
 }
 
+.hidden-file-input {
+  display: none;
+}
+
 .voice-status,
 .voice-capability {
   display: none;

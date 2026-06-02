@@ -173,21 +173,45 @@ impl OllamaClient {
         }
     }
 
+    pub fn respond_to_image_bytes(
+        &self,
+        image_bytes: &[u8],
+        user_prompt: &str,
+    ) -> AssistantResponse {
+        match self.try_respond_to_image_bytes(image_bytes, user_prompt) {
+            Ok(response) => AssistantResponse::text_only(response),
+            Err(error) => {
+                AssistantResponse::text_only(format!("Local image probe unavailable: {error}"))
+            }
+        }
+    }
+
     fn try_respond_to_image_probe(
         &self,
         image_path: &Path,
+        user_prompt: &str,
+    ) -> Result<String, String> {
+        let bytes = std::fs::read(image_path)
+            .map_err(|err| format!("failed to read image path {}: {err}", image_path.display()))?;
+        self.try_respond_to_image_bytes(&bytes, user_prompt)
+    }
+
+    fn try_respond_to_image_bytes(
+        &self,
+        image_bytes: &[u8],
         user_prompt: &str,
     ) -> Result<String, String> {
         let trimmed_prompt = user_prompt.trim();
         if trimmed_prompt.is_empty() {
             return Err("image probe requires a direct user prompt".to_string());
         }
-        let bytes = std::fs::read(image_path)
-            .map_err(|err| format!("failed to read image path {}: {err}", image_path.display()))?;
+        if image_bytes.is_empty() {
+            return Err("image probe requires non-empty image bytes".to_string());
+        }
         let request = GenerateRequest {
             model: self.settings.model_id.clone(),
             prompt: prompt_for_image_probe(trimmed_prompt),
-            images: vec![base64_encode(&bytes)],
+            images: vec![base64_encode(image_bytes)],
             stream: false,
             think: false,
             keep_alive: DEFAULT_KEEP_ALIVE,

@@ -16,11 +16,18 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
 const MAX_MEMORY_ITEMS: usize = 40;
+const MAX_IMAGE_PROBE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 struct HudCommandResponse {
     text: String,
     cancelled: bool,
+    model_elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ImageProbeResponse {
+    text: String,
     model_elapsed_ms: u128,
 }
 
@@ -210,6 +217,40 @@ fn submit_typed_hud_blocking(
     HudCommandResponse {
         text: response.text,
         cancelled: response.cancelled,
+        model_elapsed_ms: started.elapsed().as_millis(),
+    }
+}
+
+#[tauri::command]
+async fn submit_image_probe(
+    image_name: String,
+    image_bytes: Vec<u8>,
+    prompt: String,
+) -> ImageProbeResponse {
+    tauri::async_runtime::spawn_blocking(move || {
+        submit_image_probe_blocking(image_name, image_bytes, prompt)
+    })
+    .await
+    .unwrap_or_else(|err| ImageProbeResponse {
+        text: format!("Local image probe unavailable: {err}"),
+        model_elapsed_ms: 0,
+    })
+}
+
+fn submit_image_probe_blocking(
+    image_name: String,
+    image_bytes: Vec<u8>,
+    prompt: String,
+) -> ImageProbeResponse {
+    let started = Instant::now();
+    let response = match image_probe_response(&image_name, &image_bytes, &prompt) {
+        Ok(response) => response,
+        Err(error) => iris_core_types::AssistantResponse::text_only(format!(
+            "Local image probe unavailable: {error}"
+        )),
+    };
+    ImageProbeResponse {
+        text: response.text,
         model_elapsed_ms: started.elapsed().as_millis(),
     }
 }
@@ -715,6 +756,43 @@ fn model_response(
     Ok(client.respond_with_history_and_memories(&gated_context, &ollama_history, &memories))
 }
 
+fn image_probe_response(
+    image_name: &str,
+    image_bytes: &[u8],
+    prompt: &str,
+) -> Result<iris_core_types::AssistantResponse, String> {
+    let clean_prompt = prompt.trim();
+    if clean_prompt.is_empty() {
+        return Err("image probe requires a direct user prompt".to_string());
+    }
+    if image_bytes.is_empty() {
+        return Err("image probe requires a non-empty image".to_string());
+    }
+    if image_bytes.len() > MAX_IMAGE_PROBE_BYTES {
+        return Err(format!(
+            "image probe file is too large: {} bytes; limit is {} bytes",
+            image_bytes.len(),
+            MAX_IMAGE_PROBE_BYTES
+        ));
+    }
+    if !is_supported_image_name(image_name) {
+        return Err("image probe supports png, jpg, jpeg, and webp files".to_string());
+    }
+
+    let workspace_root = workspace_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+    let client = iris_ollama::OllamaClient::new(settings)?;
+    Ok(client.respond_to_image_bytes(image_bytes, clean_prompt))
+}
+
+fn is_supported_image_name(image_name: &str) -> bool {
+    let lower = image_name.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".webp"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CaptureEndpoint {
     Fixed,
@@ -1012,6 +1090,22 @@ mod tests {
 - total turn time: 1100ms"
         );
     }
+
+    #[test]
+    fn image_probe_supports_common_image_names_only() {
+        for name in [
+            "photo.png",
+            "photo.jpg",
+            "photo.jpeg",
+            "photo.webp",
+            "PHOTO.PNG",
+        ] {
+            assert!(is_supported_image_name(name));
+        }
+        for name in ["photo.gif", "photo.svg", "photo.txt", "photo"] {
+            assert!(!is_supported_image_name(name));
+        }
+    }
 }
 
 pub fn run() {
@@ -1027,6 +1121,7 @@ pub fn run() {
             log_voice_latency_report,
             native_asr_listen_interrupt,
             native_asr_listen_once,
+            submit_image_probe,
             submit_typed_hud,
             warm_ollama_model,
             warm_kokoro_tts

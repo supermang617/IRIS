@@ -8,6 +8,7 @@ const elements = {
   hudOutput: document.querySelector("#hud-output"),
   memoryButton: document.querySelector("#memory-button"),
   visionButton: document.querySelector("#vision-button"),
+  visionFileInput: document.querySelector("#vision-file-input"),
   voiceButton: document.querySelector("#voice-button"),
   sendButton: document.querySelector("#send-button"),
   voiceCapability: document.querySelector("#voice-capability"),
@@ -28,8 +29,10 @@ let activeSpeechResolve = null;
 let activeListenMode = "idle";
 let stopListeningRequested = false;
 let pendingVoiceLatency = null;
+let selectedVisionImage = null;
 const conversationHistory = [];
 const maxHistoryTurns = 12;
+const maxVisionImageBytes = 8 * 1024 * 1024;
 
 class VoiceLatencyTrace {
   constructor() {
@@ -192,6 +195,11 @@ async function submitMessage(text, source = "typed") {
     return;
   }
 
+  if (selectedVisionImage) {
+    await submitImageMessage(text, latencyTrace);
+    return;
+  }
+
   const turnStarted = performance.now();
   thinking = true;
   logVoice("submit_start", source);
@@ -223,6 +231,49 @@ async function submitMessage(text, source = "typed") {
     thinking = false;
     setInputsDisabled(false);
     logVoice("submit_end", source);
+    restartListeningIfReady();
+  }
+}
+
+async function submitImageMessage(prompt, latencyTrace) {
+  const image = selectedVisionImage;
+  selectedVisionImage = null;
+  renderVisionSelection();
+
+  const turnStarted = performance.now();
+  thinking = true;
+  logVoice("image_probe_start", `bytes=${image.bytes.length}`);
+  setInputsDisabled(true);
+  elements.hudOutput.textContent = `Image selected.\n\nThinking locally...`;
+  try {
+    const response = await call("submit_image_probe", {
+      imageName: image.name,
+      imageBytes: image.bytes,
+      prompt
+    });
+    latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
+    elements.hudOutput.textContent = response.text;
+    rememberTurn("user", `[image] ${prompt}`);
+    rememberTurn("iris", response.text);
+    logVoice(
+      "image_probe_complete",
+      `model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`
+    );
+    thinking = false;
+    setInputsDisabled(false);
+    await speak(response.text, latencyTrace);
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+    logVoice(
+      "image_probe_error",
+      `total_ms=${Math.round(performance.now() - turnStarted)}; ${String(error)}`
+    );
+  } finally {
+    latencyTrace.finishTotal();
+    await logVoiceLatencyReport(latencyTrace);
+    thinking = false;
+    setInputsDisabled(false);
+    logVoice("submit_end", "image-probe");
     restartListeningIfReady();
   }
 }
@@ -426,6 +477,7 @@ function setInputsDisabled(disabled) {
   elements.hudInput.disabled = disabled;
   elements.sendButton.disabled = disabled;
   elements.voiceButton.disabled = false;
+  elements.visionButton.disabled = disabled;
 }
 
 function setListening(nextListening) {
@@ -570,7 +622,67 @@ elements.memoryButton.addEventListener("click", async () => {
   }
 });
 
+elements.visionButton.addEventListener("click", () => {
+  if (thinking || speaking) {
+    return;
+  }
+  elements.visionFileInput.click();
+});
+
+elements.visionFileInput.addEventListener("change", async () => {
+  const file = elements.visionFileInput.files?.[0];
+  elements.visionFileInput.value = "";
+  if (!file) {
+    return;
+  }
+  try {
+    selectedVisionImage = await readVisionImage(file);
+    renderVisionSelection();
+  } catch (error) {
+    selectedVisionImage = null;
+    renderVisionSelection();
+    elements.hudOutput.textContent = String(error);
+  }
+});
+
+async function readVisionImage(file) {
+  const supportedType = /^image\/(png|jpe?g|webp)$/i.test(file.type || "");
+  const supportedName = /\.(png|jpe?g|webp)$/i.test(file.name || "");
+  if (!supportedType && !supportedName) {
+    throw new Error("Vision input supports png, jpg, jpeg, and webp images.");
+  }
+  if (file.size <= 0) {
+    throw new Error("Vision input needs a non-empty image.");
+  }
+  if (file.size > maxVisionImageBytes) {
+    throw new Error("Vision image is too large. Limit is 8 MB.");
+  }
+  const buffer = await file.arrayBuffer();
+  return {
+    name: file.name || "selected-image",
+    bytes: Array.from(new Uint8Array(buffer))
+  };
+}
+
+function renderVisionSelection() {
+  const hasImage = Boolean(selectedVisionImage);
+  elements.visionButton.classList.toggle("listening", hasImage);
+  elements.visionButton.setAttribute("aria-pressed", hasImage ? "true" : "false");
+  elements.visionButton.setAttribute(
+    "title",
+    hasImage ? "Image attached for next prompt" : "Attach image"
+  );
+  elements.visionButton.setAttribute(
+    "aria-label",
+    hasImage ? "Image attached for next prompt" : "Attach image"
+  );
+  if (hasImage) {
+    elements.hudOutput.textContent = "Image attached. Type what you want Iris to inspect.";
+  }
+}
+
 renderVoiceCapability();
+renderVisionSelection();
 logVoice("app_started");
 refreshDashboard();
 warmVoice();
