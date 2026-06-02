@@ -17,6 +17,9 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_IMAGE_PROBE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SCREEN_CAPTURE_WIDTH: u32 = 1280;
+const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
+type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
 
 #[derive(Debug, Clone, Serialize)]
 struct HudCommandResponse {
@@ -237,6 +240,16 @@ async fn submit_image_probe(
     })
 }
 
+#[tauri::command]
+async fn submit_screen_area_probe(window: IrisWindow, prompt: String) -> ImageProbeResponse {
+    tauri::async_runtime::spawn_blocking(move || submit_screen_area_probe_blocking(window, prompt))
+        .await
+        .unwrap_or_else(|err| ImageProbeResponse {
+            text: format!("Local screen probe unavailable: {err}"),
+            model_elapsed_ms: 0,
+        })
+}
+
 fn submit_image_probe_blocking(
     image_name: String,
     image_bytes: Vec<u8>,
@@ -247,6 +260,20 @@ fn submit_image_probe_blocking(
         Ok(response) => response,
         Err(error) => iris_core_types::AssistantResponse::text_only(format!(
             "Local image probe unavailable: {error}"
+        )),
+    };
+    ImageProbeResponse {
+        text: response.text,
+        model_elapsed_ms: started.elapsed().as_millis(),
+    }
+}
+
+fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> ImageProbeResponse {
+    let started = Instant::now();
+    let response = match screen_area_probe_response(&window, &prompt) {
+        Ok(response) => response,
+        Err(error) => iris_core_types::AssistantResponse::text_only(format!(
+            "Local screen probe unavailable: {error}"
         )),
     };
     ImageProbeResponse {
@@ -786,6 +813,199 @@ fn image_probe_response(
     Ok(client.respond_to_image_bytes(image_bytes, clean_prompt))
 }
 
+fn screen_area_probe_response(
+    window: &IrisWindow,
+    prompt: &str,
+) -> Result<iris_core_types::AssistantResponse, String> {
+    let clean_prompt = prompt.trim();
+    if clean_prompt.is_empty() {
+        return Err("screen probe requires a direct user prompt".to_string());
+    }
+    let image_bytes = capture_screen_area_under_window(window)?;
+    if image_bytes.len() > MAX_IMAGE_PROBE_BYTES {
+        return Err(format!(
+            "screen probe image is too large: {} bytes; limit is {} bytes",
+            image_bytes.len(),
+            MAX_IMAGE_PROBE_BYTES
+        ));
+    }
+
+    let workspace_root = workspace_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+    let client = iris_ollama::OllamaClient::new(settings)?;
+    Ok(client.respond_to_screen_area_bytes(&image_bytes, clean_prompt))
+}
+
+fn capture_screen_area_under_window(window: &IrisWindow) -> Result<Vec<u8>, String> {
+    let position = window.outer_position().map_err(|err| err.to_string())?;
+    let size = window.outer_size().map_err(|err| err.to_string())?;
+    let width = size.width.min(MAX_SCREEN_CAPTURE_WIDTH).max(1);
+    let height = size.height.min(MAX_SCREEN_CAPTURE_HEIGHT).max(1);
+
+    let _ = window.hide();
+    thread::sleep(std::time::Duration::from_millis(120));
+    let result = capture_screen_region_png(position.x, position.y, width, height);
+    let _ = window.show();
+    let _ = window.set_focus();
+    result
+}
+
+#[cfg(not(windows))]
+fn capture_screen_region_png(
+    _x: i32,
+    _y: i32,
+    _width: u32,
+    _height: u32,
+) -> Result<Vec<u8>, String> {
+    Err("screen area capture is only available on Windows".to_string())
+}
+
+#[cfg(windows)]
+fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HBITMAP, HDC, ReleaseDC, SRCCOPY,
+        SelectObject,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+
+    fn clamp_region(
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(i32, i32, i32, i32), String> {
+        let virtual_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        let virtual_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        let virtual_w = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+        let virtual_h = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+        if virtual_w <= 0 || virtual_h <= 0 {
+            return Err("could not read virtual screen bounds".to_string());
+        }
+
+        let left = x.clamp(virtual_x, virtual_x + virtual_w - 1);
+        let top = y.clamp(virtual_y, virtual_y + virtual_h - 1);
+        let right = (x + width as i32).clamp(left + 1, virtual_x + virtual_w);
+        let bottom = (y + height as i32).clamp(top + 1, virtual_y + virtual_h);
+        Ok((left, top, right - left, bottom - top))
+    }
+
+    struct ScreenDc(HDC);
+    impl Drop for ScreenDc {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = ReleaseDC(None, self.0);
+            }
+        }
+    }
+
+    struct MemoryDc(HDC);
+    impl Drop for MemoryDc {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DeleteDC(self.0);
+            }
+        }
+    }
+
+    struct Bitmap(HBITMAP);
+    impl Drop for Bitmap {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DeleteObject(self.0.into());
+            }
+        }
+    }
+
+    let (x, y, width, height) = clamp_region(x, y, width, height)?;
+    let screen_dc = unsafe { GetDC(None) };
+    if screen_dc.is_invalid() {
+        return Err("failed to get screen device context".to_string());
+    }
+    let screen_dc = ScreenDc(screen_dc);
+
+    let memory_dc = unsafe { CreateCompatibleDC(Some(screen_dc.0)) };
+    if memory_dc.is_invalid() {
+        return Err("failed to create screen capture device context".to_string());
+    }
+    let memory_dc = MemoryDc(memory_dc);
+
+    let bitmap = unsafe { CreateCompatibleBitmap(screen_dc.0, width, height) };
+    if bitmap.is_invalid() {
+        return Err("failed to create screen capture bitmap".to_string());
+    }
+    let bitmap = Bitmap(bitmap);
+
+    let old_object = unsafe { SelectObject(memory_dc.0, bitmap.0.into()) };
+    if old_object.is_invalid() {
+        return Err("failed to select screen capture bitmap".to_string());
+    }
+
+    let copied = unsafe {
+        BitBlt(
+            memory_dc.0,
+            0,
+            0,
+            width,
+            height,
+            Some(screen_dc.0),
+            x,
+            y,
+            SRCCOPY,
+        )
+    };
+    unsafe {
+        let _ = SelectObject(memory_dc.0, old_object);
+    }
+    if copied.is_err() {
+        return Err("failed to copy screen area".to_string());
+    }
+
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bgra = vec![0_u8; width as usize * height as usize * 4];
+    let rows = unsafe {
+        GetDIBits(
+            memory_dc.0,
+            bitmap.0,
+            0,
+            height as u32,
+            Some(bgra.as_mut_ptr().cast()),
+            &mut info,
+            DIB_RGB_COLORS,
+        )
+    };
+    if rows == 0 {
+        return Err("failed to read screen capture pixels".to_string());
+    }
+
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        pixel[3] = 255;
+    }
+
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+        .write_image(&bgra, width as u32, height as u32, ColorType::Rgba8.into())
+        .map_err(|err| format!("failed to encode screen capture png: {err}"))?;
+    Ok(png)
+}
+
 fn is_supported_image_name(image_name: &str) -> bool {
     let lower = image_name.to_ascii_lowercase();
     [".png", ".jpg", ".jpeg", ".webp"]
@@ -1122,6 +1342,7 @@ pub fn run() {
             native_asr_listen_interrupt,
             native_asr_listen_once,
             submit_image_probe,
+            submit_screen_area_probe,
             submit_typed_hud,
             warm_ollama_model,
             warm_kokoro_tts

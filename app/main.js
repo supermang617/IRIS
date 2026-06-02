@@ -26,6 +26,7 @@ const elements = {
   memoryButton: document.querySelector("#memory-button"),
   memoryList: document.querySelector("#memory-list"),
   memoryPanel: document.querySelector("#memory-panel"),
+  screenButton: document.querySelector("#screen-button"),
   visionButton: document.querySelector("#vision-button"),
   visionFileInput: document.querySelector("#vision-file-input"),
   voiceButton: document.querySelector("#voice-button"),
@@ -58,6 +59,7 @@ const maxHistoryTurns = 12;
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
 const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
+const defaultScreenPrompt = "Describe what is visible underneath the Iris window. Keep it brief and natural.";
 
 class VoiceLatencyTrace {
   constructor() {
@@ -310,6 +312,47 @@ async function submitImageMessage(prompt, latencyTrace) {
     thinking = false;
     setInputsDisabled(false);
     logVoice("submit_end", "image-probe");
+    restartListeningIfReady();
+  }
+}
+
+async function submitScreenAreaMessage() {
+  if (thinking || speaking) {
+    return;
+  }
+  const latencyTrace = new VoiceLatencyTrace();
+  const prompt = elements.hudInput.value.trim() || defaultScreenPrompt;
+  const turnStarted = performance.now();
+  thinking = true;
+  logVoice("screen_probe_start", "area-under-iris");
+  setInputsDisabled(true);
+  elements.hudInput.value = "";
+  elements.hudOutput.textContent = `Looking under Iris.\n\nThinking locally...`;
+  try {
+    const response = await call("submit_screen_area_probe", { prompt });
+    latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
+    elements.hudOutput.textContent = response.text;
+    rememberTurn("user", `[screen] ${prompt}`);
+    rememberTurn("iris", response.text);
+    logVoice(
+      "screen_probe_complete",
+      `model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`
+    );
+    thinking = false;
+    setInputsDisabled(false);
+    await speak(response.text, latencyTrace);
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+    logVoice(
+      "screen_probe_error",
+      `total_ms=${Math.round(performance.now() - turnStarted)}; ${String(error)}`
+    );
+  } finally {
+    latencyTrace.finishTotal();
+    await logVoiceLatencyReport(latencyTrace);
+    thinking = false;
+    setInputsDisabled(false);
+    logVoice("submit_end", "screen-probe");
     restartListeningIfReady();
   }
 }
@@ -615,6 +658,7 @@ function setInputsDisabled(disabled) {
   elements.attachmentRemove.disabled = disabled;
   elements.voiceButton.disabled = false;
   elements.visionButton.disabled = disabled;
+  elements.screenButton.disabled = disabled;
   elements.memoryButton.disabled = disabled;
   elements.memoryAddButton.disabled = disabled;
   elements.memoryAddInput.disabled = disabled;
@@ -792,6 +836,15 @@ elements.visionButton.addEventListener("click", () => {
     return;
   }
   lookWithCamera().catch((error) => {
+    elements.hudOutput.textContent = String(error);
+  });
+});
+
+elements.screenButton.addEventListener("click", () => {
+  if (thinking || speaking) {
+    return;
+  }
+  submitScreenAreaMessage().catch((error) => {
     elements.hudOutput.textContent = String(error);
   });
 });

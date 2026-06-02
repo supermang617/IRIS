@@ -44,10 +44,14 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 18. Confirm Iris takes a capped camera snapshot, answers what it can see, and speaks the answer.
 19. Type a camera-specific question, then click the camera icon.
 20. Confirm Iris uses that typed question for the camera snapshot.
-21. Drag a small mp4, webm, or mov video into the text bar.
-22. Confirm Iris attaches one video frame preview for the next prompt.
-23. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
-24. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
+21. Move Iris over a visible app, document, or webpage, then click the screen icon.
+22. Confirm Iris briefly hides, captures the area underneath the Iris window, answers what it sees, and speaks the answer.
+23. Type a screen-specific question, then click the screen icon.
+24. Confirm Iris uses that typed question for the screen-area capture.
+25. Drag a small mp4, webm, or mov video into the text bar.
+26. Confirm Iris attaches one video frame preview for the next prompt.
+27. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
+28. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
 
 ## If Wake Word Fails
 
@@ -80,6 +84,7 @@ If Iris stops listening, the last few lines of this file should show whether nat
 - No model download should start.
 - No system control should occur.
 - No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
+- No continuous screen capture should occur. The screen icon performs one explicit capped capture of the area under Iris.
 - The configured model remains `huihui_ai/gemma-4-abliterated:e2b`.
 - The configured TTS voice remains Kokoro `af_heart`.
 - Wake-word mode is armed by default.
