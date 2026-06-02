@@ -27,8 +27,53 @@ let activeAudio = null;
 let activeSpeechResolve = null;
 let activeListenMode = "idle";
 let stopListeningRequested = false;
+let pendingVoiceLatency = null;
 const conversationHistory = [];
 const maxHistoryTurns = 12;
+
+class VoiceLatencyTrace {
+  constructor() {
+    this.turnStartedAt = performance.now();
+    this.speechCaptureMs = null;
+    this.sttMs = null;
+    this.llmFirstTokenMs = null;
+    this.llmFullResponseMs = null;
+    this.ttsFirstAudioMs = null;
+    this.ttsFullMs = null;
+    this.timeToFirstSpokenWordMs = null;
+    this.totalTurnTimeMs = null;
+  }
+
+  applyAsr(result) {
+    this.speechCaptureMs = optionalTiming(result.captureElapsedMs ?? result.capture_elapsed_ms);
+    this.sttMs = optionalTiming(result.sttElapsedMs ?? result.stt_elapsed_ms);
+    const asrElapsed = (this.speechCaptureMs || 0) + (this.sttMs || 0);
+    if (asrElapsed > 0) {
+      this.turnStartedAt -= asrElapsed;
+    }
+  }
+
+  finishTotal() {
+    this.totalTurnTimeMs = Math.round(performance.now() - this.turnStartedAt);
+  }
+
+  toReportPayload() {
+    return {
+      speechCaptureMs: this.speechCaptureMs,
+      sttMs: this.sttMs,
+      llmFirstTokenMs: this.llmFirstTokenMs,
+      llmFullResponseMs: this.llmFullResponseMs,
+      ttsFirstAudioMs: this.ttsFirstAudioMs,
+      ttsFullMs: this.ttsFullMs,
+      timeToFirstSpokenWordMs: this.timeToFirstSpokenWordMs,
+      totalTurnTimeMs: this.totalTurnTimeMs
+    };
+  }
+}
+
+function optionalTiming(value) {
+  return Number.isFinite(Number(value)) ? Math.round(Number(value)) : null;
+}
 
 async function call(command, args = {}) {
   if (!invoke) {
@@ -116,9 +161,24 @@ async function warmVoice() {
   }
 }
 
+async function warmModel() {
+  try {
+    logVoice("ollama_warm_start");
+    await call("warm_ollama_model");
+    logVoice("ollama_warm_ready");
+  } catch (error) {
+    logVoice("ollama_warm_error", String(error));
+  }
+}
+
 async function submitMessage(text, source = "typed") {
   if (thinking || speaking) {
     return;
+  }
+  const latencyTrace = new VoiceLatencyTrace();
+  if (pendingVoiceLatency) {
+    latencyTrace.applyAsr(pendingVoiceLatency);
+    pendingVoiceLatency = null;
   }
   try {
     if (await handleMemoryCommand(text)) {
@@ -140,6 +200,7 @@ async function submitMessage(text, source = "typed") {
   try {
     const history = conversationHistory.slice();
     const response = await call("submit_typed_hud", { text, history });
+    latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", text);
     rememberTurn("iris", response.text);
@@ -149,7 +210,7 @@ async function submitMessage(text, source = "typed") {
     );
     thinking = false;
     setInputsDisabled(false);
-    await speak(response.text);
+    await speak(response.text, latencyTrace);
   } catch (error) {
     elements.hudOutput.textContent = String(error);
     logVoice(
@@ -157,10 +218,23 @@ async function submitMessage(text, source = "typed") {
       `${source}; total_ms=${Math.round(performance.now() - turnStarted)}; ${String(error)}`
     );
   } finally {
+    latencyTrace.finishTotal();
+    await logVoiceLatencyReport(latencyTrace);
     thinking = false;
     setInputsDisabled(false);
     logVoice("submit_end", source);
     restartListeningIfReady();
+  }
+}
+
+async function logVoiceLatencyReport(trace) {
+  if (!invoke) {
+    return;
+  }
+  try {
+    await call("log_voice_latency_report", { trace: trace.toReportPayload() });
+  } catch (error) {
+    logVoice("voice_latency_report_error", String(error));
   }
 }
 
@@ -227,7 +301,7 @@ function cancelSpeech() {
   }
 }
 
-async function speak(text) {
+async function speak(text, latencyTrace = null) {
   if (!speakReplies) {
     return Promise.resolve();
   }
@@ -252,6 +326,7 @@ async function speak(text) {
       resolve();
     };
 
+    const ttsStartedAt = performance.now();
     logVoice("kokoro_tts_start", `run=${runId}`);
     call("kokoro_tts_wav", { text })
       .then((response) => {
@@ -264,8 +339,19 @@ async function speak(text) {
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         activeAudio = audio;
+        if (latencyTrace) {
+          latencyTrace.ttsFullMs = optionalTiming(response.elapsedMs);
+        }
         logVoice("speech_started", `run=${runId}; voice=${response.voice}; tts_ms=${response.elapsedMs}`);
         monitorSpeechInterruption(runId);
+        audio.onplaying = () => {
+          if (latencyTrace && latencyTrace.ttsFirstAudioMs === null) {
+            latencyTrace.ttsFirstAudioMs = Math.round(performance.now() - ttsStartedAt);
+            latencyTrace.timeToFirstSpokenWordMs = Math.round(
+              performance.now() - latencyTrace.turnStartedAt
+            );
+          }
+        };
         audio.onended = () => {
           URL.revokeObjectURL(url);
           if (activeAudio === audio) {
@@ -385,7 +471,12 @@ async function listenOnce(mode) {
     const result = await call("native_asr_listen_once");
     const transcript = String(result.text || "").trim();
     logVoice("native_asr_result", `${result.elapsed_ms}ms; ${transcript}`);
+    pendingVoiceLatency = {
+      captureElapsedMs: result.captureElapsedMs,
+      sttElapsedMs: result.sttElapsedMs
+    };
     if (!isUsableTranscript(transcript)) {
+      pendingVoiceLatency = null;
       elements.voiceStatus.textContent = "No speech transcript captured.";
       return;
     }
@@ -413,6 +504,7 @@ function handleVoiceTranscript(transcript) {
   logVoice("voice_decision", `${decision.action}:${decision.source}:${decision.prompt}`);
 
   if (decision.action === "interrupt") {
+    pendingVoiceLatency = null;
     cancelSpeech();
     wakeCommandArmed = false;
     voiceLoop = true;
@@ -429,6 +521,7 @@ function handleVoiceTranscript(transcript) {
   }
 
   if (decision.action === "arm-wake-followup") {
+    pendingVoiceLatency = null;
     wakeCommandArmed = true;
     voiceLoop = true;
     elements.hudOutput.textContent = "Listening.";
@@ -442,6 +535,7 @@ function handleVoiceTranscript(transcript) {
       submitMessage(transcript, "voice-session");
       return;
     }
+    pendingVoiceLatency = null;
     wakeCommandArmed = false;
   }
 }
@@ -480,4 +574,5 @@ renderVoiceCapability();
 logVoice("app_started");
 refreshDashboard();
 warmVoice();
+warmModel();
 restartListeningIfReady(500);

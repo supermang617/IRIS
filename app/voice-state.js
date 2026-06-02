@@ -1,5 +1,5 @@
 export function classifyVoiceTranscript(transcript, state) {
-  const normalized = String(transcript || "").trim();
+  const normalized = normalizeTranscript(transcript);
   if (!normalized) {
     return { action: "ignore", prompt: "", source: "voice", status: "No speech transcript captured." };
   }
@@ -66,7 +66,8 @@ function findWakeMatch(text) {
     /\biris\b[\s,.:;!?-]*/i,
     /\birish\b[\s,.:;!?-]*/i,
     /\beric\s+sway\s*up\b[\s,.:;!?-]*/i,
-    /\bhi\s+i'?m\s+eric\s+sway\s*up\b[\s,.:;!?-]*/i
+    /\bhi\s+i'?m\s+eric\s+sway\s*up\b[\s,.:;!?-]*/i,
+    /\bi\s+(?:are|hear|here)\s+a?\s*wake\s*up\b[\s,.:;!?-]*/i
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
@@ -75,6 +76,10 @@ function findWakeMatch(text) {
     }
   }
   return null;
+}
+
+function normalizeTranscript(text) {
+  return String(text || "").trim().replace(/^>+\s*/, "").trim();
 }
 
 function isNoiseTranscript(text) {
@@ -100,7 +105,6 @@ function isNoiseTranscript(text) {
     blocked.has(normalized) ||
     /^\[[^\]]+\]$/.test(normalized) ||
     /^\([^)]+\)$/.test(normalized) ||
-    normalized.startsWith(">>") ||
     normalized.includes("music playing") ||
     normalized.includes("keyboard clicking") ||
     normalized.includes("inaudible")

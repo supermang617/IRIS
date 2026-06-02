@@ -72,6 +72,26 @@ test("common Iris wake word mishear arms listening", () => {
   assert.equal(decision.action, "arm-wake-followup");
 });
 
+test("speaker marker before Iris still arms listening", () => {
+  const decision = classifyVoiceTranscript(">> Iris.", {
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false
+  });
+
+  assert.equal(decision.action, "arm-wake-followup");
+});
+
+test("wake up mishear from diagnostics arms listening", () => {
+  const decision = classifyVoiceTranscript("I are a wake up", {
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false
+  });
+
+  assert.equal(decision.action, "arm-wake-followup");
+});
+
 test("armed wake word submits the follow-up utterance", () => {
   const decision = classifyVoiceTranscript("what can you do right now", {
     voiceLoop: false,

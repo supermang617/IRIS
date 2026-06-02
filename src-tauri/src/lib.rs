@@ -50,6 +50,8 @@ struct MemoryItem {
 struct AsrCommandResponse {
     text: String,
     elapsed_ms: u128,
+    capture_elapsed_ms: Option<u128>,
+    stt_elapsed_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +101,19 @@ struct VoiceDiagnosticEvent {
     voice_loop: bool,
     wake_word: bool,
     wake_command_armed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceLatencyTrace {
+    speech_capture_ms: Option<u128>,
+    stt_ms: Option<u128>,
+    llm_first_token_ms: Option<u128>,
+    llm_full_response_ms: Option<u128>,
+    tts_first_audio_ms: Option<u128>,
+    tts_full_ms: Option<u128>,
+    time_to_first_spoken_word_ms: Option<u128>,
+    total_turn_time_ms: Option<u128>,
 }
 
 #[tauri::command]
@@ -226,11 +241,17 @@ fn native_asr_listen_for(
     endpoint: CaptureEndpoint,
 ) -> Result<AsrCommandResponse, String> {
     let started = Instant::now();
+    let capture_started = Instant::now();
     let audio = record_microphone_mono_16khz(duration_ms, endpoint)?;
+    let capture_elapsed_ms = capture_started.elapsed().as_millis();
+    let stt_started = Instant::now();
     let text = transcribe_local_whisper(&audio)?;
+    let stt_elapsed_ms = stt_started.elapsed().as_millis();
     Ok(AsrCommandResponse {
         text,
         elapsed_ms: started.elapsed().as_millis(),
+        capture_elapsed_ms: Some(capture_elapsed_ms),
+        stt_elapsed_ms: Some(stt_elapsed_ms),
     })
 }
 
@@ -250,6 +271,21 @@ async fn warm_kokoro_tts() -> Result<(), String> {
         if guard.is_none() {
             *guard = Some(start_kokoro_worker(&settings)?);
         }
+        Ok(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn warm_ollama_model() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let workspace_root = workspace_root()?;
+        let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+        let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+        let client = iris_ollama::OllamaClient::new(settings)?;
+        let gated_context = iris_ui::gate_typed_text("warm up");
+        let _ = client.respond_with_history_and_memories(&gated_context, &[], &[]);
         Ok(())
     })
     .await
@@ -531,6 +567,50 @@ fn log_voice_diagnostic(event: VoiceDiagnosticEvent) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     file.write_all(line.as_bytes())
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn log_voice_latency_report(trace: VoiceLatencyTrace) -> Result<String, String> {
+    let report = format_voice_latency_report(&trace);
+    let workspace_root = workspace_root()?;
+    let diagnostics_dir = workspace_root.join("diagnostics");
+    fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
+    let log_path = diagnostics_dir.join("voice-latency.txt");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|err| err.to_string())?;
+    file.write_all(report.as_bytes())
+        .and_then(|_| file.write_all(b"\n\n"))
+        .map_err(|err| err.to_string())?;
+    Ok(report)
+}
+
+fn format_voice_latency_report(trace: &VoiceLatencyTrace) -> String {
+    format!(
+        "Voice latency report\n\
+- speech capture: {}\n\
+- STT: {}\n\
+- LLM first token: {}\n\
+- LLM full response: {}\n\
+- TTS first audio: {}\n\
+- TTS full: {}\n\
+- time to first spoken word: {}\n\
+- total turn time: {}",
+        format_optional_ms(trace.speech_capture_ms),
+        format_optional_ms(trace.stt_ms),
+        format_optional_ms(trace.llm_first_token_ms),
+        format_optional_ms(trace.llm_full_response_ms),
+        format_optional_ms(trace.tts_first_audio_ms),
+        format_optional_ms(trace.tts_full_ms),
+        format_optional_ms(trace.time_to_first_spoken_word_ms),
+        format_optional_ms(trace.total_turn_time_ms)
+    )
+}
+
+fn format_optional_ms(value: Option<u128>) -> String {
+    value.map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms"))
 }
 
 fn timestamp_ms() -> Result<u128, String> {
@@ -892,6 +972,48 @@ fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
     Ok(text)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_missing_latency_stages_as_na() {
+        assert_eq!(format_optional_ms(None), "n/a");
+    }
+
+    #[test]
+    fn formats_latency_durations_as_plain_ms() {
+        assert_eq!(format_optional_ms(Some(42)), "42ms");
+    }
+
+    #[test]
+    fn voice_latency_report_uses_expected_plain_text_shape() {
+        let report = format_voice_latency_report(&VoiceLatencyTrace {
+            speech_capture_ms: Some(100),
+            stt_ms: Some(25),
+            llm_first_token_ms: None,
+            llm_full_response_ms: Some(700),
+            tts_first_audio_ms: None,
+            tts_full_ms: Some(250),
+            time_to_first_spoken_word_ms: None,
+            total_turn_time_ms: Some(1_100),
+        });
+
+        assert_eq!(
+            report,
+            "Voice latency report\n\
+- speech capture: 100ms\n\
+- STT: 25ms\n\
+- LLM first token: n/a\n\
+- LLM full response: 700ms\n\
+- TTS first audio: n/a\n\
+- TTS full: 250ms\n\
+- time to first spoken word: n/a\n\
+- total turn time: 1100ms"
+        );
+    }
+}
+
 pub fn run() {
     tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
         .invoke_handler(tauri::generate_handler![
@@ -902,9 +1024,11 @@ pub fn run() {
             kokoro_tts_wav,
             list_memories,
             log_voice_diagnostic,
+            log_voice_latency_report,
             native_asr_listen_interrupt,
             native_asr_listen_once,
             submit_typed_hud,
+            warm_ollama_model,
             warm_kokoro_tts
         ])
         .run(tauri::generate_context!())
