@@ -3,9 +3,6 @@ name = "iris-tauri"
 version = "0.1.0"
 edition = "2024"
 
-[build-dependencies]
-tauri-build = { version = "2", default-features = false, features = [] }
-
 [dependencies]
 cpal = "0.15.3"
 iris-config = { path = "../crates/iris-config" }
@@ -16,5 +13,11 @@ iris-status = { path = "../crates/iris-status" }
 iris-ui = { path = "../crates/iris-ui" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
-tauri = { version = "2", default-features = false, features = ["wry"] }
 whisper-rs = "0.16.0"
+
+[target.'cfg(windows)'.dependencies]
+tauri = { version = "2", default-features = false, features = ["tauri-runtime-wry", "webview2-com"] }
+tauri-runtime-wry = { version = "2", default-features = false }
+
+[target.'cfg(windows)'.build-dependencies]
+tauri-build = { version = "2", default-features = false, features = [] }

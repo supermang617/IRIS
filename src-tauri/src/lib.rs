@@ -893,7 +893,7 @@ fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
         .invoke_handler(tauri::generate_handler![
             add_memory,
             dashboard_snapshot,
