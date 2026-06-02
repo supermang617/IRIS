@@ -10,6 +10,7 @@ import {
 import { classifyVoiceTranscript } from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
+const currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
 
 const elements = {
   attachmentLabel: document.querySelector("#attachment-label"),
@@ -19,6 +20,7 @@ const elements = {
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
+  dragHandle: document.querySelector(".drag-handle"),
   memoryAddButton: document.querySelector("#memory-add-button"),
   memoryAddInput: document.querySelector("#memory-add-input"),
   memoryButton: document.querySelector("#memory-button"),
@@ -28,6 +30,7 @@ const elements = {
   visionFileInput: document.querySelector("#vision-file-input"),
   voiceButton: document.querySelector("#voice-button"),
   sendButton: document.querySelector("#send-button"),
+  windowDragStrip: document.querySelector("#window-drag-strip"),
   voiceCapability: document.querySelector("#voice-capability"),
   voiceStatus: document.querySelector("#voice-status")
 };
@@ -54,6 +57,7 @@ const conversationHistory = [];
 const maxHistoryTurns = 12;
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
+const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
 
 class VoiceLatencyTrace {
   constructor() {
@@ -633,6 +637,12 @@ function renderVoiceCapability() {
   elements.voiceCapability.textContent = "Native ASR / Kokoro af_heart";
 }
 
+function startWindowDrag() {
+  currentWindow?.startDragging?.().catch((error) => {
+    logVoice("window_drag_error", String(error));
+  });
+}
+
 function restartListeningIfReady(delayMs = 650) {
   if ((!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
     return;
@@ -769,11 +779,19 @@ elements.attachmentRemove.addEventListener("click", () => {
   clearAttachment();
 });
 
+elements.windowDragStrip.addEventListener("pointerdown", () => {
+  startWindowDrag();
+});
+
+elements.dragHandle.addEventListener("pointerdown", () => {
+  startWindowDrag();
+});
+
 elements.visionButton.addEventListener("click", () => {
   if (thinking || speaking || cameraCaptureInProgress) {
     return;
   }
-  captureCameraSnapshot().catch((error) => {
+  lookWithCamera().catch((error) => {
     elements.hudOutput.textContent = String(error);
   });
 });
@@ -887,6 +905,13 @@ async function readDocumentAttachment(file) {
     text: normalized.text,
     truncated: normalized.truncated
   };
+}
+
+async function lookWithCamera() {
+  const prompt = elements.hudInput.value.trim() || defaultCameraPrompt;
+  await captureCameraSnapshot();
+  elements.hudInput.value = "";
+  await submitMessage(prompt, "camera-look");
 }
 
 async function captureCameraSnapshot() {

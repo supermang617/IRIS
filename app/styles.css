@@ -45,12 +45,25 @@ input {
 .hud-form,
 .hud-output,
 .attachment-strip,
+.window-drag-strip,
 .memory-panel {
   width: 100%;
   border: 1px solid rgba(185, 203, 207, 0.74);
   border-radius: 8px;
   background: rgba(117, 124, 124, 0.94);
   backdrop-filter: blur(12px);
+}
+
+.window-drag-strip {
+  order: -1;
+  min-height: 14px;
+  border-color: rgba(185, 203, 207, 0.32);
+  background: rgba(117, 124, 124, 0.54);
+  cursor: grab;
+}
+
+.window-drag-strip:active {
+  cursor: grabbing;
 }
 
 .attachment-strip {

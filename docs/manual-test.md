@@ -38,10 +38,16 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 12. Confirm Iris stops speaking and returns to listening.
 13. Paste or drag a small png, jpg, jpeg, or webp image into the text bar.
 14. Confirm a small attachment preview appears above the text bar, then ask Iris what is in the image.
-15. Drag a small mp4, webm, or mov video into the text bar.
-16. Confirm Iris attaches one video frame preview for the next prompt.
-17. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
-18. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
+15. Click and drag the narrow strip above the text bar or the small handle at the left of the text bar.
+16. Confirm the Iris window moves without disrupting typing or buttons.
+17. Click the camera icon with an empty text bar.
+18. Confirm Iris takes a capped camera snapshot, answers what it can see, and speaks the answer.
+19. Type a camera-specific question, then click the camera icon.
+20. Confirm Iris uses that typed question for the camera snapshot.
+21. Drag a small mp4, webm, or mov video into the text bar.
+22. Confirm Iris attaches one video frame preview for the next prompt.
+23. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
+24. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
 
 ## If Wake Word Fails
 
