@@ -35,9 +35,12 @@ let stopListeningRequested = false;
 let pendingVoiceLatency = null;
 let selectedVisionImage = null;
 let memoryPanelOpen = false;
+let cameraCaptureInProgress = false;
 const conversationHistory = [];
 const maxHistoryTurns = 12;
 const maxVisionImageBytes = 8 * 1024 * 1024;
+const cameraSnapshotWidth = 640;
+const cameraSnapshotHeight = 480;
 
 class VoiceLatencyTrace {
   constructor() {
@@ -738,10 +741,12 @@ elements.memoryAddInput.addEventListener("keydown", (event) => {
 });
 
 elements.visionButton.addEventListener("click", () => {
-  if (thinking || speaking) {
+  if (thinking || speaking || cameraCaptureInProgress) {
     return;
   }
-  elements.visionFileInput.click();
+  captureCameraSnapshot().catch((error) => {
+    elements.hudOutput.textContent = String(error);
+  });
 });
 
 elements.visionFileInput.addEventListener("change", async () => {
@@ -779,20 +784,96 @@ async function readVisionImage(file) {
   };
 }
 
+async function captureCameraSnapshot() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Camera input is unavailable in this Iris window.");
+  }
+
+  cameraCaptureInProgress = true;
+  elements.visionButton.disabled = true;
+  elements.hudOutput.textContent = "Camera starting.";
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        width: { ideal: cameraSnapshotWidth, max: cameraSnapshotWidth },
+        height: { ideal: cameraSnapshotHeight, max: cameraSnapshotHeight },
+        frameRate: { ideal: 5, max: 10 }
+      }
+    });
+    selectedVisionImage = await snapshotFromStream(stream);
+    renderVisionSelection();
+  } finally {
+    if (stream) {
+      for (const track of stream.getTracks()) {
+        track.stop();
+      }
+    }
+    cameraCaptureInProgress = false;
+    elements.visionButton.disabled = false;
+  }
+}
+
+async function snapshotFromStream(stream) {
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+  await video.play();
+  await waitForVideoFrame(video);
+
+  const width = Math.min(video.videoWidth || cameraSnapshotWidth, cameraSnapshotWidth);
+  const height = Math.min(video.videoHeight || cameraSnapshotHeight, cameraSnapshotHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Camera snapshot failed.");
+  }
+  context.drawImage(video, 0, 0, width, height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
+  if (!blob) {
+    throw new Error("Camera snapshot failed.");
+  }
+  if (blob.size > maxVisionImageBytes) {
+    throw new Error("Camera snapshot is too large.");
+  }
+  const buffer = await blob.arrayBuffer();
+  return {
+    name: "camera-snapshot.jpg",
+    bytes: Array.from(new Uint8Array(buffer))
+  };
+}
+
+function waitForVideoFrame(video) {
+  if (video.videoWidth > 0 && video.videoHeight > 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error("Camera snapshot timed out.")), 5000);
+    video.onloadeddata = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+  });
+}
+
 function renderVisionSelection() {
   const hasImage = Boolean(selectedVisionImage);
   elements.visionButton.classList.toggle("listening", hasImage);
   elements.visionButton.setAttribute("aria-pressed", hasImage ? "true" : "false");
   elements.visionButton.setAttribute(
     "title",
-    hasImage ? "Image attached for next prompt" : "Attach image"
+    hasImage ? "Camera snapshot attached for next prompt" : "Camera snapshot"
   );
   elements.visionButton.setAttribute(
     "aria-label",
-    hasImage ? "Image attached for next prompt" : "Attach image"
+    hasImage ? "Camera snapshot attached for next prompt" : "Camera snapshot"
   );
   if (hasImage) {
-    elements.hudOutput.textContent = "Image attached. Type what you want Iris to inspect.";
+    elements.hudOutput.textContent = "Camera snapshot attached. Type what you want Iris to inspect.";
   }
 }
 
