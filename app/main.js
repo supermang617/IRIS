@@ -6,6 +6,7 @@ const elements = {
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
+  memoryButton: document.querySelector("#memory-button"),
   visionButton: document.querySelector("#vision-button"),
   voiceButton: document.querySelector("#voice-button"),
   sendButton: document.querySelector("#send-button"),
@@ -119,6 +120,17 @@ async function submitMessage(text, source = "typed") {
   if (thinking || speaking) {
     return;
   }
+  try {
+    if (await handleMemoryCommand(text)) {
+      elements.hudInput.value = "";
+      restartListeningIfReady();
+      return;
+    }
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+    restartListeningIfReady();
+    return;
+  }
 
   const turnStarted = performance.now();
   thinking = true;
@@ -150,6 +162,54 @@ async function submitMessage(text, source = "typed") {
     logVoice("submit_end", source);
     restartListeningIfReady();
   }
+}
+
+async function handleMemoryCommand(text) {
+  const clean = String(text || "").trim();
+  const addMatch = clean.match(/^(?:remember|memory\s+add)\s*[:,-]?\s+(.+)$/i);
+  if (addMatch) {
+    const memories = await call("add_memory", { text: addMatch[1] });
+    elements.hudOutput.textContent = `Memory added.\n\n${formatMemories(memories)}`;
+    return true;
+  }
+
+  if (/^memory\s+list$/i.test(clean)) {
+    const memories = await call("list_memories");
+    elements.hudOutput.textContent = formatMemories(memories);
+    return true;
+  }
+
+  const deleteMatch = clean.match(/^memory\s+(?:delete|remove)\s+(\d+)$/i);
+  if (deleteMatch) {
+    const memories = await call("delete_memory", { id: Number(deleteMatch[1]) });
+    elements.hudOutput.textContent = `Memory deleted.\n\n${formatMemories(memories)}`;
+    return true;
+  }
+
+  const editMatch = clean.match(/^memory\s+edit\s+(\d+)\s*[:,-]\s*(.+)$/i);
+  if (editMatch) {
+    const memories = await call("edit_memory", {
+      id: Number(editMatch[1]),
+      text: editMatch[2]
+    });
+    elements.hudOutput.textContent = `Memory updated.\n\n${formatMemories(memories)}`;
+    return true;
+  }
+
+  if (/^memory\s+help$/i.test(clean)) {
+    elements.hudOutput.textContent =
+      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\n\nIris stores up to 40 short memories.";
+    return true;
+  }
+
+  return false;
+}
+
+function formatMemories(memories) {
+  if (!Array.isArray(memories) || memories.length === 0) {
+    return "No memories saved.";
+  }
+  return memories.map((memory) => `${memory.id}. ${memory.text}`).join("\n");
 }
 
 function cancelSpeech() {
@@ -371,7 +431,9 @@ function handleVoiceTranscript(transcript) {
   if (decision.action === "arm-wake-followup") {
     wakeCommandArmed = true;
     voiceLoop = true;
-    speak("I'm listening.").finally(() => restartListeningIfReady(250));
+    elements.hudOutput.textContent = "Listening.";
+    elements.voiceStatus.textContent = "Listening.";
+    restartListeningIfReady(100);
     return;
   }
 
@@ -402,6 +464,16 @@ elements.voiceButton.addEventListener("click", () => {
 
   stopListeningRequested = false;
   listenOnce("push");
+});
+
+elements.memoryButton.addEventListener("click", async () => {
+  try {
+    const memories = await call("list_memories");
+    elements.hudOutput.textContent =
+      `${formatMemories(memories)}\n\nremember: <text>\nmemory edit <number>: <text>\nmemory delete <number>`;
+  } catch (error) {
+    elements.hudOutput.textContent = String(error);
+  }
 });
 
 renderVoiceCapability();

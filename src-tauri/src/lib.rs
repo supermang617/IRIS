@@ -15,6 +15,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
+const MAX_MEMORY_ITEMS: usize = 40;
 
 #[derive(Debug, Clone, Serialize)]
 struct HudCommandResponse {
@@ -34,6 +35,15 @@ enum ConversationRole {
 struct ConversationTurn {
     role: ConversationRole,
     text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryItem {
+    id: u64,
+    text: String,
+    created_ms: u128,
+    updated_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +131,55 @@ async fn submit_typed_hud(
         })
 }
 
+#[tauri::command]
+fn list_memories() -> Result<Vec<MemoryItem>, String> {
+    load_memories()
+}
+
+#[tauri::command]
+fn add_memory(text: String) -> Result<Vec<MemoryItem>, String> {
+    let text = normalize_memory_text(&text)?;
+    let mut memories = load_memories()?;
+    let now = timestamp_ms()?;
+    let id = memories.iter().map(|memory| memory.id).max().unwrap_or(0) + 1;
+    memories.push(MemoryItem {
+        id,
+        text,
+        created_ms: now,
+        updated_ms: now,
+    });
+    trim_memory_cap(&mut memories);
+    save_memories(&memories)?;
+    Ok(memories)
+}
+
+#[tauri::command]
+fn edit_memory(id: u64, text: String) -> Result<Vec<MemoryItem>, String> {
+    let text = normalize_memory_text(&text)?;
+    let mut memories = load_memories()?;
+    let now = timestamp_ms()?;
+    let memory = memories
+        .iter_mut()
+        .find(|memory| memory.id == id)
+        .ok_or_else(|| format!("memory {id} does not exist"))?;
+    memory.text = text;
+    memory.updated_ms = now;
+    save_memories(&memories)?;
+    Ok(memories)
+}
+
+#[tauri::command]
+fn delete_memory(id: u64) -> Result<Vec<MemoryItem>, String> {
+    let mut memories = load_memories()?;
+    let original_len = memories.len();
+    memories.retain(|memory| memory.id != id);
+    if memories.len() == original_len {
+        return Err(format!("memory {id} does not exist"));
+    }
+    save_memories(&memories)?;
+    Ok(memories)
+}
+
 fn submit_typed_hud_blocking(
     text: String,
     history: Option<Vec<ConversationTurn>>,
@@ -144,10 +203,10 @@ fn submit_typed_hud_blocking(
 async fn native_asr_listen_once() -> Result<AsrCommandResponse, String> {
     tauri::async_runtime::spawn_blocking(|| {
         native_asr_listen_for(
-            9_000,
+            6_500,
             CaptureEndpoint::Speech {
-                min_ms: 1_200,
-                trailing_silence_ms: 900,
+                min_ms: 800,
+                trailing_silence_ms: 650,
             },
         )
     })
@@ -437,10 +496,10 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
 #[allow(dead_code)]
 fn _old_signature_anchor() {
     let _ = (
-        9_000,
+        6_500,
         CaptureEndpoint::Speech {
-            min_ms: 1_200,
-            trailing_silence_ms: 900,
+            min_ms: 800,
+            trailing_silence_ms: 650,
         },
     );
 }
@@ -489,6 +548,55 @@ fn json_safe(value: &str) -> String {
         .collect()
 }
 
+fn memory_file_path() -> Result<std::path::PathBuf, String> {
+    Ok(workspace_root()?.join(".iris-data/memories.json"))
+}
+
+fn load_memories() -> Result<Vec<MemoryItem>, String> {
+    let path = memory_file_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = fs::read(&path)
+        .map_err(|err| format!("failed to read memories {}: {err}", path.display()))?;
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut memories = serde_json::from_slice::<Vec<MemoryItem>>(&bytes)
+        .map_err(|err| format!("failed to parse memories {}: {err}", path.display()))?;
+    trim_memory_cap(&mut memories);
+    Ok(memories)
+}
+
+fn save_memories(memories: &[MemoryItem]) -> Result<(), String> {
+    let path = memory_file_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let json = serde_json::to_vec_pretty(memories).map_err(|err| err.to_string())?;
+    fs::write(&path, json)
+        .map_err(|err| format!("failed to write memories {}: {err}", path.display()))
+}
+
+fn normalize_memory_text(text: &str) -> Result<String, String> {
+    let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        return Err("memory text cannot be empty".to_string());
+    }
+    if clean.chars().count() > 240 {
+        return Err("memory text must be 240 characters or less".to_string());
+    }
+    Ok(clean)
+}
+
+fn trim_memory_cap(memories: &mut Vec<MemoryItem>) {
+    memories.sort_by_key(|memory| memory.created_ms);
+    if memories.len() > MAX_MEMORY_ITEMS {
+        let excess = memories.len() - MAX_MEMORY_ITEMS;
+        memories.drain(0..excess);
+    }
+}
+
 fn workspace_root() -> Result<std::path::PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
     let manifest_path = iris_config::find_manifest_path(&cwd).or_else(|_| {
@@ -520,7 +628,11 @@ fn model_response(
             text: turn.text.clone(),
         })
         .collect::<Vec<_>>();
-    Ok(client.respond_with_history(&gated_context, &ollama_history))
+    let memories = load_memories()?
+        .into_iter()
+        .map(|memory| memory.text)
+        .collect::<Vec<_>>();
+    Ok(client.respond_with_history_and_memories(&gated_context, &ollama_history, &memories))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -783,8 +895,12 @@ fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            add_memory,
             dashboard_snapshot,
+            delete_memory,
+            edit_memory,
             kokoro_tts_wav,
+            list_memories,
             log_voice_diagnostic,
             native_asr_listen_interrupt,
             native_asr_listen_once,

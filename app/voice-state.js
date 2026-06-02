@@ -27,10 +27,10 @@ export function classifyVoiceTranscript(transcript, state) {
     return { action: "submit", prompt: normalized, source: "voice", status: `Heard: ${normalized}` };
   }
 
-  const wakeMatch = normalized.match(/\biris\b[\s,.:;!?-]*/i);
+  const wakeMatch = findWakeMatch(normalized);
   if (wakeMatch) {
-    const prompt = normalized.slice((wakeMatch.index || 0) + wakeMatch[0].length).trim();
-    if (prompt) {
+    const prompt = normalized.slice(wakeMatch.index + wakeMatch.length).trim();
+    if (prompt && !isWakeOnlyPrompt(prompt)) {
       return { action: "submit", prompt, source: "wake-word", status: `Heard: ${normalized}` };
     }
 
@@ -54,7 +54,27 @@ function isInterruption(text) {
 }
 
 function isBareWakeWord(text) {
-  return /^iris[\s,.:;!?-]*$/i.test(text);
+  return /^iris[\s,.:;!?-]*$/i.test(text) || /^eric\s+sway\s*up[\s,.:;!?-]*$/i.test(text);
+}
+
+function isWakeOnlyPrompt(text) {
+  return /^(wake\s*up|wake|wakeup|hello|hi|hey)[\s,.:;!?-]*$/i.test(text);
+}
+
+function findWakeMatch(text) {
+  const patterns = [
+    /\biris\b[\s,.:;!?-]*/i,
+    /\birish\b[\s,.:;!?-]*/i,
+    /\beric\s+sway\s*up\b[\s,.:;!?-]*/i,
+    /\bhi\s+i'?m\s+eric\s+sway\s*up\b[\s,.:;!?-]*/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return { index: match.index || 0, length: match[0].length };
+    }
+  }
+  return null;
 }
 
 function isNoiseTranscript(text) {
@@ -70,11 +90,19 @@ function isNoiseTranscript(text) {
     "[keyboard clicking]",
     "(keyboard clicking)",
     "[silence]",
-    "(silence)"
+    "(silence)",
+    "[inaudible]",
+    "(inaudible)",
+    "[no speech]",
+    "(no speech)"
   ]);
   return (
     blocked.has(normalized) ||
+    /^\[[^\]]+\]$/.test(normalized) ||
+    /^\([^)]+\)$/.test(normalized) ||
+    normalized.startsWith(">>") ||
     normalized.includes("music playing") ||
-    normalized.includes("keyboard clicking")
+    normalized.includes("keyboard clicking") ||
+    normalized.includes("inaudible")
   );
 }

@@ -52,6 +52,26 @@ test("bare wake word arms the next utterance", () => {
   assert.equal(decision.action, "arm-wake-followup");
 });
 
+test("wake up phrase arms the next utterance instead of submitting wake up", () => {
+  const decision = classifyVoiceTranscript("Iris wake up", {
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false
+  });
+
+  assert.equal(decision.action, "arm-wake-followup");
+});
+
+test("common Iris wake word mishear arms listening", () => {
+  const decision = classifyVoiceTranscript("Hi Im Eric Swayup", {
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false
+  });
+
+  assert.equal(decision.action, "arm-wake-followup");
+});
+
 test("armed wake word submits the follow-up utterance", () => {
   const decision = classifyVoiceTranscript("what can you do right now", {
     voiceLoop: false,
@@ -116,6 +136,7 @@ test("ambient captions are ignored in voice loop", () => {
     "(upbeat music)",
     "[BLANK_AUDIO]",
     "[silence]",
+    "[inaudible]",
     "[typing]",
     "(keyboard clicking)"
   ]) {
