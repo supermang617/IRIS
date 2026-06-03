@@ -9,7 +9,7 @@ import soundfile as sf
 import numpy as np
 from kokoro_onnx import Kokoro
 
-LEAD_SILENCE_SECONDS = 0.28
+LEAD_SILENCE_SECONDS = 0.62
 TAIL_SILENCE_SECONDS = 0.38
 
 
