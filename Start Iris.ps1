@@ -16,31 +16,7 @@ try {
         & $shortcutInstaller *>> $logPath
     }
 
-    $shouldBuild = -not (Test-Path -LiteralPath $exePath)
-    if (-not $shouldBuild -and $env:IRIS_FORCE_BUILD -ne "1") {
-        $exeTime = (Get-Item -LiteralPath $exePath).LastWriteTimeUtc
-        $sourcePaths = @(
-            (Join-Path $repoRoot "Cargo.toml"),
-            (Join-Path $repoRoot "Cargo.lock"),
-            (Join-Path $repoRoot "app"),
-            (Join-Path $repoRoot "crates"),
-            (Join-Path $repoRoot "src-tauri")
-        )
-        foreach ($sourcePath in $sourcePaths) {
-            if (-not (Test-Path -LiteralPath $sourcePath)) {
-                continue
-            }
-            $newerSource = Get-ChildItem -LiteralPath $sourcePath -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -notmatch "\\target\\|\\node_modules\\" -and $_.LastWriteTimeUtc -gt $exeTime } |
-                Select-Object -First 1
-            if ($newerSource) {
-                $shouldBuild = $true
-                break
-            }
-        }
-    } elseif ($env:IRIS_FORCE_BUILD -eq "1") {
-        $shouldBuild = $true
-    }
+    $shouldBuild = (-not (Test-Path -LiteralPath $exePath)) -or $env:IRIS_FORCE_BUILD -eq "1"
 
     if ($shouldBuild) {
         "[$(Get-Date -Format o)] Building standalone Iris debug shell." | Out-File -FilePath $logPath -Encoding utf8 -Append

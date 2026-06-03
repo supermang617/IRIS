@@ -201,6 +201,16 @@ async function warmModel() {
   }
 }
 
+async function warmRuntimeBeforeListening() {
+  elements.hudOutput.textContent = "Starting local voice and model.";
+  await Promise.allSettled([warmVoice(), warmModel()]);
+  logVoice("runtime_warm_ready");
+  if (elements.hudOutput.textContent === "Starting local voice and model.") {
+    elements.hudOutput.textContent = "Waiting for input.";
+  }
+  restartListeningIfReady(250);
+}
+
 async function submitMessage(text, source = "typed") {
   if (thinking || speaking) {
     return;
@@ -1155,6 +1165,4 @@ renderVoiceCapability();
 renderAttachmentSelection();
 logVoice("app_started");
 refreshDashboard();
-warmVoice();
-warmModel();
-restartListeningIfReady(500);
+warmRuntimeBeforeListening();
