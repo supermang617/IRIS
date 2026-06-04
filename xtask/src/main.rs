@@ -57,8 +57,11 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/download-and-run.md",
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
+        "docs/windows-installer.md",
+        "scripts/install_iris_windows.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
+        "scripts/test_windows_installer.ps1",
         ".github/workflows/bug-check.yml",
         "plugins/hermes_sidecar/sidecar.py",
         "plugins/memory/iris_broker/provider.py",
@@ -83,6 +86,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let download = read(root.join("docs/download-and-run.md"))?;
     let architecture = read(root.join("docs/iris-architecture.md"))?;
     let installer = read(root.join("docs/installer-preflight.md"))?;
+    let windows_installer = read(root.join("docs/windows-installer.md"))?;
     let ci = read(root.join(".github/workflows/bug-check.yml"))?;
 
     for (name, content) in [
@@ -178,6 +182,15 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     {
         return Err(
             "installer doc must describe setup wizard repairs and read-only preflight".to_string(),
+        );
+    }
+    if !windows_installer.contains("install-iris-windows.ps1")
+        || !windows_installer.contains("%LOCALAPPDATA%\\Programs\\Iris")
+        || !windows_installer.contains("no runtime computer automation")
+    {
+        return Err(
+            "windows installer doc must describe install path, wrapper, and safety boundary"
+                .to_string(),
         );
     }
     Ok(())

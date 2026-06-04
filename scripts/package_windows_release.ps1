@@ -9,6 +9,8 @@ $distRoot = Join-Path $releaseRoot "dist"
 $packageRoot = Join-Path $stagingRoot "iris-windows"
 $zipPath = Join-Path $distRoot "iris-windows.zip"
 $shaPath = "$zipPath.sha256"
+$installerPath = Join-Path $distRoot "install-iris-windows.ps1"
+$installerShaPath = "$installerPath.sha256"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -76,6 +78,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Des
 Copy-RequiredFile -Source (Join-Path $repoRoot "tools\kokoro_tts.py") -Destination (Join-Path $packageRoot "tools\kokoro_tts.py")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_preflight_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Preflight.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_setup_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Setup Wizard.ps1")
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1") -Destination (Join-Path $packageRoot "Install Iris.ps1")
 
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "models") -Destination (Join-Path $packageRoot "models")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "profiles") -Destination (Join-Path $packageRoot "profiles")
@@ -141,17 +144,32 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%Iris Setup W
 exit /b %ERRORLEVEL%
 '@
 
+$installBat = @'
+@echo off
+setlocal
+set "IRIS_ROOT=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%Install Iris.ps1" -RunSetup %*
+exit /b %ERRORLEVEL%
+'@
+
 Set-Content -LiteralPath (Join-Path $packageRoot "Start Iris.ps1") -Value $startPs1 -Encoding utf8
 Set-Content -LiteralPath (Join-Path $packageRoot "Start Iris.bat") -Value $startBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $packageRoot "Check Iris Preflight.bat") -Value $preflightBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $packageRoot "Iris Setup Wizard.bat") -Value $setupBat -Encoding ascii
+Set-Content -LiteralPath (Join-Path $packageRoot "Install Iris.bat") -Value $installBat -Encoding ascii
 
 Write-Host "Creating $zipPath"
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force
 
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $shaPath -Value "$hash  iris-windows.zip" -Encoding ascii
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1") -Destination $installerPath
+$installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $installerShaPath -Value "$installerHash  install-iris-windows.ps1" -Encoding ascii
 
 Write-Host "Iris Windows ZIP: $zipPath"
 Write-Host "Iris Windows SHA256: $shaPath"
 Write-Host "SHA256: $hash"
+Write-Host "Iris Windows installer wrapper: $installerPath"
+Write-Host "Iris Windows installer wrapper SHA256: $installerShaPath"
+Write-Host "Installer SHA256: $installerHash"

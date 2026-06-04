@@ -6,6 +6,8 @@ $originalLocation = (Get-Location).Path
 
 $zipPath = Join-Path $repoRoot "release\dist\iris-windows.zip"
 $shaPath = "$zipPath.sha256"
+$installerPath = Join-Path $repoRoot "release\dist\install-iris-windows.ps1"
+$installerShaPath = "$installerPath.sha256"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -28,11 +30,18 @@ function Get-ListeningLoopbackState {
 
 Require-File -Path $zipPath
 Require-File -Path $shaPath
+Require-File -Path $installerPath
+Require-File -Path $installerShaPath
 
 $expectedHash = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split "\s+")[0]
 $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
     throw "SHA256 mismatch. Expected $expectedHash but got $actualHash"
+}
+$expectedInstallerHash = ((Get-Content -LiteralPath $installerShaPath -Raw).Trim() -split "\s+")[0]
+$actualInstallerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actualInstallerHash -ne $expectedInstallerHash.ToLowerInvariant()) {
+    throw "Installer SHA256 mismatch. Expected $expectedInstallerHash but got $actualInstallerHash"
 }
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-smoke-" + [System.Guid]::NewGuid().ToString("N"))
@@ -48,6 +57,8 @@ try {
         "Iris Preflight.ps1",
         "Iris Setup Wizard.bat",
         "Iris Setup Wizard.ps1",
+        "Install Iris.bat",
+        "Install Iris.ps1",
         "README_RELEASE.md",
         "docs\installer-preflight.md",
         "docs\iris-architecture.md",

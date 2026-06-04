@@ -25,14 +25,34 @@ control, clipboard control, plugin execution, or external cloud/API calls.
 ## Download the Portable ZIP
 
 1. Open the GitHub Release for `supermang617/IRIS`.
-2. Download `iris-windows.zip` and `iris-windows.zip.sha256`.
-3. Extract `iris-windows.zip` to a normal user folder, for example:
+2. Download `iris-windows.zip`, `iris-windows.zip.sha256`,
+   `install-iris-windows.ps1`, and `install-iris-windows.ps1.sha256`.
+3. Optional installer-wrapper integrity check:
+
+```powershell
+$expected = (Get-Content .\install-iris-windows.ps1.sha256 -Raw).Split(" ")[0]
+$actual = (Get-FileHash .\install-iris-windows.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($expected -ne $actual) { throw "Installer SHA256 mismatch" }
+```
+
+4. Recommended beginner install:
+
+```powershell
+.\install-iris-windows.ps1 -SourceZip .\iris-windows.zip -Sha256Path .\iris-windows.zip.sha256 -RunSetup
+```
+
+This verifies the downloaded ZIP, installs Iris to
+`%LOCALAPPDATA%\Programs\Iris`, runs self-check/setup, and creates Start
+Menu/Desktop shortcuts.
+
+5. Portable-only alternative: extract `iris-windows.zip` to a normal user
+   folder, for example:
 
 ```powershell
 Expand-Archive .\iris-windows.zip -DestinationPath "$env:USERPROFILE\Iris"
 ```
 
-4. Optional integrity check:
+6. Portable ZIP integrity check:
 
 ```powershell
 $expected = (Get-Content .\iris-windows.zip.sha256 -Raw).Split(" ")[0]
@@ -66,6 +86,12 @@ From the extracted folder:
 .\Start Iris.bat
 ```
 
+To install from the extracted folder instead of staying portable:
+
+```powershell
+.\Install Iris.bat
+```
+
 For a non-destructive startup check:
 
 ```powershell
@@ -79,6 +105,7 @@ are missing.
 ## Included Runtime Files
 
 - `Start Iris.bat` and `Start Iris.ps1`
+- `Install Iris.bat` and `Install Iris.ps1`
 - `Iris Setup Wizard.bat` and `Iris Setup Wizard.ps1`
 - `Check Iris Preflight.bat` and `Iris Preflight.ps1`
 - `bin\iris-runtime.exe`
@@ -121,6 +148,7 @@ scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
 scripts\iris_preflight_wizard.ps1
 scripts\iris_setup_wizard.ps1 -NonInteractive
+scripts\test_windows_installer.ps1
 git diff --check
 ```
 
@@ -155,6 +183,8 @@ Bug fixes, compatibility repairs, diagnostics fixes, documentation corrections, 
 ## Architecture Notes
 
 See `docs/iris-architecture.md` for the current Iris/Hermes/OneDrive boundary.
+See `docs/windows-installer.md` for installer, shortcut, upgrade, and uninstall
+behavior.
 In v0.1, Iris can use local memory and restricted Hermes staging. OneDrive is
 not an active live-memory sync feature yet; it is a future encrypted cold-archive
 and restore direction.
