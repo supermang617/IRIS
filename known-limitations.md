@@ -20,3 +20,7 @@ This repository is a Windows-only v0.1 prototype.
 - No browser/window automation.
 - No external runtime network.
 - Redaction is a defense layer, not a complete security boundary.
+
+## Dependency Security Notes
+
+- GitHub may report a moderate `glib` advisory from the Linux GTK side of Tauri's transitive lockfile. Iris v0.1 is Windows-only, and current upstream Tauri 2.11.2 still resolves that path through `gtk` 0.18 and `glib` 0.18.5. Update Tauri/Wry and the lockfile when upstream can resolve `glib` 0.20.0 or newer.

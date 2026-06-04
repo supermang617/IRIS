@@ -33,4 +33,6 @@ Observed screen content, OCR text, documents, webpages, memory search results, H
 
 Sensitive content should be redacted before logs, memory proposals, and model-safe context where feasible. Redaction is a defense layer, not a complete security boundary.
 
+Known dependency alerts are tracked in `known-limitations.md` when they cannot be resolved through the current upstream dependency graph. Do not dismiss a dependency alert without documenting why it is not currently fixable.
+
 Report security issues privately to Alejandro Pinto at super.mangmail@gmail.com before public disclosure.
