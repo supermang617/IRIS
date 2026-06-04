@@ -1,0 +1,62 @@
+name: Bug Checker
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  bug-check:
+    name: Windows validation
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install LLVM for whisper-rs bindgen
+        shell: pwsh
+        run: |
+          choco install llvm -y --no-progress
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install Rust components
+        shell: pwsh
+        run: |
+          rustup component add rustfmt clippy
+          rustc --version
+          cargo --version
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build Rust workspace
+        run: cargo build --workspace
+
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
+      - name: Run Clippy
+        run: cargo clippy --workspace
+
+      - name: Run repository audit
+        run: cargo run -p xtask
+
+      - name: Run voice state tests
+        run: npm run test:voice

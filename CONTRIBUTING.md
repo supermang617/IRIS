@@ -42,3 +42,5 @@ git diff --check
 ```
 
 Manual runtime testing is described in `docs/manual-test.md`.
+
+GitHub Actions runs the lightweight bug checker on pushes and pull requests. That CI validates source, tests, and repository audits, but it does not launch the desktop runtime, use a microphone, speak audio, access a camera, capture the screen, or call Ollama. Manual runtime testing still matters for changes that affect the app loop.

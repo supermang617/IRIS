@@ -33,4 +33,4 @@ Observed screen content, OCR text, documents, webpages, memory search results, H
 
 Sensitive content should be redacted before logs, memory proposals, and model-safe context where feasible. Redaction is a defense layer, not a complete security boundary.
 
-Report security issues privately to Alejandro Pinto before public disclosure.
+Report security issues privately to Alejandro Pinto at super.mangmail@gmail.com before public disclosure.

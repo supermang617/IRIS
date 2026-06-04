@@ -54,6 +54,8 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "src-tauri/icons/icon.ico",
         "app/index.html",
         "docs/adaptive-shell.md",
+        "docs/download-and-run.md",
+        ".github/workflows/bug-check.yml",
         "plugins/hermes_sidecar/sidecar.py",
         "plugins/memory/iris_broker/provider.py",
         "profiles/iris_restricted.json",
@@ -74,15 +76,29 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let security = read(root.join("SECURITY.md"))?;
     let spec = read(root.join("SPEC.md"))?;
     let limitations = read(root.join("known-limitations.md"))?;
+    let download = read(root.join("docs/download-and-run.md"))?;
+    let ci = read(root.join(".github/workflows/bug-check.yml"))?;
 
     for (name, content) in [
         ("README.md", &readme),
         ("CONTRIBUTING.md", &contributing),
         ("NOTICE.md", &notice),
         ("SPEC.md", &spec),
+        ("docs/download-and-run.md", &download),
     ] {
         if !content.contains("Produced by Alejandro Pinto") {
             return Err(format!("{name} must credit Alejandro Pinto"));
+        }
+    }
+    for (name, content) in [
+        ("README.md", &readme),
+        ("CONTRIBUTING.md", &contributing),
+        ("NOTICE.md", &notice),
+        ("SECURITY.md", &security),
+        ("docs/download-and-run.md", &download),
+    ] {
+        if !content.contains("super.mangmail@gmail.com") {
+            return Err(format!("{name} must include the public contact email"));
         }
     }
     if !license.contains("MIT License") || !license.contains("Alejandro Pinto") {
@@ -121,6 +137,28 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !notice.contains("Ollama") || !notice.contains("Kokoro") || !notice.contains("Whisper") {
         return Err("NOTICE.md must include third-party model/runtime notices".to_string());
+    }
+    for required in [
+        "cargo fmt --all -- --check",
+        "cargo build --workspace",
+        "cargo test --workspace",
+        "cargo clippy --workspace",
+        "cargo run -p xtask",
+        "npm run test:voice",
+    ] {
+        if !ci.contains(required) {
+            return Err(format!(
+                "bug-check GitHub Actions workflow missing `{required}`"
+            ));
+        }
+    }
+    if !download.contains("git clone https://github.com/supermang617/IRIS.git")
+        || !download.contains("docs/manual-test.md")
+        || !download.contains("Bug fixes")
+    {
+        return Err(
+            "download guide must describe cloning, manual testing, and bug-fix scope".to_string(),
+        );
     }
     Ok(())
 }

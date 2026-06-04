@@ -36,6 +36,31 @@ The project shall not assume or enforce any single development environment, edit
 
 These instructions exist to enable successful construction of Iris, not to obstruct it. When conflicts arise between strict safety rules and the practical needs of building a capable assistant, the user's judgment on necessary methods shall take precedence. The development agent must always remain aligned with enabling maximum progress while documenting and highlighting any safety implications.
 
+## Current Public Baseline
+
+The public repository is source-first and should remain easy for users to clone, validate, manually test, and submit narrow fixes. Keep contact text exactly as `super.mangmail@gmail.com` wherever a public email is needed.
+
+Allowed public contribution scope: bug fixes, diagnostics fixes, documentation fixes, compatibility fixes, and safety-preserving test coverage for existing behavior.
+
+The active runtime baseline includes local Ollama text/vision inference, native local ASR, Kokoro ONNX TTS, one-shot image/camera/screen-area evidence probes, Iris-owned local memory, restricted Hermes memory broker/staging, and OneDrive cold-archive policy only.
+
+Hermes remains disabled by default, fail-closed, text-only, sequential, single-model, and restricted to `iris_query_memory` and `iris_propose_memory`. Hermes must not expose acting tools or access shell, file edit, browser, clipboard, window, process, automation, plugin, OneDrive, raw memory, model switching, model pulling, fallback-model, or external-network surfaces.
+
+Before a public cleanup commit or push, run:
+
+```powershell
+cargo fmt --all -- --check
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace
+cargo run -p xtask
+cargo run -p iris-runtime -- --self-check
+cargo run -p iris-runtime -- --dashboard-json
+npm run test:voice
+git diff --check
+git status --short
+```
+
 ## Deferred Phase 1 Behavior Rules Layer
 
 When Alejandro directs work on the Phase 1 behavior/rules layer, finalize that behavior/rules layer only. Do not redesign or expand Iris around it.

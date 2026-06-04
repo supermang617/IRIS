@@ -10,7 +10,8 @@ Project Iris is built on local-first, open tooling and local model infrastructur
 
 - Rust and Cargo.
 - Tauri.
-- Node.js test runner for frontend state tests.
+- Node.js/npm and the Node.js test runner for frontend state tests.
+- GitHub Actions for public bug-check CI.
 - Ollama for local model serving.
 - Kokoro ONNX TTS assets and the Python `kokoro-onnx` helper path.
 - Whisper local ASR model/runtime.

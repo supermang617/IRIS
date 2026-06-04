@@ -4,7 +4,7 @@ Produced by Alejandro Pinto.
 
 Project Iris is a local-first Windows assistant prototype. Iris may see, listen, think, remember with permission, and respond. Iris may not act on the computer.
 
-This repository is intended to be public and easy to test. Contributions should stay narrowly focused on bug fixes, safety-preserving diagnostics, documentation fixes, and small compatibility repairs unless Alejandro explicitly approves a broader feature change.
+This repository is public and source-first so people can inspect, test, and submit narrow fixes. Contributions should stay focused on bug fixes, safety-preserving diagnostics, documentation fixes, compatibility repairs, and tests for existing behavior unless Alejandro explicitly approves a broader feature change.
 
 Contact: super.mangmail@gmail.com
 
@@ -31,7 +31,7 @@ No fallback models, model pulling, model auto-selection, critic/worker split, mu
 - `profiles/`: restricted Hermes profile and policy metadata.
 - `models/`: Iris-owned local ASR/TTS assets only. Ollama LLM blobs stay in Ollama's managed store.
 - `tools/`: local helpers such as Kokoro ONNX TTS.
-- `docs/`: manual testing, roadmap, and deferred implementation notes.
+- `docs/`: download instructions, manual testing, roadmap, and memory boundary notes.
 - `capabilities/`: capability ledger for crate permissions.
 - `xtask/`: repository audit checks.
 
@@ -71,6 +71,8 @@ Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice dec
 
 ## Run
 
+Download and setup guide: `docs/download-and-run.md`.
+
 Console:
 
 ```powershell
@@ -101,3 +103,5 @@ Diagnostics:
 ## Public Use
 
 This code is provided for local testing, learning, and bug-fix collaboration. Before publishing, confirm third-party model and asset licenses for anything you redistribute. Ollama model blobs, Kokoro model files, Whisper model files, and other downloaded assets may have their own license terms and should not be assumed to be covered by this repository license.
+
+The root `package.json` remains marked `"private": true` to prevent accidental npm publication. That does not limit GitHub source access, cloning, local testing, or pull requests.
