@@ -1,0 +1,101 @@
+{
+  "name": "iris_restricted",
+  "enabled": false,
+  "inference": {
+    "provider": "ollama_local",
+    "model_source": "manifest.json",
+    "endpoint": "http://127.0.0.1:11434/api/generate",
+    "endpoint_source": "iris_ollama_default",
+    "uses_existing_iris_model": true,
+    "model_switching": false,
+    "model_pulling": false,
+    "model_auto_selection": false,
+    "critic_worker_split": false,
+    "multi_model_debate": false,
+    "fallback_models": false,
+    "parallel_inference_streams": 1,
+    "sequential_tasks_only": true
+  },
+  "thermal_policy": {
+    "gpu_dogpiling_guard": "single_sequential_stream",
+    "hardware_tier_routing": false,
+    "model_optimization": false,
+    "parallel_hermes_tasks": false
+  },
+  "memory": {
+    "provider": "iris_broker",
+    "broker_url": "http://127.0.0.1:48731",
+    "startup_status_check": true,
+    "fail_closed": true,
+    "direct_database_access": false,
+    "active_memory_write": false
+  },
+  "archive_policy": {
+    "onedrive_sync_enabled_by_default": false,
+    "active_memory_location": "local_iris_owned_only",
+    "cold_archive_location": "onedrive_encrypted_only",
+    "archive_extension": ".iris-memory-archive.enc",
+    "export_requires_encryption": true,
+    "import_requires_iris_reconciliation": true,
+    "hermes_onedrive_access": false,
+    "live_sqlite_on_onedrive": false,
+    "live_json_memory_on_onedrive": false,
+    "export_available": false
+  },
+  "sidecar": {
+    "enabled_by_default": false,
+    "lifecycle_owner": "iris",
+    "script": "plugins/hermes_sidecar/sidecar.py",
+    "transport": "stdin_stdout_json",
+    "max_task_chars": 2000,
+    "max_response_chars": 4000,
+    "runtime_tool_audit": true,
+    "startup_fails_on_acting_tools": true,
+    "prompt_injection_guard": true,
+    "task_modes": [
+      "reason",
+      "research",
+      "code_suggestion"
+    ],
+    "research_requires_explicit_user_request": true,
+    "code_suggestion_text_only": true,
+    "sequential_tasks_only": true
+  },
+  "limits": {
+    "max_broker_request_bytes": 16384,
+    "max_memory_query_chars": 120,
+    "max_memory_proposal_chars": 240,
+    "max_task_chars": 2000,
+    "max_response_chars": 4000,
+    "max_memory_results": 10
+  },
+  "tools": [
+    "iris_query_memory",
+    "iris_propose_memory"
+  ],
+  "acting_tools": [],
+  "forbidden_tools": [
+    "terminal",
+    "shell",
+    "process",
+    "command",
+    "code_execution",
+    "file_write",
+    "file_edit",
+    "patch",
+    "browser",
+    "computer",
+    "window",
+    "clipboard",
+    "scheduler",
+    "cron",
+    "automation_plugin"
+  ],
+  "network": {
+    "external_network": false,
+    "allowed_hosts": [
+      "127.0.0.1",
+      "localhost"
+    ]
+  }
+}

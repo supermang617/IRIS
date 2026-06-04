@@ -53,6 +53,30 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 27. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
 28. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
 
+## Hermes and Memory Boundary Checks
+
+Run these from `C:\Projects\IRIS` before opening the desktop shell:
+
+```powershell
+cargo run -p xtask
+cargo run -p iris-runtime -- --self-check
+cargo run -p iris-runtime -- --dashboard-json
+```
+
+Expected:
+
+- Hermes is disabled by default unless explicitly enabled by environment flags.
+- Hermes exposes only `iris_query_memory` and `iris_propose_memory`.
+- Hermes cannot write active memory.
+- Hermes cannot access raw memory files.
+- Hermes cannot access OneDrive.
+- Hermes cannot run commands, edit files, control browsers/windows, use clipboard, or operate the computer.
+- Memory search is disabled unless `IRIS_HERMES_ALLOW_SEARCH=true`.
+- Memory proposals go to staging and require Iris/user approval before promotion.
+- OneDrive archive export remains unavailable until real encryption is implemented.
+- OneDrive paths are cold archive only and must end with `.iris-memory-archive.enc`.
+- Live memory JSON/SQLite stores must not be placed under OneDrive.
+
 ## If Wake Word Fails
 
 Open this file after closing the app:
