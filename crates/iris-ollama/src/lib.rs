@@ -10,6 +10,7 @@ const DEFAULT_KEEP_ALIVE: &str = "10m";
 const DEFAULT_NUM_PREDICT: u32 = 384;
 const MAX_HISTORY_CHARS: usize = 6_000;
 const MAX_MEMORY_CHARS: usize = 2_000;
+const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationTurn {
@@ -218,6 +219,7 @@ impl OllamaClient {
         image_path: &Path,
         user_prompt: &str,
     ) -> Result<String, String> {
+        validate_image_probe_path(image_path)?;
         let bytes = std::fs::read(image_path)
             .map_err(|err| format!("failed to read image path {}: {err}", image_path.display()))?;
         self.try_respond_to_visual_bytes(
@@ -279,6 +281,41 @@ impl OllamaClient {
         }
         Ok(text.to_string())
     }
+}
+
+fn validate_image_probe_path(image_path: &Path) -> Result<(), String> {
+    let extension = image_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "image probe supports png, jpg, jpeg, and webp files".to_string())?;
+    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+        return Err("image probe supports png, jpg, jpeg, and webp files".to_string());
+    }
+
+    let metadata = std::fs::metadata(image_path).map_err(|err| {
+        format!(
+            "failed to inspect image path {}: {err}",
+            image_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "image path is not a file: {}",
+            image_path.display()
+        ));
+    }
+    if metadata.len() == 0 {
+        return Err("image probe requires non-empty image bytes".to_string());
+    }
+    if metadata.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "image probe file is too large: {} bytes; limit is {} bytes",
+            metadata.len(),
+            MAX_IMAGE_BYTES
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -551,6 +588,42 @@ mod tests {
         assert_eq!(base64_encode(b"f"), "Zg==");
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
+    }
+
+    #[test]
+    fn image_probe_path_rejects_unsupported_extensions_before_reading_as_image() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "iris_unsupported_image_probe_{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"not an image").unwrap();
+
+        let err = validate_image_probe_path(&path).unwrap_err();
+
+        std::fs::remove_file(path).unwrap();
+        assert!(err.contains("png, jpg, jpeg, and webp"));
+    }
+
+    #[test]
+    fn image_probe_path_rejects_empty_images() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "iris_empty_image_probe_{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"").unwrap();
+
+        let err = validate_image_probe_path(&path).unwrap_err();
+
+        std::fs::remove_file(path).unwrap();
+        assert!(err.contains("non-empty"));
     }
 
     #[test]

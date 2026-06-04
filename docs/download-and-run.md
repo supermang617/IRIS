@@ -4,18 +4,75 @@ Produced by Alejandro Pinto.
 
 Contact: super.mangmail@gmail.com
 
-Project Iris is published source-first. The repository license covers the source code, not third-party model files or downloaded assets.
+Project Iris is available as a portable Windows ZIP when a release asset named
+`iris-windows.zip` is attached to a GitHub Release. The repository license covers
+the source code, not third-party model files or downloaded assets.
 
 ## Prerequisites
 
 - Windows 10 or Windows 11.
-- Git, Rust/Cargo, Node.js/npm, and WebView2 Runtime.
-- Ollama running locally with `huihui_ai/gemma-4-abliterated:e2b` available.
-- Python for the Kokoro helper, with `kokoro-onnx` and `soundfile` installed.
-- Local ASR and TTS assets under `models/`, including `models/whisper/ggml-tiny.en.bin` and the Kokoro assets declared in `manifest.json`.
-- `libclang` available for `whisper-rs` builds. The local developer checkout pins `LIBCLANG_PATH` in `.cargo/config.toml`; other machines may need to set that path to their own LLVM or Python clang package.
+- Microsoft Edge WebView2 Runtime.
+- Ollama running locally on `127.0.0.1:11434` with
+  `huihui_ai/gemma-4-abliterated:e2b` available.
+- Python is required only for Kokoro TTS helper use. The portable ZIP includes
+  the Kokoro model and voice files, but Python packages such as `kokoro-onnx`
+  and `soundfile` must be installed by the user if TTS helper execution is used.
 
-## Get the Source
+Iris remains local-only. Runtime model traffic is restricted to local Ollama
+loopback. Iris does not add computer automation, shell execution tools, browser
+control, clipboard control, plugin execution, or external cloud/API calls.
+
+## Download the Portable ZIP
+
+1. Open the GitHub Release for `supermang617/IRIS`.
+2. Download `iris-windows.zip` and `iris-windows.zip.sha256`.
+3. Extract `iris-windows.zip` to a normal user folder, for example:
+
+```powershell
+Expand-Archive .\iris-windows.zip -DestinationPath "$env:USERPROFILE\Iris"
+```
+
+4. Optional integrity check:
+
+```powershell
+$expected = (Get-Content .\iris-windows.zip.sha256 -Raw).Split(" ")[0]
+$actual = (Get-FileHash .\iris-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($expected -ne $actual) { throw "SHA256 mismatch" }
+```
+
+## Run Iris
+
+From the extracted folder:
+
+```powershell
+.\Start Iris.bat
+```
+
+For a non-destructive startup check:
+
+```powershell
+.\Start Iris.ps1 --self-check
+```
+
+The launcher fails clearly if bundled files such as `manifest.json`,
+`bin\iris-runtime.exe`, `bin\iris-tauri.exe`, Kokoro assets, or Whisper assets
+are missing.
+
+## Included Runtime Files
+
+- `Start Iris.bat` and `Start Iris.ps1`
+- `bin\iris-runtime.exe`
+- `bin\iris-tauri.exe`
+- `manifest.json`
+- `models\kokoro\kokoro-v1.0.onnx`
+- `models\kokoro\voices-v1.0.bin`
+- `models\whisper\ggml-tiny.en.bin`
+- `tools\kokoro_tts.py`
+- `profiles\iris_restricted.json`
+- `capabilities\v0_1_capability_ledger.toml`
+- user-facing docs, license, notice, security notes, known limitations, assets
+
+## Source Checkout
 
 Clone the public repository:
 
@@ -40,12 +97,13 @@ cargo run -p iris-runtime -- --self-check
 cargo run -p iris-runtime -- --dashboard-json
 npm install
 npm run test:voice
+scripts\test_vision_text_diagnostics.ps1
 git diff --check
 ```
 
 GitHub Actions also runs the lightweight bug checker on pushes and pull requests. It does not launch the desktop runtime, use a microphone, speak audio, access a camera, capture the screen, or call Ollama.
 
-## Run Iris
+## Run Iris from Source
 
 Console check:
 

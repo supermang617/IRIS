@@ -605,11 +605,18 @@ async fn warm_ollama_model() -> Result<(), String> {
         let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
         let client = iris_ollama::OllamaClient::new(settings)?;
         let gated_context = iris_ui::gate_typed_text("warm up");
-        let _ = client.respond_with_history_and_memories(&gated_context, &[], &[]);
+        let response = client.respond_with_history_and_memories(&gated_context, &[], &[]);
+        if is_local_model_unavailable_response(&response.text) {
+            return Err(response.text);
+        }
         Ok(())
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+fn is_local_model_unavailable_response(text: &str) -> bool {
+    text.trim_start().starts_with("Local model unavailable:")
 }
 
 fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
@@ -2628,6 +2635,14 @@ mod tests {
         assert!(body.contains("\"maxRequestBytes\":16384"));
         assert!(body.contains("\"maxQueryChars\":120"));
         assert!(body.contains("\"maxProposalChars\":240"));
+    }
+
+    #[test]
+    fn ollama_warmup_treats_unavailable_model_as_error() {
+        assert!(is_local_model_unavailable_response(
+            "Local model unavailable: HTTP status client error (404 Not Found)"
+        ));
+        assert!(!is_local_model_unavailable_response("ready"));
     }
 }
 
