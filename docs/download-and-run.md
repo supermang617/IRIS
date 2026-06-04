@@ -98,6 +98,7 @@ cargo run -p iris-runtime -- --dashboard-json
 npm install
 npm run test:voice
 scripts\test_vision_text_diagnostics.ps1
+scripts\test_release_model_e2e.ps1
 git diff --check
 ```
 
