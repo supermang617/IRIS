@@ -22,6 +22,23 @@ Contact: super.mangmail@gmail.com
 
 No fallback models, model pulling, model auto-selection, critic/worker split, multi-model debate, external runtime network, clipboard access, browser automation, or computer control are enabled.
 
+## What Iris Is Becoming
+
+Iris is built to get more useful over time without making the user less safe.
+The design goal is a personal assistant that can pick up context from
+user-approved memory, grow with the person, and remain local-first. The current
+release already separates direct user instructions from untrusted evidence such
+as images, documents, screen text, memory search results, Hermes output, and
+model output. That boundary keeps prompt injection from becoming permission to
+act, expose private context, or rewrite memory.
+
+Iris, Hermes, and OneDrive have separate roles. Iris owns active local memory and
+the final response path. Hermes is a restricted text-only helper that can query
+approved memory and propose staged memory, but cannot write active memory or act
+on the computer. OneDrive is currently limited to encrypted cold-archive policy;
+future releases can build toward user-approved memory restore across machines
+without putting live memory databases directly in OneDrive.
+
 ## Project Map
 
 - `app/`: compact Tauri web UI and voice-loop state.
@@ -64,6 +81,7 @@ cargo run -p iris-runtime -- --dashboard-json
 npm run test:voice
 scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
+scripts\iris_preflight_wizard.ps1
 git diff --check
 ```
 
@@ -74,6 +92,8 @@ Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice dec
 ## Run
 
 Download and setup guide: `docs/download-and-run.md`.
+Architecture notes: `docs/iris-architecture.md`.
+Beginner preflight guide: `docs/installer-preflight.md`.
 
 Console:
 

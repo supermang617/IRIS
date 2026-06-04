@@ -15,6 +15,7 @@ This repository is a Windows-only v0.1 prototype.
 - Local memory exists, but active-memory promotion is intentionally bounded.
 - Hermes integration is restricted, text-only, disabled by default, and not an acting plugin system.
 - OneDrive archive export is policy-gated and unavailable until real encryption is implemented.
+- The preflight wizard is read-only. It tells users what to fix, but it does not install WebView2, Ollama, models, Python packages, or OneDrive components.
 - No system control.
 - No clipboard access.
 - No browser/window automation.

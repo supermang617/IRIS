@@ -44,7 +44,11 @@ try {
     $required = @(
         "Start Iris.bat",
         "Start Iris.ps1",
+        "Check Iris Preflight.bat",
+        "Iris Preflight.ps1",
         "README_RELEASE.md",
+        "docs\installer-preflight.md",
+        "docs\iris-architecture.md",
         "manifest.json",
         "bin\iris-runtime.exe",
         "bin\iris-tauri.exe",

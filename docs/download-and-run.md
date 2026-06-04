@@ -42,6 +42,16 @@ if ($expected -ne $actual) { throw "SHA256 mismatch" }
 
 ## Run Iris
 
+First run the read-only preflight wizard:
+
+```powershell
+.\Check Iris Preflight.bat
+```
+
+It checks Windows, RAM, disk space, WebView2, Ollama, the configured model,
+Kokoro/Whisper assets, optional Python speech packages, and local-only policy.
+It does not install, download, pull models, or change your computer.
+
 From the extracted folder:
 
 ```powershell
@@ -99,6 +109,7 @@ npm install
 npm run test:voice
 scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
+scripts\iris_preflight_wizard.ps1
 git diff --check
 ```
 
@@ -129,3 +140,10 @@ Then follow `docs/manual-test.md`.
 ## Contribution Boundary
 
 Bug fixes, compatibility repairs, diagnostics fixes, documentation corrections, and safety-preserving tests are welcome. Do not add action tools, model switching, fallback models, external runtime network behavior, or broader feature changes without explicit approval from Alejandro.
+
+## Architecture Notes
+
+See `docs/iris-architecture.md` for the current Iris/Hermes/OneDrive boundary.
+In v0.1, Iris can use local memory and restricted Hermes staging. OneDrive is
+not an active live-memory sync feature yet; it is a future encrypted cold-archive
+and restore direction.

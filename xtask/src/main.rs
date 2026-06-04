@@ -55,6 +55,9 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "app/index.html",
         "docs/adaptive-shell.md",
         "docs/download-and-run.md",
+        "docs/installer-preflight.md",
+        "docs/iris-architecture.md",
+        "scripts/iris_preflight_wizard.ps1",
         ".github/workflows/bug-check.yml",
         "plugins/hermes_sidecar/sidecar.py",
         "plugins/memory/iris_broker/provider.py",
@@ -77,6 +80,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let spec = read(root.join("SPEC.md"))?;
     let limitations = read(root.join("known-limitations.md"))?;
     let download = read(root.join("docs/download-and-run.md"))?;
+    let architecture = read(root.join("docs/iris-architecture.md"))?;
     let ci = read(root.join(".github/workflows/bug-check.yml"))?;
 
     for (name, content) in [
@@ -159,6 +163,12 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         return Err(
             "download guide must describe cloning, manual testing, and bug-fix scope".to_string(),
         );
+    }
+    if !architecture.contains("That is not fully active in v0.1")
+        || !architecture.contains("prompt-injection defense")
+        || !architecture.contains("OneDrive is currently a policy target")
+    {
+        return Err("architecture doc must distinguish current Iris/Hermes/OneDrive capability from future memory roaming".to_string());
     }
     Ok(())
 }
