@@ -22,6 +22,8 @@ $zipPath = Join-Path $distRoot "iris-windows.zip"
 $shaPath = "$zipPath.sha256"
 $msixPath = Join-Path $distRoot "iris-windows.msix"
 $msixShaPath = "$msixPath.sha256"
+$certExportPath = Join-Path $distRoot "iris-msix-signing.cer"
+$certExportShaPath = "$certExportPath.sha256"
 
 function Find-Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -117,12 +119,13 @@ $manifest = @"
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
-  IgnorableNamespaces="uap desktop">
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap desktop rescap">
   <Identity Name="ProjectIris.LocalAssistant" Publisher="$Publisher" Version="$Version" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>Project Iris</DisplayName>
     <PublisherDisplayName>Alejandro Pinto</PublisherDisplayName>
-    <Logo>VFS\ProgramFilesX64\Iris\assets\iris_pet\iris_pet_icon.svg</Logo>
+    <Logo>VFS\ProgramFilesX64\Iris\assets\iris-logo-256.png</Logo>
   </Properties>
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26200.0" />
@@ -130,9 +133,12 @@ $manifest = @"
   <Resources>
     <Resource Language="en-us" />
   </Resources>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
   <Applications>
     <Application Id="Iris" Executable="VFS\ProgramFilesX64\Iris\bin\iris-tauri.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="Project Iris" Description="Local-first Iris assistant" BackgroundColor="transparent" Square150x150Logo="VFS\ProgramFilesX64\Iris\assets\iris_pet\iris_pet_icon.svg" Square44x44Logo="VFS\ProgramFilesX64\Iris\assets\iris_pet\iris_pet_icon.svg" />
+      <uap:VisualElements DisplayName="Project Iris" Description="Local-first Iris assistant" BackgroundColor="transparent" Square150x150Logo="VFS\ProgramFilesX64\Iris\assets\iris-logo-256.png" Square44x44Logo="VFS\ProgramFilesX64\Iris\assets\iris-logo-256.png" />
       <Extensions>
         <desktop:Extension Category="windows.fullTrustProcess" Executable="VFS\ProgramFilesX64\Iris\bin\iris-tauri.exe" />
       </Extensions>
@@ -162,6 +168,15 @@ if (-not $SkipSigning) {
     }
     if ($LASTEXITCODE -ne 0) {
         throw "signtool failed with exit code $LASTEXITCODE"
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath $msixPath
+    if ($signature.SignerCertificate) {
+        Export-Certificate -Cert $signature.SignerCertificate -FilePath $certExportPath -Force | Out-Null
+        $certHash = (Get-FileHash -LiteralPath $certExportPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath $certExportShaPath -Value "$certHash  iris-msix-signing.cer" -Encoding ascii
+        Write-Host "MSIX signing certificate: $certExportPath"
+        Write-Host "MSIX signing certificate SHA256: $certExportShaPath"
+        Write-Host "Certificate SHA256: $certHash"
     }
 }
 

@@ -187,6 +187,8 @@ See `docs/windows-installer.md` for installer, shortcut, upgrade, and uninstall
 behavior.
 See `docs/signed-installer-decision.md` for the MSIX/App Installer signing
 decision and current toolchain blockers.
+See `docs/runtime-orchestration.md` for how Iris, Ollama, and Hermes should run
+together during manual testing.
 In v0.1, Iris can use local memory and restricted Hermes staging. OneDrive is
 not an active live-memory sync feature yet; it is a future encrypted cold-archive
 and restore direction.

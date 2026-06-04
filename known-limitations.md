@@ -6,6 +6,7 @@ This repository is a Windows-only v0.1 prototype.
 - The setup wizard can offer an approved `ollama pull` for the configured model, but Iris runtime itself does not auto-download or switch models.
 - The current installer is a PowerShell per-user wrapper, not a signed MSI/MSIX/EXE.
 - MSIX/App Installer is the recommended signed path, but a trusted signing certificate input is still required before a real signed MSIX can be produced.
+- A self-signed MSIX can be produced for local testing, but normal users should use the ZIP installer until a production-trusted signing certificate is available.
 - No fallback models.
 - No model auto-selection.
 - No multi-model debate.

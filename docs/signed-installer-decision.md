@@ -47,11 +47,22 @@ trusted on that machine. For production distribution, use a publicly trusted
 code-signing path such as Microsoft Azure Artifact Signing or an OV/EV code
 signing certificate.
 
-Current local blocker: Windows SDK packaging tools are present under the Windows
-Kits directory, but no Iris signing certificate input has been provided. The
-repository can verify readiness, but it cannot truthfully produce a signed MSIX
-until `IRIS_SIGNING_CERT_THUMBPRINT`, `IRIS_SIGNING_PFX`, `-CertificateThumbprint`,
-or `-PfxPath` is supplied.
+Local testing can use a self-signed certificate in the current user's
+certificate store. That removes the local build blocker, but it does not make
+the MSIX production-trusted for other users. Production distribution still needs
+Azure Artifact Signing, Microsoft Store signing, or a CA-issued code-signing
+certificate.
+
+The release may include `iris-windows.msix`, `iris-windows.msix.sha256`,
+`iris-msix-signing.cer`, and `iris-msix-signing.cer.sha256` when a local test
+certificate is used. This proves the packaging path, but a beginner should still
+use the ZIP installer unless they understand certificate trust.
+
+Windows App Installer/MSIX deployment checks the app package signing chain. On
+test machines, the certificate generally must be trusted for app deployment,
+often in the Local Machine certificate stores. That trust step can require
+administrator approval. A production trusted certificate avoids this manual
+trust step.
 
 ## First Implemented Slice
 

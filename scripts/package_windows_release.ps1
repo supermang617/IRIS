@@ -77,6 +77,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "docs\installer-preflight.md") -D
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Destination (Join-Path $packageRoot "docs\iris-architecture.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\windows-installer.md") -Destination (Join-Path $packageRoot "docs\windows-installer.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\signed-installer-decision.md") -Destination (Join-Path $packageRoot "docs\signed-installer-decision.md")
+Copy-RequiredFile -Source (Join-Path $repoRoot "docs\runtime-orchestration.md") -Destination (Join-Path $packageRoot "docs\runtime-orchestration.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "tools\kokoro_tts.py") -Destination (Join-Path $packageRoot "tools\kokoro_tts.py")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_preflight_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Preflight.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_setup_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Setup Wizard.ps1")

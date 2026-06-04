@@ -64,6 +64,7 @@ try {
         "docs\iris-architecture.md",
         "docs\windows-installer.md",
         "docs\signed-installer-decision.md",
+        "docs\runtime-orchestration.md",
         "manifest.json",
         "bin\iris-runtime.exe",
         "bin\iris-tauri.exe",

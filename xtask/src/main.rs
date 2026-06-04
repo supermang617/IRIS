@@ -58,11 +58,13 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
         "docs/signed-installer-decision.md",
+        "docs/runtime-orchestration.md",
         "docs/windows-installer.md",
         "scripts/install_iris_windows.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
         "scripts/package_windows_msix.ps1",
+        "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
         "scripts/test_windows_installer.ps1",
         ".github/workflows/bug-check.yml",
@@ -90,6 +92,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let architecture = read(root.join("docs/iris-architecture.md"))?;
     let installer = read(root.join("docs/installer-preflight.md"))?;
     let signed_installer = read(root.join("docs/signed-installer-decision.md"))?;
+    let runtime_orchestration = read(root.join("docs/runtime-orchestration.md"))?;
     let windows_installer = read(root.join("docs/windows-installer.md"))?;
     let ci = read(root.join(".github/workflows/bug-check.yml"))?;
 
@@ -204,6 +207,16 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     {
         return Err(
             "signed installer decision doc must describe MSIX recommendation, tooling, signing, and safety boundary"
+                .to_string(),
+        );
+    }
+    if !runtime_orchestration.contains("Ollama runs as the local model service")
+        || !runtime_orchestration.contains("Hermes remains a restricted Iris-owned sidecar")
+        || !runtime_orchestration.contains("parallelInferenceStreams: 1")
+        || !runtime_orchestration.contains("Do not configure Hermes as a Windows startup app yet")
+    {
+        return Err(
+            "runtime orchestration doc must describe Iris/Ollama/Hermes process model and settings"
                 .to_string(),
         );
     }
