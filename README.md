@@ -84,6 +84,7 @@ scripts\test_release_model_e2e.ps1
 scripts\iris_preflight_wizard.ps1
 scripts\iris_setup_wizard.ps1 -NonInteractive
 scripts\test_windows_installer.ps1
+scripts\test_windows_signed_installer_readiness.ps1
 git diff --check
 ```
 
@@ -97,6 +98,7 @@ Download and setup guide: `docs/download-and-run.md`.
 Architecture notes: `docs/iris-architecture.md`.
 Beginner preflight guide: `docs/installer-preflight.md`.
 Windows installer plan: `docs/windows-installer.md`.
+Signed installer decision: `docs/signed-installer-decision.md`.
 The portable release includes `Iris Setup Wizard.bat` for beginner setup and
 `Check Iris Preflight.bat` for read-only diagnostics.
 

@@ -57,10 +57,13 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/download-and-run.md",
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
+        "docs/signed-installer-decision.md",
         "docs/windows-installer.md",
         "scripts/install_iris_windows.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
+        "scripts/package_windows_msix.ps1",
+        "scripts/test_windows_signed_installer_readiness.ps1",
         "scripts/test_windows_installer.ps1",
         ".github/workflows/bug-check.yml",
         "plugins/hermes_sidecar/sidecar.py",
@@ -86,6 +89,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let download = read(root.join("docs/download-and-run.md"))?;
     let architecture = read(root.join("docs/iris-architecture.md"))?;
     let installer = read(root.join("docs/installer-preflight.md"))?;
+    let signed_installer = read(root.join("docs/signed-installer-decision.md"))?;
     let windows_installer = read(root.join("docs/windows-installer.md"))?;
     let ci = read(root.join(".github/workflows/bug-check.yml"))?;
 
@@ -190,6 +194,16 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     {
         return Err(
             "windows installer doc must describe install path, wrapper, and safety boundary"
+                .to_string(),
+        );
+    }
+    if !signed_installer.contains("MSIX with App Installer")
+        || !signed_installer.contains("makeappx.exe")
+        || !signed_installer.contains("signtool.exe")
+        || !signed_installer.contains("no runtime external network")
+    {
+        return Err(
+            "signed installer decision doc must describe MSIX recommendation, tooling, signing, and safety boundary"
                 .to_string(),
         );
     }

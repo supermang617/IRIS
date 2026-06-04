@@ -62,6 +62,8 @@ try {
         "README_RELEASE.md",
         "docs\installer-preflight.md",
         "docs\iris-architecture.md",
+        "docs\windows-installer.md",
+        "docs\signed-installer-decision.md",
         "manifest.json",
         "bin\iris-runtime.exe",
         "bin\iris-tauri.exe",

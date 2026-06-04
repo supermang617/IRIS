@@ -95,6 +95,11 @@ when the user chooses to run those repair actions.
 
 ## Future Signed Installer
 
-A true signed `.msi`, `.msix`, or `.exe` installer still needs an installer
-toolchain and code-signing certificate. Adding that dependency should be a
-separate approved step after this PowerShell installer wrapper is stable.
+The recommended signed path is MSIX with App Installer. See
+`docs/signed-installer-decision.md`.
+
+A true signed `.msix`, `.msi`, or `.exe` installer still needs an installer
+toolchain and code-signing certificate. The repository now includes
+`scripts\package_windows_msix.ps1` and
+`scripts\test_windows_signed_installer_readiness.ps1` so this can move forward
+without silently installing tools or weakening Iris runtime safety.

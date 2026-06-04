@@ -185,6 +185,8 @@ Bug fixes, compatibility repairs, diagnostics fixes, documentation corrections, 
 See `docs/iris-architecture.md` for the current Iris/Hermes/OneDrive boundary.
 See `docs/windows-installer.md` for installer, shortcut, upgrade, and uninstall
 behavior.
+See `docs/signed-installer-decision.md` for the MSIX/App Installer signing
+decision and current toolchain blockers.
 In v0.1, Iris can use local memory and restricted Hermes staging. OneDrive is
 not an active live-memory sync feature yet; it is a future encrypted cold-archive
 and restore direction.

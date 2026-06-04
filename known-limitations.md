@@ -5,6 +5,7 @@ This repository is a Windows-only v0.1 prototype.
 - Text inference requires Ollama running locally with `huihui_ai/gemma-4-abliterated:e2b` already available.
 - The setup wizard can offer an approved `ollama pull` for the configured model, but Iris runtime itself does not auto-download or switch models.
 - The current installer is a PowerShell per-user wrapper, not a signed MSI/MSIX/EXE.
+- MSIX/App Installer is the recommended signed path, but a trusted signing certificate input is still required before a real signed MSIX can be produced.
 - No fallback models.
 - No model auto-selection.
 - No multi-model debate.
