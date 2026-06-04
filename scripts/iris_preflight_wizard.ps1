@@ -1,3 +1,8 @@
+param(
+    [string]$JsonPath = "",
+    [switch]$Quiet
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -11,6 +16,7 @@ $minimumRamGb = 16
 $recommendedFreeDiskGb = 12
 $reportDir = Join-Path $root "diagnostics"
 $reportPath = Join-Path $reportDir "preflight-report.txt"
+$jsonReportPath = if ($JsonPath) { $JsonPath } else { Join-Path $reportDir "preflight-report.json" }
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-Check {
@@ -95,9 +101,11 @@ function Test-LoopbackOnlyManifest {
     }
 }
 
-Write-Host "Iris preflight wizard"
-Write-Host "Root: $root"
-Write-Host ""
+if (-not $Quiet) {
+    Write-Host "Iris preflight wizard"
+    Write-Host "Root: $root"
+    Write-Host ""
+}
 
 $os = Get-CimInstance Win32_OperatingSystem
 $build = [int]$os.BuildNumber
@@ -204,15 +212,18 @@ $warnCount = @($results | Where-Object Status -eq "WARN").Count
 $passCount = @($results | Where-Object Status -eq "PASS").Count
 
 New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+$generated = Get-Date -Format o
 $lines = New-Object System.Collections.Generic.List[string]
 $lines.Add("Iris preflight report") | Out-Null
 $lines.Add("Root: $root") | Out-Null
-$lines.Add("Generated: $(Get-Date -Format o)") | Out-Null
+$lines.Add("Generated: $generated") | Out-Null
 $lines.Add("Summary: PASS=$passCount WARN=$warnCount FAIL=$failCount") | Out-Null
 $lines.Add("") | Out-Null
 foreach ($result in $results) {
     $line = "[$($result.Status)] $($result.Name): $($result.Detail)"
-    Write-Host $line
+    if (-not $Quiet) {
+        Write-Host $line
+    }
     $lines.Add($line) | Out-Null
     $lines.Add("  Next: $($result.Repair)") | Out-Null
 }
@@ -220,9 +231,34 @@ $lines.Add("") | Out-Null
 $lines.Add("This preflight is read-only. It does not install, download, pull models, change services, edit PATH, or modify OneDrive.") | Out-Null
 Set-Content -LiteralPath $reportPath -Value $lines -Encoding utf8
 
-Write-Host ""
-Write-Host "Report: $reportPath"
-Write-Host "Summary: PASS=$passCount WARN=$warnCount FAIL=$failCount"
+$jsonChecks = @($results | ForEach-Object {
+    [ordered]@{
+        Status = $_.Status
+        Name = $_.Name
+        Detail = $_.Detail
+        Repair = $_.Repair
+    }
+})
+$jsonPayload = [ordered]@{
+    root = $root
+    generated = $generated
+    model_id = $modelId
+    summary = [ordered]@{
+        "pass" = $passCount
+        "warn" = $warnCount
+        "fail" = $failCount
+    }
+    checks = $jsonChecks
+}
+$jsonPayload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $jsonReportPath -Encoding utf8
+
+if (-not $Quiet) {
+    Write-Host ""
+    Write-Host "Report: $reportPath"
+    Write-Host "JSON: $jsonReportPath"
+    Write-Host "Summary: PASS=$passCount WARN=$warnCount FAIL=$failCount"
+}
 if ($failCount -gt 0) {
     exit 1
 }
+exit 0

@@ -42,15 +42,23 @@ if ($expected -ne $actual) { throw "SHA256 mismatch" }
 
 ## Run Iris
 
-First run the read-only preflight wizard:
+First run the setup wizard:
 
 ```powershell
-.\Check Iris Preflight.bat
+.\Iris Setup Wizard.bat
 ```
 
 It checks Windows, RAM, disk space, WebView2, Ollama, the configured model,
 Kokoro/Whisper assets, optional Python speech packages, and local-only policy.
-It does not install, download, pull models, or change your computer.
+It shows PASS/WARN/FAIL steps, official links, and copy/paste repair commands.
+If you approve a repair, it can use allowlisted tools such as `winget`, `pip`,
+or `ollama pull` to install/download the missing local prerequisite.
+
+For a read-only check that never installs or downloads:
+
+```powershell
+.\Check Iris Preflight.bat
+```
 
 From the extracted folder:
 
@@ -71,6 +79,8 @@ are missing.
 ## Included Runtime Files
 
 - `Start Iris.bat` and `Start Iris.ps1`
+- `Iris Setup Wizard.bat` and `Iris Setup Wizard.ps1`
+- `Check Iris Preflight.bat` and `Iris Preflight.ps1`
 - `bin\iris-runtime.exe`
 - `bin\iris-tauri.exe`
 - `manifest.json`
@@ -110,6 +120,7 @@ npm run test:voice
 scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
 scripts\iris_preflight_wizard.ps1
+scripts\iris_setup_wizard.ps1 -NonInteractive
 git diff --check
 ```
 

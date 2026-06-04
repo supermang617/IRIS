@@ -75,6 +75,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "docs\installer-preflight.md") -D
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Destination (Join-Path $packageRoot "docs\iris-architecture.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "tools\kokoro_tts.py") -Destination (Join-Path $packageRoot "tools\kokoro_tts.py")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_preflight_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Preflight.ps1")
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_setup_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Setup Wizard.ps1")
 
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "models") -Destination (Join-Path $packageRoot "models")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "profiles") -Destination (Join-Path $packageRoot "profiles")
@@ -132,9 +133,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%Iris Preflig
 exit /b %ERRORLEVEL%
 '@
 
+$setupBat = @'
+@echo off
+setlocal
+set "IRIS_ROOT=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%Iris Setup Wizard.ps1" %*
+exit /b %ERRORLEVEL%
+'@
+
 Set-Content -LiteralPath (Join-Path $packageRoot "Start Iris.ps1") -Value $startPs1 -Encoding utf8
 Set-Content -LiteralPath (Join-Path $packageRoot "Start Iris.bat") -Value $startBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $packageRoot "Check Iris Preflight.bat") -Value $preflightBat -Encoding ascii
+Set-Content -LiteralPath (Join-Path $packageRoot "Iris Setup Wizard.bat") -Value $setupBat -Encoding ascii
 
 Write-Host "Creating $zipPath"
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force

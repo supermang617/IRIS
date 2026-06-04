@@ -46,6 +46,8 @@ try {
         "Start Iris.ps1",
         "Check Iris Preflight.bat",
         "Iris Preflight.ps1",
+        "Iris Setup Wizard.bat",
+        "Iris Setup Wizard.ps1",
         "README_RELEASE.md",
         "docs\installer-preflight.md",
         "docs\iris-architecture.md",
@@ -72,6 +74,14 @@ try {
     Remove-Item Env:\IRIS_SELF_CHECK -ErrorAction SilentlyContinue
     if ($exitCode -ne 0) {
         throw "Release launcher self-check failed with exit code $exitCode"
+    }
+
+    $setupScript = Join-Path $extractRoot "Iris Setup Wizard.ps1"
+    & $setupScript -NonInteractive
+    $setupExitCode = $LASTEXITCODE
+    Set-Location -LiteralPath $originalLocation
+    if ($setupExitCode -ne 0) {
+        throw "Packaged setup wizard failed with exit code $setupExitCode"
     }
 
     $after = Get-ListeningLoopbackState

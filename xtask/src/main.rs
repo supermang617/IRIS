@@ -58,6 +58,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
         "scripts/iris_preflight_wizard.ps1",
+        "scripts/iris_setup_wizard.ps1",
         ".github/workflows/bug-check.yml",
         "plugins/hermes_sidecar/sidecar.py",
         "plugins/memory/iris_broker/provider.py",
@@ -81,6 +82,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let limitations = read(root.join("known-limitations.md"))?;
     let download = read(root.join("docs/download-and-run.md"))?;
     let architecture = read(root.join("docs/iris-architecture.md"))?;
+    let installer = read(root.join("docs/installer-preflight.md"))?;
     let ci = read(root.join(".github/workflows/bug-check.yml"))?;
 
     for (name, content) in [
@@ -169,6 +171,14 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         || !architecture.contains("OneDrive is currently a policy target")
     {
         return Err("architecture doc must distinguish current Iris/Hermes/OneDrive capability from future memory roaming".to_string());
+    }
+    if !installer.contains("Iris Setup Wizard.bat")
+        || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
+        || !installer.contains("never installs or downloads")
+    {
+        return Err(
+            "installer doc must describe setup wizard repairs and read-only preflight".to_string(),
+        );
     }
     Ok(())
 }

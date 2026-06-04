@@ -48,7 +48,7 @@ without putting live memory databases directly in OneDrive.
 - `profiles/`: restricted Hermes profile and policy metadata.
 - `models/`: Iris-owned local ASR/TTS assets only. Ollama LLM blobs stay in Ollama's managed store.
 - `tools/`: local helpers such as Kokoro ONNX TTS.
-- `docs/`: download instructions, manual testing, roadmap, and memory boundary notes.
+- `docs/`: download instructions, installer flow, manual testing, roadmap, and memory boundary notes.
 - `capabilities/`: capability ledger for crate permissions.
 - `xtask/`: repository audit checks.
 
@@ -82,6 +82,7 @@ npm run test:voice
 scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
 scripts\iris_preflight_wizard.ps1
+scripts\iris_setup_wizard.ps1 -NonInteractive
 git diff --check
 ```
 
@@ -94,6 +95,8 @@ Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice dec
 Download and setup guide: `docs/download-and-run.md`.
 Architecture notes: `docs/iris-architecture.md`.
 Beginner preflight guide: `docs/installer-preflight.md`.
+The portable release includes `Iris Setup Wizard.bat` for beginner setup and
+`Check Iris Preflight.bat` for read-only diagnostics.
 
 Console:
 

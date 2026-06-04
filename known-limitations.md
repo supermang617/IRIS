@@ -3,7 +3,7 @@
 This repository is a Windows-only v0.1 prototype.
 
 - Text inference requires Ollama running locally with `huihui_ai/gemma-4-abliterated:e2b` already available.
-- No model downloader.
+- The setup wizard can offer an approved `ollama pull` for the configured model, but Iris runtime itself does not auto-download or switch models.
 - No fallback models.
 - No model auto-selection.
 - No multi-model debate.
@@ -15,7 +15,7 @@ This repository is a Windows-only v0.1 prototype.
 - Local memory exists, but active-memory promotion is intentionally bounded.
 - Hermes integration is restricted, text-only, disabled by default, and not an acting plugin system.
 - OneDrive archive export is policy-gated and unavailable until real encryption is implemented.
-- The preflight wizard is read-only. It tells users what to fix, but it does not install WebView2, Ollama, models, Python packages, or OneDrive components.
+- The preflight wizard is read-only. The setup wizard can run allowlisted installs/downloads only when the user explicitly approves them.
 - No system control.
 - No clipboard access.
 - No browser/window automation.
