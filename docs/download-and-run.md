@@ -156,6 +156,10 @@ Manual Windows launcher from the repository root:
 
 Then follow `docs/manual-test.md`.
 
+For public v0.1.1 release testing, use
+`docs/public-launch-checklist-v0.1.1.md` and the GitHub manual tester issue
+template.
+
 ## Contribution Boundary
 
 Bug fixes, compatibility repairs, diagnostics fixes, documentation corrections, and safety-preserving tests are welcome. Do not add action tools, model switching, fallback models, external runtime network behavior, or broader feature changes without explicit approval from Alejandro.
