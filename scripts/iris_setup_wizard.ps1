@@ -112,6 +112,17 @@ function Get-RepairPlan {
                 Action = "pip:kokoro"
             }
         }
+        "^Tesseract document OCR$" {
+            return [pscustomobject]@{
+                Title = "Install Tesseract OCR for document images"
+                Description = "This installs a local OCR engine so Iris can read user-selected document images without cloud OCR."
+                Link = "https://github.com/tesseract-ocr/tesseract"
+                Commands = @(
+                    "winget install --id tesseract-ocr.tesseract -e --accept-source-agreements --accept-package-agreements"
+                )
+                Action = "winget:tesseract"
+            }
+        }
         "^Kokoro ONNX model$|^Kokoro voices$|^Whisper ASR model$" {
             return [pscustomobject]@{
                 Title = "Restore bundled Iris model assets"
@@ -193,6 +204,13 @@ function Invoke-Repair {
             }
             & winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -ne 0) { throw "Python winget install failed with exit code $LASTEXITCODE" }
+        }
+        "winget:tesseract" {
+            if (-not (Test-CommandAvailable -Name "winget")) {
+                throw "winget is not available. Use the official link instead: $($Plan.Link)"
+            }
+            & winget install --id tesseract-ocr.tesseract -e --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) { throw "Tesseract winget install failed with exit code $LASTEXITCODE" }
         }
         "start:ollama" {
             if (-not (Test-CommandAvailable -Name "ollama")) {

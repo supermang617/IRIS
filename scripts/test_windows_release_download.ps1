@@ -55,6 +55,7 @@ try {
         "Start Iris.ps1",
         "Check Iris Preflight.bat",
         "Iris Preflight.ps1",
+        "Iris Document OCR.ps1",
         "Iris Setup Wizard.bat",
         "Iris Setup Wizard.ps1",
         "Install Iris.bat",

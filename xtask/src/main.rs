@@ -64,6 +64,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/runtime-orchestration.md",
         "docs/windows-installer.md",
         "scripts/install_iris_windows.ps1",
+        "scripts/iris_document_ocr.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
         "scripts/package_windows_release.ps1",
@@ -220,6 +221,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if !installer.contains("Iris Setup Wizard.bat")
         || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
         || !installer.contains("never installs or downloads")
+        || !installer.contains("Tesseract")
     {
         return Err(
             "installer doc must describe setup wizard repairs and read-only preflight".to_string(),
@@ -286,6 +288,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         .contains("Ollama `/api/show` reports the configured model has `vision`")
         || !manual_end_user_test.contains("Hermes should not be opened separately")
         || !manual_end_user_test.contains("install-iris-windows.ps1")
+        || !manual_end_user_test.contains("Tesseract document OCR")
     {
         return Err(
             "manual end-user test report must capture installer, Hermes, and image-probe status"

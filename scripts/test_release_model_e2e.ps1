@@ -60,8 +60,10 @@ try {
     Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
     $runtime = Join-Path $extractRoot "bin\iris-runtime.exe"
     $launcher = Join-Path $extractRoot "Start Iris.ps1"
+    $documentOcrScript = Join-Path $extractRoot "Iris Document OCR.ps1"
     Require-File -Path $runtime
     Require-File -Path $launcher
+    Require-File -Path $documentOcrScript
 
     & $launcher --self-check | Out-Host
     if ($LASTEXITCODE -ne 0) {
@@ -115,10 +117,6 @@ try {
         -Name "release document image probe"
     $documentText = $documentVision.Output.ToLowerInvariant()
     $documentPassed = $documentText.Contains("iris") -and $documentText.Contains("742")
-    if ($RequireDocumentImage -and -not $documentPassed) {
-        throw "Vision model response did not read the document image text: $($documentVision.Output)"
-    }
-
     Write-Host "Release model E2E passed."
     Write-Host "Capabilities: $($capabilities -join ', ')"
     Write-Host "Text response:"
@@ -128,8 +126,25 @@ try {
     Write-Host "Document vision response:"
     Write-Host $documentVision.Output
     if (-not $documentPassed) {
-        Write-Host "Document image OCR gate: BLOCKED. Rerun with -RequireDocumentImage to fail on this blocker."
+        Write-Host "Ollama document OCR diagnostic: BLOCKED. Tesseract OCR is the document-image gate."
     }
+
+    $documentOcrOutput = & $documentOcrScript -ImagePath $documentImagePath 2>&1
+    $documentOcrExit = $LASTEXITCODE
+    $documentOcrTextRaw = $documentOcrOutput -join "`n"
+    if ($documentOcrExit -ne 0) {
+        throw "release document OCR failed with exit code $documentOcrExit`: $documentOcrTextRaw"
+    }
+    $documentOcrText = $documentOcrTextRaw.ToLowerInvariant()
+    $documentOcrPassed = $documentOcrText.Contains("iris") -and $documentOcrText.Contains("742")
+    if (-not $documentOcrPassed) {
+        throw "Tesseract document OCR response did not read the document image text: $documentOcrTextRaw"
+    }
+    if ($RequireDocumentImage -and -not $documentOcrPassed) {
+        throw "Document-image OCR gate failed: $documentOcrTextRaw"
+    }
+    Write-Host "Document OCR response:"
+    Write-Host $documentOcrTextRaw
 } finally {
     Set-Location -LiteralPath $originalLocation
     Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -17,6 +17,9 @@ the source code, not third-party model files or downloaded assets.
 - Python is required only for Kokoro TTS helper use. The portable ZIP includes
   the Kokoro model and voice files, but Python packages such as `kokoro-onnx`
   and `soundfile` must be installed by the user if TTS helper execution is used.
+- Tesseract OCR is required only for document-image OCR. Iris uses it locally
+  for explicit user-selected document images and treats OCR text as untrusted
+  evidence.
 
 Iris remains local-only. Runtime model traffic is restricted to local Ollama
 loopback. Iris does not add computer automation, shell execution tools, browser
@@ -49,10 +52,11 @@ First run the setup wizard:
 ```
 
 It checks Windows, RAM, disk space, WebView2, Ollama, the configured model,
-Kokoro/Whisper assets, optional Python speech packages, and local-only policy.
-It shows PASS/WARN/FAIL steps, official links, and copy/paste repair commands.
-If you approve a repair, it can use allowlisted tools such as `winget`, `pip`,
-or `ollama pull` to install/download the missing local prerequisite.
+Tesseract OCR, Kokoro/Whisper assets, optional Python speech packages, and
+local-only policy. It shows PASS/WARN/FAIL steps, official links, and
+copy/paste repair commands. If you approve a repair, it can use allowlisted
+tools such as `winget`, `pip`, or `ollama pull` to install/download the missing
+local prerequisite.
 
 For a read-only check that never installs or downloads:
 

@@ -84,6 +84,22 @@ function Test-PythonPackage {
     }
 }
 
+function Find-Tesseract {
+    $command = Get-Command "tesseract" -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    foreach ($candidate in @(
+            "C:\Program Files\Tesseract-OCR\tesseract.exe",
+            "C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
+        )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
 function Test-ConfiguredModelVisionCapability {
     param([Parameter(Mandatory = $true)][string]$ModelId)
 
@@ -188,6 +204,14 @@ if ($ollamaPath) {
         "Install Ollama for Windows, then rerun this preflight. This script will not install it automatically."
     }
     Add-Check -Status $status -Name "Ollama executable" -Detail "ollama was not found on PATH." -Repair $repair
+}
+
+$tesseractPath = Find-Tesseract
+if ($tesseractPath) {
+    $version = (& $tesseractPath --version 2>&1 | Select-Object -First 1)
+    Add-Check -Status "PASS" -Name "Tesseract document OCR" -Detail "Found $version at $tesseractPath." -Repair "No action needed."
+} else {
+    Add-Check -Status "WARN" -Name "Tesseract document OCR" -Detail "Tesseract was not found on PATH or in the default install folder." -Repair "Install Tesseract OCR locally if you want document-image OCR. Iris will not use cloud OCR."
 }
 
 $kokoroModel = Join-Path $root "models\kokoro\kokoro-v1.0.onnx"

@@ -37,7 +37,7 @@ what should work before filing a bug.
 - PASS: Image probe identified a known red-circle fixture.
 - PASS: Hermes remains gated by default and should not be opened separately.
 - PASS: Local self-signed MSIX signature validation passed on the test machine.
-- BLOCKED: Document-image/OCR probing is not reliable on the configured model.
+- PASS: Tesseract document OCR read a known document-image fixture.
 
 Capability note: Ollama `/api/tags` may omit `vision` for
 `huihui_ai/gemma-4-abliterated:e2b`, but `ollama show` and `/api/show` report
@@ -46,10 +46,9 @@ Capability note: Ollama `/api/tags` may omit `vision` for
 
 Document-image note: direct Ollama image calls and Iris runtime image probes
 both failed simple OCR fixtures such as `ALPHA 742`, including deterministic
-short-output direct API calls. The model can inspect images, but the
-document-image milestone should stay blocked until a stronger local OCR-capable
-vision model or a separate approved local OCR component reliably reads known
-document fixtures.
+short-output direct API calls. Iris uses local Tesseract OCR for document-image
+text extraction when Tesseract is installed. OCR output is treated as untrusted
+evidence, not instruction.
 
 ## Beginner Manual Test Checklist
 
@@ -90,7 +89,16 @@ document fixtures.
     Hermes should remain disabled unless explicitly enabled from the Iris desktop
     shell; it should not expose acting tools.
 
-11. Mark image probe as passing only when the setup wizard reports the
+11. From a terminal, test document-image OCR with a local image that contains
+    large printed text:
+
+    ```powershell
+    & "$env:LOCALAPPDATA\Programs\Iris\Iris Document OCR.ps1" -ImagePath "C:\path\to\document-image.png"
+    ```
+
+    The output must start with `OCR text (untrusted evidence):`.
+
+12. Mark image probe as passing only when the setup wizard reports the
     configured Ollama model has `vision` capability and known local test images
     are described correctly.
 

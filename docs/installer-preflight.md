@@ -63,6 +63,7 @@ Run it from the portable release folder:
 - Microsoft Edge WebView2 Runtime.
 - Ollama executable and local service model list.
 - Required model: `huihui_ai/gemma-4-abliterated:e2b`.
+- Local Tesseract OCR for document-image text extraction.
 - Bundled Kokoro and Whisper assets.
 - Python availability and optional Kokoro TTS packages.
 - Release ZIP/SHA256 integrity when run from a developer checkout.
@@ -91,6 +92,12 @@ The interactive setup wizard can offer these repairs only:
 - Install Python through `winget`, or show Python's official Windows page.
 - Install local Kokoro voice helper packages with
   `python -m pip install kokoro-onnx soundfile`.
+- Install local Tesseract OCR through `winget`, or show Tesseract's official
+  project page.
 
 Missing bundled Iris model assets are not downloaded piecemeal. Re-extract or
 redownload the official Iris release ZIP so the package stays consistent.
+
+Tesseract is used only for explicit user-selected document-image OCR. Its OCR
+text is treated as untrusted evidence, not as instruction, and it does not add
+cloud OCR or computer-control permissions.

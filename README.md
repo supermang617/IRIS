@@ -16,6 +16,7 @@ Contact: super.mangmail@gmail.com
 - Configured model: `huihui_ai/gemma-4-abliterated:e2b`.
 - TTS: Kokoro ONNX through the local Python helper, voice `af_heart`.
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.
+- Document-image OCR: local Tesseract OCR when installed.
 - Memory: Iris-owned local memory plus a restricted Hermes broker/staging path.
 - Hermes: optional restricted text-only sidecar, disabled by default.
 - OneDrive archive policy: cold archive only, encrypted archive names must end with `.iris-memory-archive.enc`.
@@ -109,6 +110,7 @@ Console:
 
 ```powershell
 cargo run -p iris-runtime -- --ask "What can you do?"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\iris_document_ocr.ps1" -ImagePath "C:\path\to\document-image.png"
 ```
 
 Desktop shell:
