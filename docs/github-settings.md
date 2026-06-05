@@ -9,7 +9,8 @@ Verify these manually before publishing a public `v0.1.0` release.
   `GITHUB_TOKEN` to read-only.
 - Pull request workflows: disable automatic approval for PRs from forks.
 - Secrets and variables: no unnecessary secrets or variables are required for
-  CI, CodeQL, Dependency Review, Dependabot, or release packaging.
+  CI, GitHub default CodeQL setup, Dependency Review, Dependabot, or release
+  packaging.
 - Release workflow exception: `.github/workflows/release.yml` explicitly
   requests `contents: write` so it can attach release assets on version tags.
 
@@ -17,7 +18,7 @@ Verify these manually before publishing a public `v0.1.0` release.
 
 - Enable Dependabot alerts.
 - Enable Dependabot security updates.
-- Enable CodeQL code scanning alerts.
+- Enable GitHub default CodeQL setup and code scanning alerts.
 - Enable secret scanning alerts if the repository plan supports them.
 - Keep dependency review on pull requests.
 
@@ -42,8 +43,9 @@ Recommended settings after CI is green:
 
 - Require a pull request before merging.
 - Require status checks to pass before merging.
-- Required checks: `CI / Validate`, `CodeQL / Analyze`, and
-  `Dependency Review / Dependency Review`.
+- Required checks: `CI / Validate`, GitHub default CodeQL setup checks, and
+  `Dependency Review / Dependency Review` once branch protection is enabled for
+  pull requests.
 - Require branches to be up to date before merging.
 - Require conversation resolution before merging.
 - Block force pushes.

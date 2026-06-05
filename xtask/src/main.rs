@@ -73,7 +73,6 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/test_windows_installer.ps1",
         ".github/dependabot.yml",
         ".github/workflows/ci.yml",
-        ".github/workflows/codeql.yml",
         ".github/workflows/dependency-review.yml",
         ".github/workflows/release.yml",
         "plugins/hermes_sidecar/sidecar.py",
@@ -258,7 +257,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "contents: write",
         "no unnecessary secrets",
         "Pages source",
-        "CodeQL",
+        "GitHub default CodeQL setup",
         "Dependabot",
         "Branch Protection Recommendation",
     ] {
