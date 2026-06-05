@@ -49,6 +49,23 @@ jobs:
           npm run test:voice
           git diff --check
 
+      - name: Restore release model assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bootstrap = Join-Path $PWD "release\bootstrap"
+          $extract = Join-Path $bootstrap "v0.1.0"
+          New-Item -ItemType Directory -Force -Path $bootstrap | Out-Null
+          gh release download v0.1.0 --repo $env:GITHUB_REPOSITORY --pattern iris-windows.zip --dir $bootstrap --clobber
+          Expand-Archive -LiteralPath (Join-Path $bootstrap "iris-windows.zip") -DestinationPath $extract -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $extract "models") -PathType Container)) {
+            throw "v0.1.0 release ZIP did not contain models."
+          }
+          Copy-Item -LiteralPath (Join-Path $extract "models") -Destination (Join-Path $PWD "models") -Recurse -Force
+          Get-ChildItem -LiteralPath (Join-Path $PWD "models") -Recurse | Select-Object FullName, Length
+
       - name: Package release ZIP
         shell: pwsh
         run: .\scripts\package_windows_release.ps1
