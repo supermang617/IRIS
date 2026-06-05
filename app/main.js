@@ -7,6 +7,7 @@ import {
   validateDocumentSize,
   validateImageSize
 } from "./attachment-state.js";
+import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { classifyVoiceTranscript } from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
@@ -60,6 +61,7 @@ const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
 const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
 const defaultScreenPrompt = "Describe what is visible underneath the Iris window. Keep it brief and natural.";
+const trustedAttachmentObjectUrls = new Set();
 
 class VoiceLatencyTrace {
   constructor() {
@@ -925,6 +927,19 @@ function firstClipboardFile(clipboardData) {
   return clipboardData.files?.[0] || null;
 }
 
+function createTrustedAttachmentObjectUrl(blob) {
+  const url = URL.createObjectURL(blob);
+  trustedAttachmentObjectUrls.add(url);
+  return url;
+}
+
+function revokeTrustedAttachmentObjectUrl(url) {
+  if (!trustedAttachmentObjectUrls.delete(url)) {
+    return;
+  }
+  URL.revokeObjectURL(url);
+}
+
 async function attachFile(file) {
   switch (classifyAttachmentFile(file)) {
     case "image":
@@ -950,7 +965,7 @@ async function readVisionImage(file) {
   }
   validateImageSize(file);
   const buffer = await file.arrayBuffer();
-  const previewUrl = URL.createObjectURL(file);
+  const previewUrl = createTrustedAttachmentObjectUrl(file);
   return {
     name: file.name || "selected-image",
     bytes: Array.from(new Uint8Array(buffer)),
@@ -1039,7 +1054,7 @@ async function snapshotFromStream(stream) {
   return {
     name: "camera-snapshot.jpg",
     bytes: Array.from(new Uint8Array(buffer)),
-    previewUrl: URL.createObjectURL(blob),
+    previewUrl: createTrustedAttachmentObjectUrl(blob),
     kindLabel: "Camera"
   };
 }
@@ -1052,8 +1067,10 @@ async function snapshotFromVideoFile(file) {
   video.muted = true;
   video.playsInline = true;
   video.preload = "metadata";
-  const sourceUrl = URL.createObjectURL(file);
-  video.src = sourceUrl;
+  const sourceUrl = createTrustedAttachmentObjectUrl(file);
+
+  // codeql[js/xss-through-dom] local blob URL minted and tracked by this renderer.
+  video.src = requireTrustedBlobUrl(sourceUrl, trustedAttachmentObjectUrls);
   video.load();
   try {
     await waitForVideoFrame(video, "Video frame timed out.");
@@ -1078,11 +1095,11 @@ async function snapshotFromVideoFile(file) {
     return {
       name: `${(file.name || "video").replace(/\.[^.]+$/, "")}-frame.jpg`,
       bytes: Array.from(new Uint8Array(buffer)),
-      previewUrl: URL.createObjectURL(blob),
+      previewUrl: createTrustedAttachmentObjectUrl(blob),
       kindLabel: "Video frame"
     };
   } finally {
-    URL.revokeObjectURL(sourceUrl);
+    revokeTrustedAttachmentObjectUrl(sourceUrl);
   }
 }
 
@@ -1121,7 +1138,7 @@ function setDocumentAttachment(document) {
 
 function clearAttachment() {
   if (selectedVisionImage?.previewUrl) {
-    URL.revokeObjectURL(selectedVisionImage.previewUrl);
+    revokeTrustedAttachmentObjectUrl(selectedVisionImage.previewUrl);
   }
   selectedVisionImage = null;
   selectedDocument = null;
@@ -1148,7 +1165,9 @@ function renderAttachmentSelection() {
   if (hasImage) {
     const preview = document.createElement("img");
     preview.alt = "";
-    preview.src = selectedVisionImage.previewUrl;
+
+    // codeql[js/xss-through-dom] preview accepts only local blob URLs minted and tracked by this renderer.
+    preview.src = requireTrustedBlobUrl(selectedVisionImage.previewUrl, trustedAttachmentObjectUrls);
     elements.attachmentPreview.append(preview);
     elements.attachmentLabel.textContent = `${selectedVisionImage.kindLabel || "Image"}: ${selectedVisionImage.name}`;
     return;

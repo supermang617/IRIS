@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:voice": "node --test app/voice-state.test.mjs app/attachment-state.test.mjs",
+    "test:voice": "node --test app/voice-state.test.mjs app/attachment-state.test.mjs app/attachment-url.test.mjs",
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build"
