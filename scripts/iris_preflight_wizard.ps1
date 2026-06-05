@@ -17,6 +17,7 @@ $recommendedFreeDiskGb = 12
 $reportDir = Join-Path $root "diagnostics"
 $reportPath = Join-Path $reportDir "preflight-report.txt"
 $jsonReportPath = if ($JsonPath) { $JsonPath } else { Join-Path $reportDir "preflight-report.json" }
+$fastLocalOnly = $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY -eq "1"
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-Check {
@@ -141,15 +142,19 @@ if (Test-WebView2) {
 $ollamaPath = Test-CommandAvailable -Name "ollama"
 if ($ollamaPath) {
     Add-Check -Status "PASS" -Name "Ollama executable" -Detail "Found ollama at $ollamaPath." -Repair "No action needed."
-    $tags = (& ollama list 2>&1) -join "`n"
-    if ($LASTEXITCODE -eq 0) {
-        if ($tags.Contains($modelId)) {
-            Add-Check -Status "PASS" -Name "Configured Ollama model" -Detail "$modelId is available locally." -Repair "No action needed."
-        } else {
-            Add-Check -Status "FAIL" -Name "Configured Ollama model" -Detail "$modelId is not listed by the current Ollama service." -Repair "Install or point Ollama at the existing local model store for $modelId, then rerun this preflight. This script will not pull models automatically."
-        }
+    if ($fastLocalOnly) {
+        Add-Check -Status "WARN" -Name "Configured Ollama model" -Detail "Skipped local Ollama model listing for release smoke diagnostics." -Repair "Run this preflight without IRIS_PREFLIGHT_FAST_LOCAL_ONLY to verify the configured model."
     } else {
-        Add-Check -Status "FAIL" -Name "Ollama service" -Detail "ollama list failed: $tags" -Repair "Start Ollama, then rerun this preflight."
+        $tags = (& ollama list 2>&1) -join "`n"
+        if ($LASTEXITCODE -eq 0) {
+            if ($tags.Contains($modelId)) {
+                Add-Check -Status "PASS" -Name "Configured Ollama model" -Detail "$modelId is available locally." -Repair "No action needed."
+            } else {
+                Add-Check -Status "FAIL" -Name "Configured Ollama model" -Detail "$modelId is not listed by the current Ollama service." -Repair "Install or point Ollama at the existing local model store for $modelId, then rerun this preflight. This script will not pull models automatically."
+            }
+        } else {
+            Add-Check -Status "FAIL" -Name "Ollama service" -Detail "ollama list failed: $tags" -Repair "Start Ollama, then rerun this preflight."
+        }
     }
 } else {
     Add-Check -Status "FAIL" -Name "Ollama executable" -Detail "ollama was not found on PATH." -Repair "Install Ollama for Windows, then rerun this preflight. This script will not install it automatically."

@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package Windows release
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install LLVM for whisper-rs bindgen
+        shell: pwsh
+        run: |
+          choco install llvm -y --no-progress
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install Rust components
+        shell: pwsh
+        run: rustup component add rustfmt clippy
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Validate source
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          cargo build --workspace
+          cargo test --workspace
+          cargo clippy --workspace
+          npm run test:voice
+          git diff --check
+
+      - name: Package release ZIP
+        shell: pwsh
+        run: .\scripts\package_windows_release.ps1
+
+      - name: Smoke test release ZIP
+        shell: pwsh
+        run: .\scripts\test_windows_release_download.ps1
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/dist/iris-windows.zip
+            release/dist/iris-windows.zip.sha256

@@ -25,34 +25,14 @@ control, clipboard control, plugin execution, or external cloud/API calls.
 ## Download the Portable ZIP
 
 1. Open the GitHub Release for `supermang617/IRIS`.
-2. Download `iris-windows.zip`, `iris-windows.zip.sha256`,
-   `install-iris-windows.ps1`, and `install-iris-windows.ps1.sha256`.
-3. Optional installer-wrapper integrity check:
-
-```powershell
-$expected = (Get-Content .\install-iris-windows.ps1.sha256 -Raw).Split(" ")[0]
-$actual = (Get-FileHash .\install-iris-windows.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($expected -ne $actual) { throw "Installer SHA256 mismatch" }
-```
-
-4. Recommended beginner install:
-
-```powershell
-.\install-iris-windows.ps1 -SourceZip .\iris-windows.zip -Sha256Path .\iris-windows.zip.sha256 -RunSetup
-```
-
-This verifies the downloaded ZIP, installs Iris to
-`%LOCALAPPDATA%\Programs\Iris`, runs self-check/setup, and creates Start
-Menu/Desktop shortcuts.
-
-5. Portable-only alternative: extract `iris-windows.zip` to a normal user
-   folder, for example:
+2. Download `iris-windows.zip` and `iris-windows.zip.sha256`.
+3. Extract `iris-windows.zip` to a normal user folder, for example:
 
 ```powershell
 Expand-Archive .\iris-windows.zip -DestinationPath "$env:USERPROFILE\Iris"
 ```
 
-6. Portable ZIP integrity check:
+4. Portable ZIP integrity check:
 
 ```powershell
 $expected = (Get-Content .\iris-windows.zip.sha256 -Raw).Split(" ")[0]

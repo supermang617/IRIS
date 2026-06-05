@@ -55,19 +55,27 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "app/index.html",
         "docs/adaptive-shell.md",
         "docs/download-and-run.md",
+        "docs/github-settings.md",
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
+        "docs/manual-test-checklist-v0.1.0.md",
         "docs/signed-installer-decision.md",
         "docs/runtime-orchestration.md",
         "docs/windows-installer.md",
         "scripts/install_iris_windows.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
+        "scripts/package_windows_release.ps1",
         "scripts/package_windows_msix.ps1",
+        "scripts/test_windows_release_download.ps1",
         "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
         "scripts/test_windows_installer.ps1",
-        ".github/workflows/bug-check.yml",
+        ".github/dependabot.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/codeql.yml",
+        ".github/workflows/dependency-review.yml",
+        ".github/workflows/release.yml",
         "plugins/hermes_sidecar/sidecar.py",
         "plugins/memory/iris_broker/provider.py",
         "profiles/iris_restricted.json",
@@ -94,7 +102,11 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let signed_installer = read(root.join("docs/signed-installer-decision.md"))?;
     let runtime_orchestration = read(root.join("docs/runtime-orchestration.md"))?;
     let windows_installer = read(root.join("docs/windows-installer.md"))?;
-    let ci = read(root.join(".github/workflows/bug-check.yml"))?;
+    let ci = read(root.join(".github/workflows/ci.yml"))?;
+    let release = read(root.join(".github/workflows/release.yml"))?;
+    let dependabot = read(root.join(".github/dependabot.yml"))?;
+    let github_settings = read(root.join("docs/github-settings.md"))?;
+    let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.0.md"))?;
 
     for (name, content) in [
         ("README.md", &readme),
@@ -160,13 +172,34 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "cargo build --workspace",
         "cargo test --workspace",
         "cargo clippy --workspace",
-        "cargo run -p xtask",
         "npm run test:voice",
+        "git diff --check",
     ] {
         if !ci.contains(required) {
+            return Err(format!("CI GitHub Actions workflow missing `{required}`"));
+        }
+    }
+    for required in [
+        "v[0-9]+.[0-9]+.[0-9]+",
+        "scripts\\package_windows_release.ps1",
+        "scripts\\test_windows_release_download.ps1",
+        "release/dist/iris-windows.zip",
+        "release/dist/iris-windows.zip.sha256",
+        "contents: write",
+    ] {
+        if !release.contains(required) {
             return Err(format!(
-                "bug-check GitHub Actions workflow missing `{required}`"
+                "release GitHub Actions workflow missing `{required}`"
             ));
+        }
+    }
+    for required in [
+        "package-ecosystem: cargo",
+        "package-ecosystem: github-actions",
+        "package-ecosystem: npm",
+    ] {
+        if !dependabot.contains(required) {
+            return Err(format!("Dependabot config missing `{required}`"));
         }
     }
     if !download.contains("git clone https://github.com/supermang617/IRIS.git")
@@ -219,6 +252,33 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             "runtime orchestration doc must describe Iris/Ollama/Hermes process model and settings"
                 .to_string(),
         );
+    }
+    for required in [
+        "Actions default token read-only",
+        "contents: write",
+        "no unnecessary secrets",
+        "Pages source",
+        "CodeQL",
+        "Dependabot",
+        "Branch Protection Recommendation",
+    ] {
+        if !github_settings.contains(required) {
+            return Err(format!("GitHub settings doc missing `{required}`"));
+        }
+    }
+    for required in [
+        "iris-windows.zip",
+        "iris-windows.zip.sha256",
+        "Start Iris.ps1 --self-check",
+        "Ollama text ask",
+        "Image probe",
+        "Hermes status",
+        "Local-only binding",
+        "super.mangmail@gmail.com",
+    ] {
+        if !manual_checklist.contains(required) {
+            return Err(format!("manual test checklist missing `{required}`"));
+        }
     }
     Ok(())
 }

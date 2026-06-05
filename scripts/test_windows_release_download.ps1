@@ -6,8 +6,6 @@ $originalLocation = (Get-Location).Path
 
 $zipPath = Join-Path $repoRoot "release\dist\iris-windows.zip"
 $shaPath = "$zipPath.sha256"
-$installerPath = Join-Path $repoRoot "release\dist\install-iris-windows.ps1"
-$installerShaPath = "$installerPath.sha256"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -17,8 +15,8 @@ function Require-File {
 }
 
 function Get-ListeningLoopbackState {
-    $connections = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-        Select-Object LocalAddress, LocalPort, OwningProcess
+    $connections = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+        Select-Object LocalAddress, LocalPort, OwningProcess)
     $nonLoopback = @($connections | Where-Object {
         $_.LocalAddress -notin @("127.0.0.1", "::1")
     })
@@ -30,18 +28,11 @@ function Get-ListeningLoopbackState {
 
 Require-File -Path $zipPath
 Require-File -Path $shaPath
-Require-File -Path $installerPath
-Require-File -Path $installerShaPath
 
 $expectedHash = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split "\s+")[0]
 $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
     throw "SHA256 mismatch. Expected $expectedHash but got $actualHash"
-}
-$expectedInstallerHash = ((Get-Content -LiteralPath $installerShaPath -Raw).Trim() -split "\s+")[0]
-$actualInstallerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($actualInstallerHash -ne $expectedInstallerHash.ToLowerInvariant()) {
-    throw "Installer SHA256 mismatch. Expected $expectedInstallerHash but got $actualInstallerHash"
 }
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-smoke-" + [System.Guid]::NewGuid().ToString("N"))
@@ -91,8 +82,10 @@ try {
     }
 
     $setupScript = Join-Path $extractRoot "Iris Setup Wizard.ps1"
+    $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY = "1"
     & $setupScript -NonInteractive
     $setupExitCode = $LASTEXITCODE
+    Remove-Item Env:\IRIS_PREFLIGHT_FAST_LOCAL_ONLY -ErrorAction SilentlyContinue
     Set-Location -LiteralPath $originalLocation
     if ($setupExitCode -ne 0) {
         throw "Packaged setup wizard failed with exit code $setupExitCode"
@@ -118,6 +111,7 @@ try {
     Write-Host "SHA256: $actualHash"
 } finally {
     Remove-Item Env:\IRIS_SELF_CHECK -ErrorAction SilentlyContinue
+    Remove-Item Env:\IRIS_PREFLIGHT_FAST_LOCAL_ONLY -ErrorAction SilentlyContinue
     Set-Location -LiteralPath $originalLocation
     Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
