@@ -2117,7 +2117,7 @@ fn record_microphone_mono_16khz(
     let supported_config = device
         .default_input_config()
         .map_err(|err| format!("failed to read microphone config: {err}"))?;
-    let sample_rate = supported_config.sample_rate().0;
+    let sample_rate = sample_rate_hz_from_debug(&format!("{:?}", supported_config.sample_rate()))?;
     let channels = usize::from(supported_config.channels());
     let config = supported_config.config();
     let captured = Arc::new(Mutex::new(Vec::<f32>::new()));
@@ -2181,6 +2181,16 @@ fn record_microphone_mono_16khz(
     }
     let resampled = resample_linear(&source, sample_rate, 16_000);
     Ok(pad_audio_with_silence(&resampled, 16_000, 250))
+}
+
+fn sample_rate_hz_from_debug(sample_rate_debug: &str) -> Result<u32, String> {
+    let digits = sample_rate_debug
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>();
+    digits
+        .parse::<u32>()
+        .map_err(|_| format!("failed to read microphone sample rate: {sample_rate_debug}"))
 }
 
 fn wait_for_capture_endpoint(
@@ -2391,6 +2401,16 @@ mod tests {
 - time to first spoken word: n/a\n\
 - total turn time: 1100ms"
         );
+    }
+
+    #[test]
+    fn parses_cpal_sample_rate_debug_shapes() {
+        assert_eq!(
+            sample_rate_hz_from_debug("SampleRate(48000)").unwrap(),
+            48_000
+        );
+        assert_eq!(sample_rate_hz_from_debug("48000").unwrap(), 48_000);
+        assert!(sample_rate_hz_from_debug("SampleRate(?)").is_err());
     }
 
     #[test]
