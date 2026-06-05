@@ -84,6 +84,35 @@ function Test-PythonPackage {
     }
 }
 
+function Test-ConfiguredModelVisionCapability {
+    param([Parameter(Mandatory = $true)][string]$ModelId)
+
+    try {
+        $response = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -Method Get -TimeoutSec 5
+        $models = @($response.models)
+        $model = $models | Where-Object { $_.name -eq $ModelId } | Select-Object -First 1
+        if (-not $model) {
+            Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId was not present in Ollama /api/tags capability metadata." -Repair "Start the Ollama service that owns $ModelId, then rerun this preflight."
+            return
+        }
+
+        $capabilities = @($model.capabilities) + @($model.details.capabilities) | Where-Object { $_ } | Select-Object -Unique
+        if ($capabilities.Count -eq 0) {
+            Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId did not report capability metadata." -Repair "Text/manual install can continue, but image-probe testing is blocked until the configured model reports vision capability."
+            return
+        }
+
+        $capabilityText = ($capabilities -join ", ")
+        if ($capabilities -contains "vision") {
+            Add-Check -Status "PASS" -Name "Configured model vision capability" -Detail "$ModelId reports capabilities: $capabilityText." -Repair "No action needed."
+        } else {
+            Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId reports capabilities: $capabilityText. Vision is not advertised." -Repair "Text/manual install can continue, but image-probe testing is blocked until the configured model reports vision capability."
+        }
+    } catch {
+        Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "Could not query Ollama capability metadata: $($_.Exception.Message)" -Repair "Start Ollama and verify http://127.0.0.1:11434/api/tags locally, then rerun this preflight."
+    }
+}
+
 function Test-LoopbackOnlyManifest {
     $manifestPath = Join-Path $root "manifest.json"
     if (-not (Test-File -Path $manifestPath)) {
@@ -149,6 +178,7 @@ if ($ollamaPath) {
         if ($LASTEXITCODE -eq 0) {
             if ($tags.Contains($modelId)) {
                 Add-Check -Status "PASS" -Name "Configured Ollama model" -Detail "$modelId is available locally." -Repair "No action needed."
+                Test-ConfiguredModelVisionCapability -ModelId $modelId
             } else {
                 Add-Check -Status "FAIL" -Name "Configured Ollama model" -Detail "$modelId is not listed by the current Ollama service." -Repair "Install or point Ollama at the existing local model store for $modelId, then rerun this preflight. This script will not pull models automatically."
             }

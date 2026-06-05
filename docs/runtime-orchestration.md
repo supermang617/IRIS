@@ -68,6 +68,8 @@ path.
 When all pieces are healthy:
 
 - `ollama list` shows `huihui_ai/gemma-4-abliterated:e2b`.
+- Ollama reports `vision` in the configured model capabilities before claiming
+  the image-probe milestone is ready.
 - Iris preflight reports Ollama/model PASS.
 - Iris text ask returns a short local response.
 - Iris image probe describes the known local test image.

@@ -9,6 +9,8 @@ $distRoot = Join-Path $releaseRoot "dist"
 $packageRoot = Join-Path $stagingRoot "iris-windows"
 $zipPath = Join-Path $distRoot "iris-windows.zip"
 $shaPath = "$zipPath.sha256"
+$installerPath = Join-Path $distRoot "install-iris-windows.ps1"
+$installerShaPath = "$installerPath.sha256"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -76,6 +78,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Des
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\windows-installer.md") -Destination (Join-Path $packageRoot "docs\windows-installer.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\signed-installer-decision.md") -Destination (Join-Path $packageRoot "docs\signed-installer-decision.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\runtime-orchestration.md") -Destination (Join-Path $packageRoot "docs\runtime-orchestration.md")
+Copy-RequiredFile -Source (Join-Path $repoRoot "docs\manual-end-user-test-v0.1.0.md") -Destination (Join-Path $packageRoot "docs\manual-end-user-test-v0.1.0.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "tools\kokoro_tts.py") -Destination (Join-Path $packageRoot "tools\kokoro_tts.py")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_preflight_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Preflight.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_setup_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Setup Wizard.ps1")
@@ -164,7 +167,13 @@ Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -F
 
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $shaPath -Value "$hash  iris-windows.zip" -Encoding ascii
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1") -Destination $installerPath
+$installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $installerShaPath -Value "$installerHash  install-iris-windows.ps1" -Encoding ascii
 
 Write-Host "Iris Windows ZIP: $zipPath"
 Write-Host "Iris Windows SHA256: $shaPath"
 Write-Host "SHA256: $hash"
+Write-Host "Iris Windows installer wrapper: $installerPath"
+Write-Host "Iris Windows installer wrapper SHA256: $installerShaPath"
+Write-Host "Installer SHA256: $installerHash"

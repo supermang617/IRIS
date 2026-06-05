@@ -270,6 +270,7 @@ try {
         Write-Host "Start Menu shortcuts: $StartMenuDir"
         Write-Host "Desktop shortcut: $(Join-Path $DesktopDir 'Iris.lnk')"
     }
+    exit 0
 } finally {
     if ($temporaryExtract) {
         Remove-Item -LiteralPath $temporaryExtract -Recurse -Force -ErrorAction SilentlyContinue

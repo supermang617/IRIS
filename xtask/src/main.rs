@@ -59,6 +59,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
         "docs/manual-test-checklist-v0.1.1.md",
+        "docs/manual-end-user-test-v0.1.0.md",
         "docs/signed-installer-decision.md",
         "docs/runtime-orchestration.md",
         "docs/windows-installer.md",
@@ -106,6 +107,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let dependabot = read(root.join(".github/dependabot.yml"))?;
     let github_settings = read(root.join("docs/github-settings.md"))?;
     let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.1.md"))?;
+    let manual_end_user_test = read(root.join("docs/manual-end-user-test-v0.1.0.md"))?;
 
     for (name, content) in [
         ("README.md", &readme),
@@ -279,6 +281,15 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         if !manual_checklist.contains(required) {
             return Err(format!("manual test checklist missing `{required}`"));
         }
+    }
+    if !manual_end_user_test.contains("image probe is not reliable")
+        || !manual_end_user_test.contains("Hermes should not be opened separately")
+        || !manual_end_user_test.contains("install-iris-windows.ps1")
+    {
+        return Err(
+            "manual end-user test report must capture installer, Hermes, and image-probe status"
+                .to_string(),
+        );
     }
     Ok(())
 }
