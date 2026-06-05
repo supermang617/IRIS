@@ -45,9 +45,11 @@ Capability note: Ollama `/api/tags` may omit `vision` for
 `/api/show` for this check.
 
 Document-image note: direct Ollama image calls and Iris runtime image probes
-both failed simple OCR fixtures such as `ALPHA 742`. The model can inspect
-images, but the document-image milestone should stay blocked until a local model
-or prompt path reliably reads known document fixtures.
+both failed simple OCR fixtures such as `ALPHA 742`, including deterministic
+short-output direct API calls. The model can inspect images, but the
+document-image milestone should stay blocked until a stronger local OCR-capable
+vision model or a separate approved local OCR component reliably reads known
+document fixtures.
 
 ## Beginner Manual Test Checklist
 
