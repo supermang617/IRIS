@@ -1,19 +1,18 @@
-# Iris Windows Installer Plan
+# Iris Windows Portable Install Notes
 
 Produced by Alejandro Pinto.
 
 Contact: super.mangmail@gmail.com
 
-The current installer milestone uses built-in Windows and PowerShell features
-only. It does not require WiX, NSIS, Inno Setup, MSIX packaging, code-signing
-services, cloud APIs, or installer downloads.
+The current public release ships as a portable Windows ZIP. It uses built-in
+Windows and PowerShell features only. It does not require WiX, NSIS, Inno
+Setup, MSIX packaging, code-signing services, cloud APIs, or installer
+downloads.
 
 ## What Ships
 
 - `iris-windows.zip`: portable Iris release.
 - `iris-windows.zip.sha256`: SHA256 for the portable release.
-- `install-iris-windows.ps1`: per-user installer wrapper.
-- `install-iris-windows.ps1.sha256`: SHA256 for the installer wrapper.
 
 The portable release also contains:
 
@@ -22,44 +21,33 @@ The portable release also contains:
 - `Iris Setup Wizard.bat`
 - `Check Iris Preflight.bat`
 
-## Install Behavior
+## Portable Install Behavior
 
-The installer is per-user and defaults to:
+The public download flow is:
 
-```text
-%LOCALAPPDATA%\Programs\Iris
+```powershell
+$expected = (Get-Content .\iris-windows.zip.sha256 -Raw).Split(" ")[0]
+$actual = (Get-FileHash .\iris-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($expected -ne $actual) { throw "SHA256 mismatch" }
+Expand-Archive .\iris-windows.zip -DestinationPath "$env:USERPROFILE\Iris" -Force
 ```
 
-It copies Iris-managed release files, runs the installed self-check, can run the
-setup wizard, and creates shortcuts:
+From the extracted folder, run:
+
+```powershell
+.\Iris Setup Wizard.bat
+.\Start Iris.bat
+```
+
+The ZIP also includes `Install Iris.bat` and `Install Iris.ps1` for users who
+want a per-user copy under `%LOCALAPPDATA%\Programs\Iris` after extraction. That
+extracted installer copies Iris-managed release files, runs the installed
+self-check, can run the setup wizard, and creates shortcuts:
 
 - Start Menu: `Iris`
 - Start Menu: `Iris Setup Wizard`
 - Start Menu: `Uninstall Iris`
 - Desktop: `Iris`
-
-The installer writes `install-manifest.json` so upgrades and diagnostics can see
-where Iris was installed from. It replaces only known Iris-managed release
-folders and files. It does not delete arbitrary user files.
-
-## SHA Verification
-
-Recommended install from the downloaded ZIP:
-
-```powershell
-.\install-iris-windows.ps1 -SourceZip .\iris-windows.zip -Sha256Path .\iris-windows.zip.sha256 -RunSetup
-```
-
-This verifies the ZIP hash before extraction and installation.
-
-If the user has already extracted `iris-windows.zip`, they can run:
-
-```powershell
-.\Install Iris.bat
-```
-
-The extracted installer still runs the installed self-check and setup wizard,
-but the strongest download-integrity check is the `-SourceZip` flow above.
 
 ## Uninstall And Upgrade
 

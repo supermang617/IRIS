@@ -223,12 +223,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             "installer doc must describe setup wizard repairs and read-only preflight".to_string(),
         );
     }
-    if !windows_installer.contains("install-iris-windows.ps1")
+    if !windows_installer.contains("iris-windows.zip")
+        || !windows_installer.contains("iris-windows.zip.sha256")
         || !windows_installer.contains("%LOCALAPPDATA%\\Programs\\Iris")
         || !windows_installer.contains("no runtime computer automation")
     {
         return Err(
-            "windows installer doc must describe install path, wrapper, and safety boundary"
+            "windows installer doc must describe ZIP assets, optional install path, and safety boundary"
                 .to_string(),
         );
     }
