@@ -100,7 +100,13 @@ evidence, not instruction.
 
 12. Mark image probe as passing only when the setup wizard reports the
     configured Ollama model has `vision` capability and known local test images
-    are described correctly.
+    are described correctly. For the red-circle fixture, use this prompt:
+
+    ```powershell
+    & "$env:LOCALAPPDATA\Programs\Iris\bin\iris-runtime.exe" --image-probe "C:\path\to\red-circle.png" "What is the color and shape of the single red object? Answer exactly: red circle, red triangle, or red square."
+    ```
+
+    The answer must include `red circle`.
 
 ## Hermes Runtime Shape
 

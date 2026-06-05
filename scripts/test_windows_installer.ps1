@@ -27,6 +27,7 @@ try {
 
     foreach ($relative in @(
         "Start Iris.bat",
+        "Iris Document OCR.ps1",
         "Iris Setup Wizard.ps1",
         "Uninstall Iris.ps1",
         "install-manifest.json",

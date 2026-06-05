@@ -91,7 +91,7 @@ try {
 
     $vision = Invoke-ReleaseRuntime `
         -Runtime $runtime `
-        -Arguments @("--image-probe", $imagePath, "Look at the filled object, not the square image canvas. What color and shape is the filled object? Answer with exactly two words.") `
+        -Arguments @("--image-probe", $imagePath, "What is the color and shape of the single red object? Answer exactly: red circle, red triangle, or red square.") `
         -Name "release image probe"
     $visionText = $vision.Output.ToLowerInvariant()
     $shapeOk = $visionText.Contains("circle") -or $visionText.Contains("round") -or $visionText.Contains("rounded")

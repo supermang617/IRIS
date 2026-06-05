@@ -14,6 +14,7 @@ This repository is a Windows-only v0.1 prototype.
 - Spoken output requires local Kokoro assets at `models/kokoro/kokoro-v1.0.onnx` and `models/kokoro/voices-v1.0.bin`.
 - Spoken output currently uses the Python `kokoro-onnx` helper with the `af_heart` voice.
 - Ollama `/api/tags` may omit vision metadata for `huihui_ai/gemma-4-abliterated:e2b`; use `ollama show` or `/api/show` for the authoritative local capability check. The current manual-test machine verifies `completion`, `vision`, `audio`, `tools`, and `thinking` through `/api/show`.
+- The configured Ollama model can inspect images, but open-ended geometric shape naming is not fully reliable. Manual release tests use a constrained known-fixture prompt for red-circle validation.
 - Document-image/OCR probing is handled by local Tesseract OCR when installed. The current configured Ollama model is not reliable for OCR by itself; direct Ollama calls and Iris image probes failed simple known text fixtures such as `ALPHA 742`, even with deterministic settings and short output caps.
 - Native Whisper ASR and Kokoro TTS are present.
 - Local memory exists, but active-memory promotion is intentionally bounded.

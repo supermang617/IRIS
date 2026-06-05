@@ -63,6 +63,7 @@ function Test-ReleaseRoot {
         "Start Iris.bat",
         "Iris Setup Wizard.ps1",
         "Iris Preflight.ps1",
+        "Iris Document OCR.ps1",
         "manifest.json",
         "bin\iris-runtime.exe",
         "bin\iris-tauri.exe",
@@ -99,6 +100,7 @@ function Copy-ReleaseFiles {
     foreach ($relative in @(
         "Check Iris Preflight.bat",
         "Iris Preflight.ps1",
+        "Iris Document OCR.ps1",
         "Iris Setup Wizard.bat",
         "Iris Setup Wizard.ps1",
         "LICENSE",
@@ -158,6 +160,7 @@ foreach (`$relative in @("assets","bin","capabilities","docs","models","profiles
 foreach (`$relative in @(
     "Check Iris Preflight.bat",
     "Iris Preflight.ps1",
+    "Iris Document OCR.ps1",
     "Iris Setup Wizard.bat",
     "Iris Setup Wizard.ps1",
     "LICENSE",

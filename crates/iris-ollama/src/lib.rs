@@ -8,6 +8,7 @@ const DEFAULT_OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_KEEP_ALIVE: &str = "10m";
 const DEFAULT_NUM_PREDICT: u32 = 384;
+const VISUAL_NUM_PREDICT: u32 = 128;
 const MAX_HISTORY_CHARS: usize = 6_000;
 const MAX_MEMORY_CHARS: usize = 2_000;
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -125,6 +126,10 @@ impl OllamaClient {
             options: GenerateOptions {
                 num_ctx: self.settings.num_ctx,
                 num_predict: DEFAULT_NUM_PREDICT,
+                temperature: None,
+                top_k: None,
+                top_p: None,
+                seed: None,
             },
         };
 
@@ -251,7 +256,11 @@ impl OllamaClient {
             keep_alive: DEFAULT_KEEP_ALIVE,
             options: GenerateOptions {
                 num_ctx: self.settings.num_ctx,
-                num_predict: DEFAULT_NUM_PREDICT,
+                num_predict: VISUAL_NUM_PREDICT,
+                temperature: Some(0.0),
+                top_k: Some(1),
+                top_p: Some(0.1),
+                seed: Some(7),
             },
         };
 
@@ -334,6 +343,14 @@ struct GenerateRequest {
 struct GenerateOptions {
     num_ctx: u32,
     num_predict: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seed: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -503,6 +520,10 @@ mod tests {
             options: GenerateOptions {
                 num_ctx: 8192,
                 num_predict: DEFAULT_NUM_PREDICT,
+                temperature: None,
+                top_k: None,
+                top_p: None,
+                seed: None,
             },
         };
 
@@ -510,6 +531,38 @@ mod tests {
         assert_eq!(json["think"], false);
         assert!(json.get("images").is_none());
         assert_eq!(json["options"]["num_predict"], DEFAULT_NUM_PREDICT);
+        assert!(json["options"].get("temperature").is_none());
+        assert!(json["options"].get("top_k").is_none());
+        assert!(json["options"].get("top_p").is_none());
+        assert!(json["options"].get("seed").is_none());
+    }
+
+    #[test]
+    fn visual_generate_request_uses_deterministic_sampling() {
+        let request = GenerateRequest {
+            model: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            prompt: prompt_for_visual_probe("what shape?", VisualEvidenceSource::UserSelectedImage),
+            images: vec![base64_encode(b"not a real image")],
+            stream: false,
+            think: false,
+            keep_alive: DEFAULT_KEEP_ALIVE,
+            options: GenerateOptions {
+                num_ctx: 8192,
+                num_predict: VISUAL_NUM_PREDICT,
+                temperature: Some(0.0),
+                top_k: Some(1),
+                top_p: Some(0.1),
+                seed: Some(7),
+            },
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["think"], false);
+        assert_eq!(json["options"]["num_predict"], VISUAL_NUM_PREDICT);
+        assert_eq!(json["options"]["temperature"], 0.0);
+        assert_eq!(json["options"]["top_k"], 1);
+        assert!((json["options"]["top_p"].as_f64().unwrap() - 0.1).abs() < 0.000_001);
+        assert_eq!(json["options"]["seed"], 7);
     }
 
     #[test]

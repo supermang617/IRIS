@@ -13,6 +13,7 @@ pub struct DashboardSnapshot {
     pub num_ctx_ceiling: u32,
     pub hardware: HardwareStatus,
     pub safety: SafetyStatus,
+    pub hermes: HermesStatus,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -47,6 +48,20 @@ pub struct SafetyStatus {
     pub plugins: &'static str,
     pub screen_content_authority: &'static str,
     pub filesystem_scope: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HermesStatus {
+    pub enabled_by_default: bool,
+    pub sidecar_enabled_by_default: bool,
+    pub lifecycle_owner: &'static str,
+    pub transport: &'static str,
+    pub broker_url: &'static str,
+    pub external_network: bool,
+    pub approved_tools: Vec<&'static str>,
+    pub acting_tools: Vec<&'static str>,
+    pub parallel_inference_streams: u32,
+    pub status: &'static str,
 }
 
 pub fn build_dashboard_snapshot(
@@ -91,6 +106,18 @@ fn snapshot_from_parts(
             plugins: iris_policy::PLUGINS,
             screen_content_authority: iris_policy::SCREEN_CONTENT_AUTHORITY,
             filesystem_scope: iris_policy::FILESYSTEM_SCOPE,
+        },
+        hermes: HermesStatus {
+            enabled_by_default: false,
+            sidecar_enabled_by_default: false,
+            lifecycle_owner: "iris",
+            transport: "stdin_stdout_json",
+            broker_url: "http://127.0.0.1:48731",
+            external_network: false,
+            approved_tools: vec!["iris_query_memory", "iris_propose_memory"],
+            acting_tools: Vec::new(),
+            parallel_inference_streams: 1,
+            status: "disabled_by_default_gated_loopback_only",
         },
     }
 }
@@ -142,5 +169,14 @@ mod tests {
         assert!(!snapshot.model.fallback_models_allowed);
         assert_eq!(snapshot.num_ctx_ceiling, 8192);
         assert_eq!(snapshot.safety.runtime_network, "Runtime Network: Disabled");
+        assert!(!snapshot.hermes.enabled_by_default);
+        assert_eq!(snapshot.hermes.lifecycle_owner, "iris");
+        assert_eq!(snapshot.hermes.broker_url, "http://127.0.0.1:48731");
+        assert_eq!(
+            snapshot.hermes.approved_tools,
+            vec!["iris_query_memory", "iris_propose_memory"]
+        );
+        assert!(snapshot.hermes.acting_tools.is_empty());
+        assert_eq!(snapshot.hermes.parallel_inference_streams, 1);
     }
 }
