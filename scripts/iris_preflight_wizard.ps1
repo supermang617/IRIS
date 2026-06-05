@@ -88,17 +88,11 @@ function Test-ConfiguredModelVisionCapability {
     param([Parameter(Mandatory = $true)][string]$ModelId)
 
     try {
-        $response = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -Method Get -TimeoutSec 5
-        $models = @($response.models)
-        $model = $models | Where-Object { $_.name -eq $ModelId } | Select-Object -First 1
-        if (-not $model) {
-            Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId was not present in Ollama /api/tags capability metadata." -Repair "Start the Ollama service that owns $ModelId, then rerun this preflight."
-            return
-        }
-
-        $capabilities = @($model.capabilities) + @($model.details.capabilities) | Where-Object { $_ } | Select-Object -Unique
+        $showBody = @{ model = $ModelId } | ConvertTo-Json -Compress
+        $show = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/show" -Method Post -ContentType "application/json" -Body $showBody -TimeoutSec 15
+        $capabilities = @($show.capabilities) | Where-Object { $_ } | Select-Object -Unique
         if ($capabilities.Count -eq 0) {
-            Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId did not report capability metadata." -Repair "Text/manual install can continue, but image-probe testing is blocked until the configured model reports vision capability."
+            Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId did not report capability metadata from Ollama /api/show." -Repair "Text/manual install can continue, but image-probe testing is blocked until the configured model reports vision capability."
             return
         }
 
@@ -109,7 +103,7 @@ function Test-ConfiguredModelVisionCapability {
             Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "$ModelId reports capabilities: $capabilityText. Vision is not advertised." -Repair "Text/manual install can continue, but image-probe testing is blocked until the configured model reports vision capability."
         }
     } catch {
-        Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "Could not query Ollama capability metadata: $($_.Exception.Message)" -Repair "Start Ollama and verify http://127.0.0.1:11434/api/tags locally, then rerun this preflight."
+        Add-Check -Status "WARN" -Name "Configured model vision capability" -Detail "Could not query Ollama /api/show capability metadata: $($_.Exception.Message)" -Repair "Start Ollama and verify the configured model with `ollama show $ModelId` locally, then rerun this preflight."
     }
 }
 

@@ -1,3 +1,7 @@
+param(
+    [switch]$RequireDocumentImage
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
@@ -41,8 +45,16 @@ if (-not $models.Contains($model)) {
     throw "Configured Ollama model is not available locally: $model"
 }
 
+$showBody = @{ model = $model } | ConvertTo-Json -Compress
+$show = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/show" -Method Post -ContentType "application/json" -Body $showBody -TimeoutSec 30
+$capabilities = @($show.capabilities)
+if (-not ($capabilities -contains "vision")) {
+    throw "Configured Ollama model does not report vision capability from /api/show. Capabilities: $($capabilities -join ', ')"
+}
+
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-" + [System.Guid]::NewGuid().ToString("N"))
 $imagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-red-circle-" + [System.Guid]::NewGuid().ToString("N") + ".png")
+$documentImagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-document-" + [System.Guid]::NewGuid().ToString("N") + ".png")
 
 try {
     Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
@@ -77,19 +89,50 @@ try {
 
     $vision = Invoke-ReleaseRuntime `
         -Runtime $runtime `
-        -Arguments @("--image-probe", $imagePath, "What color and shape is centered in this image? Answer in five words or fewer.") `
+        -Arguments @("--image-probe", $imagePath, "Look at the filled object, not the square image canvas. What color and shape is the filled object? Answer with exactly two words.") `
         -Name "release image probe"
-    if (-not $vision.Output.ToLowerInvariant().Contains("red")) {
-        throw "Vision model response did not identify the red object: $($vision.Output)"
+    $visionText = $vision.Output.ToLowerInvariant()
+    $shapeOk = $visionText.Contains("circle") -or $visionText.Contains("round") -or $visionText.Contains("rounded")
+    if (-not ($visionText.Contains("red") -and $shapeOk)) {
+        throw "Vision model response did not identify the red circular object: $($vision.Output)"
+    }
+
+    $documentBitmap = New-Object System.Drawing.Bitmap 640, 320
+    $documentGraphics = [System.Drawing.Graphics]::FromImage($documentBitmap)
+    $documentGraphics.Clear([System.Drawing.Color]::White)
+    $font = New-Object System.Drawing.Font "Arial", 48, ([System.Drawing.FontStyle]::Bold)
+    $blackBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Black)
+    $documentGraphics.DrawString("IRIS TEST 742", $font, $blackBrush, 48, 96)
+    $blackBrush.Dispose()
+    $font.Dispose()
+    $documentGraphics.Dispose()
+    $documentBitmap.Save($documentImagePath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $documentBitmap.Dispose()
+
+    $documentVision = Invoke-ReleaseRuntime `
+        -Runtime $runtime `
+        -Arguments @("--image-probe", $documentImagePath, "Read the large text in this image. Answer with the text only.") `
+        -Name "release document image probe"
+    $documentText = $documentVision.Output.ToLowerInvariant()
+    $documentPassed = $documentText.Contains("iris") -and $documentText.Contains("742")
+    if ($RequireDocumentImage -and -not $documentPassed) {
+        throw "Vision model response did not read the document image text: $($documentVision.Output)"
     }
 
     Write-Host "Release model E2E passed."
+    Write-Host "Capabilities: $($capabilities -join ', ')"
     Write-Host "Text response:"
     Write-Host $text.Output
     Write-Host "Vision response:"
     Write-Host $vision.Output
+    Write-Host "Document vision response:"
+    Write-Host $documentVision.Output
+    if (-not $documentPassed) {
+        Write-Host "Document image OCR gate: BLOCKED. Rerun with -RequireDocumentImage to fail on this blocker."
+    }
 } finally {
     Set-Location -LiteralPath $originalLocation
     Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $imagePath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $documentImagePath -Force -ErrorAction SilentlyContinue
 }

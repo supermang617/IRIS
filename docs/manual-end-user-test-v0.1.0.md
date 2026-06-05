@@ -32,17 +32,22 @@ what should work before filing a bug.
 - PASS: Launch did not create any new non-loopback listeners.
 - PASS: Installed text ask returned a local Ollama response.
 - PASS: Kokoro assets and Python voice packages were detected by preflight.
+- PASS: Ollama `/api/show` reports the configured model has `vision`
+  capability.
+- PASS: Image probe identified a known red-circle fixture.
 - PASS: Hermes remains gated by default and should not be opened separately.
 - PASS: Local self-signed MSIX signature validation passed on the test machine.
-- BLOCKED: The image probe is not reliable on the current configured model.
+- BLOCKED: Document-image/OCR probing is not reliable on the configured model.
 
-The image-probe blocker is specific and reproducible: Ollama reports
-`huihui_ai/gemma-4-abliterated:e2b` capabilities as `completion`, `tools`, and
-`thinking`, not `vision`. The runtime can send an image request to the local
-model, but a known red-circle test image was misidentified. Treat text/manual
-install as usable, but do not claim the vision milestone is ready until the
-configured local model reports `vision` and identifies a known test image
-reliably.
+Capability note: Ollama `/api/tags` may omit `vision` for
+`huihui_ai/gemma-4-abliterated:e2b`, but `ollama show` and `/api/show` report
+`completion`, `vision`, `audio`, `tools`, and `thinking`. Iris preflight uses
+`/api/show` for this check.
+
+Document-image note: direct Ollama image calls and Iris runtime image probes
+both failed simple OCR fixtures such as `ALPHA 742`. The model can inspect
+images, but the document-image milestone should stay blocked until a local model
+or prompt path reliably reads known document fixtures.
 
 ## Beginner Manual Test Checklist
 
@@ -83,9 +88,9 @@ reliably.
     Hermes should remain disabled unless explicitly enabled from the Iris desktop
     shell; it should not expose acting tools.
 
-11. Do not mark image probe as passing unless the setup wizard reports the
-    configured Ollama model has `vision` capability and a known local test image
-    is described correctly.
+11. Mark image probe as passing only when the setup wizard reports the
+    configured Ollama model has `vision` capability and known local test images
+    are described correctly.
 
 ## Hermes Runtime Shape
 

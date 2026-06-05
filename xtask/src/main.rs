@@ -282,7 +282,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             return Err(format!("manual test checklist missing `{required}`"));
         }
     }
-    if !manual_end_user_test.contains("image probe is not reliable")
+    if !manual_end_user_test
+        .contains("Ollama `/api/show` reports the configured model has `vision`")
         || !manual_end_user_test.contains("Hermes should not be opened separately")
         || !manual_end_user_test.contains("install-iris-windows.ps1")
     {
