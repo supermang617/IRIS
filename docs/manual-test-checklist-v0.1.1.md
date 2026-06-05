@@ -1,21 +1,21 @@
-# Iris v0.1.0 Manual Tester Checklist
+# Iris v0.1.1 Manual Tester Checklist
 
 Use this checklist from a clean folder, not from a development checkout.
 
 ## Download
 
-1. Open the GitHub Release for `v0.1.0`.
+1. Open the GitHub Release for `v0.1.1`.
 2. Download only these assets:
    - `iris-windows.zip`
    - `iris-windows.zip.sha256`
 3. Put both files in a clean folder such as:
 
 ```powershell
-$testRoot = Join-Path $env:TEMP "iris-v0.1.0-manual-test"
+$testRoot = Join-Path $env:TEMP "iris-v0.1.1-manual-test"
 New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 ```
 
-If a `v0.1.0` GitHub Release has not been published yet, use
+If a `v0.1.1` GitHub Release has not been published yet, use
 `release\dist\iris-windows.zip` and `release\dist\iris-windows.zip.sha256`
 created by `scripts\package_windows_release.ps1`.
 

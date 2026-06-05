@@ -58,7 +58,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/github-settings.md",
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
-        "docs/manual-test-checklist-v0.1.0.md",
+        "docs/manual-test-checklist-v0.1.1.md",
         "docs/signed-installer-decision.md",
         "docs/runtime-orchestration.md",
         "docs/windows-installer.md",
@@ -105,7 +105,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let release = read(root.join(".github/workflows/release.yml"))?;
     let dependabot = read(root.join(".github/dependabot.yml"))?;
     let github_settings = read(root.join("docs/github-settings.md"))?;
-    let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.0.md"))?;
+    let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.1.md"))?;
 
     for (name, content) in [
         ("README.md", &readme),

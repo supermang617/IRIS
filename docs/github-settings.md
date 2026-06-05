@@ -1,6 +1,6 @@
-# GitHub Settings for Iris v0.1.0
+# GitHub Settings for Iris v0.1.1
 
-Verify these manually before publishing a public `v0.1.0` release.
+Verify these manually before publishing a public `v0.1.1` release.
 
 ## Actions
 
@@ -29,7 +29,7 @@ Verify these manually before publishing a public `v0.1.0` release.
 - Do not enable a Pages deployment workflow unless the site source changes to
   require it.
 - Do not add cloud services, telemetry, webhooks, deploy keys, OAuth Apps,
-  GitHub Apps, or marketplace scanners for the v0.1.0 release.
+  GitHub Apps, or marketplace scanners for the v0.1.1 release.
 
 ## Notifications
 

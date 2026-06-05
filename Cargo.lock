@@ -1578,7 +1578,7 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "iris-cognition"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-context-gate",
  "iris-core-types",
@@ -1587,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "iris-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "iris-context-gate"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-core-types",
  "iris-policy",
@@ -1604,18 +1604,18 @@ dependencies = [
 
 [[package]]
 name = "iris-core-types"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "iris-hardware"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "sysinfo",
 ]
 
 [[package]]
 name = "iris-ollama"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-config",
  "iris-context-gate",
@@ -1628,22 +1628,22 @@ dependencies = [
 
 [[package]]
 name = "iris-paths"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "iris-policy"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "iris-redaction"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-core-types",
 ]
 
 [[package]]
 name = "iris-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-cognition",
  "iris-config",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "iris-status"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-config",
  "iris-hardware",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "iris-tauri"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cpal",
  "image",
@@ -1691,7 +1691,7 @@ dependencies = [
 
 [[package]]
 name = "iris-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "iris-cognition",
  "iris-context-gate",
@@ -4859,7 +4859,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "yoke"
