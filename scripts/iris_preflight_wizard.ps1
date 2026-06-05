@@ -157,7 +157,13 @@ if ($ollamaPath) {
         }
     }
 } else {
-    Add-Check -Status "FAIL" -Name "Ollama executable" -Detail "ollama was not found on PATH." -Repair "Install Ollama for Windows, then rerun this preflight. This script will not install it automatically."
+    $status = if ($fastLocalOnly) { "WARN" } else { "FAIL" }
+    $repair = if ($fastLocalOnly) {
+        "Install Ollama for Windows before manual text or vision testing. Release smoke diagnostics only verify that this prerequisite is reported clearly."
+    } else {
+        "Install Ollama for Windows, then rerun this preflight. This script will not install it automatically."
+    }
+    Add-Check -Status $status -Name "Ollama executable" -Detail "ollama was not found on PATH." -Repair $repair
 }
 
 $kokoroModel = Join-Path $root "models\kokoro\kokoro-v1.0.onnx"
