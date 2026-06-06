@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyVoiceTranscript } from "./voice-state.js";
+import { classifyAsrError, classifyVoiceTranscript } from "./voice-state.js";
 
 test("push-to-talk submits the full transcript", () => {
   assert.deepEqual(
@@ -192,4 +192,20 @@ test("ambient captions are ignored in voice loop", () => {
 
     assert.equal(decision.action, "ignore");
   }
+});
+
+test("empty microphone captures are nonfatal ASR diagnostics", () => {
+  assert.deepEqual(classifyAsrError("microphone produced no audio samples"), {
+    severity: "nonfatal",
+    event: "native_asr_no_input",
+    status: "No speech transcript captured."
+  });
+});
+
+test("unexpected ASR failures remain errors", () => {
+  assert.deepEqual(classifyAsrError("model crashed"), {
+    severity: "error",
+    event: "native_asr_error",
+    status: "model crashed"
+  });
 });

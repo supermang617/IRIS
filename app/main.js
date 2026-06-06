@@ -11,7 +11,7 @@ import {
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
-import { classifyVoiceTranscript } from "./voice-state.js";
+import { classifyAsrError, classifyVoiceTranscript } from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
@@ -837,8 +837,12 @@ async function listenOnce(mode) {
     elements.hudOutput.textContent = transcript;
     handleVoiceTranscript(transcript);
   } catch (error) {
-    elements.hudOutput.textContent = String(error);
-    logVoice("native_asr_error", String(error));
+    const asrError = classifyAsrError(error);
+    elements.voiceStatus.textContent = asrError.status;
+    if (asrError.severity === "error") {
+      elements.hudOutput.textContent = String(error);
+    }
+    logVoice(asrError.event, String(error));
   } finally {
     setListening(false);
     if (mode !== "push") {

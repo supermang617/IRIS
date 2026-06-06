@@ -49,6 +49,19 @@ export function classifyVoiceTranscript(transcript, state) {
   return { action: "wait-for-wake", prompt: "", source: "wake-word", status: "Waiting for wake word: Iris." };
 }
 
+export function classifyAsrError(error) {
+  const message = String(error || "").trim();
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("microphone produced no audio samples") ||
+    normalized.includes("no default microphone input device found") ||
+    normalized === "no-speech"
+  ) {
+    return { severity: "nonfatal", event: "native_asr_no_input", status: "No speech transcript captured." };
+  }
+  return { severity: "error", event: "native_asr_error", status: message || "Native ASR failed." };
+}
+
 function isInterruption(text) {
   return /^(iris[\s,.:;!?-]+)?(stop|pause|quiet|cancel|interrupt)\b/i.test(text);
 }

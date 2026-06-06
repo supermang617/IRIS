@@ -319,6 +319,20 @@ struct VoiceDiagnosticEvent {
     wake_command_armed: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct VoiceDiagnosticLogRecord {
+    timestamp_ms: u128,
+    event: String,
+    detail: String,
+    mode: String,
+    listening: bool,
+    thinking: bool,
+    speaking: bool,
+    voice_loop: bool,
+    wake_word: bool,
+    wake_command_armed: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VoiceLatencyTrace {
@@ -883,26 +897,34 @@ fn log_voice_diagnostic(event: VoiceDiagnosticEvent) -> Result<(), String> {
     let diagnostics_dir = workspace_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
     let log_path = diagnostics_dir.join("voice-events.jsonl");
-    let timestamp_ms = timestamp_ms()?;
-    let line = format!(
-        "{{\"timestamp_ms\":{},\"event\":\"{}\",\"detail\":\"{}\",\"mode\":\"{}\",\"listening\":{},\"thinking\":{},\"speaking\":{},\"voice_loop\":{},\"wake_word\":{},\"wake_command_armed\":{}}}\n",
-        timestamp_ms,
-        json_safe(&event.event),
-        json_safe(&event.detail),
-        json_safe(&event.mode),
-        event.listening,
-        event.thinking,
-        event.speaking,
-        event.voice_loop,
-        event.wake_word,
-        event.wake_command_armed
-    );
+    let line = voice_diagnostic_jsonl(timestamp_ms()?, event)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(log_path)
         .map_err(|err| err.to_string())?;
     file.write_all(line.as_bytes())
+        .map_err(|err| err.to_string())
+}
+
+fn voice_diagnostic_jsonl(
+    timestamp_ms: u128,
+    event: VoiceDiagnosticEvent,
+) -> Result<String, String> {
+    let record = VoiceDiagnosticLogRecord {
+        timestamp_ms,
+        event: json_capped(&event.event),
+        detail: json_capped(&event.detail),
+        mode: json_capped(&event.mode),
+        listening: event.listening,
+        thinking: event.thinking,
+        speaking: event.speaking,
+        voice_loop: event.voice_loop,
+        wake_word: event.wake_word,
+        wake_command_armed: event.wake_command_armed,
+    };
+    serde_json::to_string(&record)
+        .map(|line| format!("{line}\n"))
         .map_err(|err| err.to_string())
 }
 
@@ -957,12 +979,8 @@ fn timestamp_ms() -> Result<u128, String> {
         .map(|duration| duration.as_millis())
 }
 
-fn json_safe(value: &str) -> String {
-    value
-        .chars()
-        .take(500)
-        .flat_map(|character| character.escape_default())
-        .collect()
+fn json_capped(value: &str) -> String {
+    value.chars().take(500).collect()
 }
 
 fn memory_file_path() -> Result<std::path::PathBuf, String> {
@@ -2484,6 +2502,50 @@ mod tests {
     #[test]
     fn formats_latency_durations_as_plain_ms() {
         assert_eq!(format_optional_ms(Some(42)), "42ms");
+    }
+
+    #[test]
+    fn voice_diagnostic_jsonl_escapes_apostrophes_as_valid_json() {
+        let line = voice_diagnostic_jsonl(
+            123,
+            VoiceDiagnosticEvent {
+                event: "recognition_result".to_string(),
+                detail: "I didn't say Iris couldn't listen".to_string(),
+                mode: "wake".to_string(),
+                listening: true,
+                thinking: false,
+                speaking: false,
+                voice_loop: true,
+                wake_word: true,
+                wake_command_armed: false,
+            },
+        )
+        .expect("voice diagnostic jsonl");
+
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+        assert_eq!(parsed["detail"], "I didn't say Iris couldn't listen");
+    }
+
+    #[test]
+    fn voice_diagnostic_jsonl_caps_detail_length() {
+        let line = voice_diagnostic_jsonl(
+            123,
+            VoiceDiagnosticEvent {
+                event: "long".to_string(),
+                detail: "x".repeat(600),
+                mode: "wake".to_string(),
+                listening: false,
+                thinking: false,
+                speaking: false,
+                voice_loop: false,
+                wake_word: true,
+                wake_command_armed: false,
+            },
+        )
+        .expect("voice diagnostic jsonl");
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+
+        assert_eq!(parsed["detail"].as_str().unwrap().len(), 500);
     }
 
     #[test]
