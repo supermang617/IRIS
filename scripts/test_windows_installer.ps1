@@ -33,7 +33,9 @@ try {
         "install-manifest.json",
         "bin\iris-runtime.exe",
         "models\kokoro\kokoro-v1.0.onnx",
-        "models\whisper\ggml-tiny.en.bin"
+        "models\whisper\ggml-tiny.en.bin",
+        "plugins\hermes_sidecar\sidecar.py",
+        "plugins\memory\iris_broker\provider.py"
     )) {
         $path = Join-Path $installRoot $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {

@@ -87,6 +87,7 @@ function Copy-ReleaseFiles {
         "capabilities",
         "docs",
         "models",
+        "plugins",
         "profiles",
         "tools"
     )) {
@@ -154,7 +155,7 @@ foreach (`$shortcut in @(
 )) {
     Remove-Item -LiteralPath `$shortcut -Force -ErrorAction SilentlyContinue
 }
-foreach (`$relative in @("assets","bin","capabilities","docs","models","profiles","tools")) {
+foreach (`$relative in @("assets","bin","capabilities","docs","models","plugins","profiles","tools")) {
     Remove-Item -LiteralPath (Join-Path `$root `$relative) -Recurse -Force -ErrorAction SilentlyContinue
 }
 foreach (`$relative in @(

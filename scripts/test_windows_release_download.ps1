@@ -74,6 +74,8 @@ try {
         "models\kokoro\voices-v1.0.bin",
         "models\whisper\ggml-tiny.en.bin",
         "tools\kokoro_tts.py",
+        "plugins\hermes_sidecar\sidecar.py",
+        "plugins\memory\iris_broker\provider.py",
         "profiles\iris_restricted.json",
         "capabilities\v0_1_capability_ledger.toml"
     )

@@ -89,6 +89,7 @@ Copy-RequiredDirectory -Source (Join-Path $repoRoot "models") -Destination (Join
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "profiles") -Destination (Join-Path $packageRoot "profiles")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "capabilities") -Destination (Join-Path $packageRoot "capabilities")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "assets") -Destination (Join-Path $packageRoot "assets")
+Copy-RequiredDirectory -Source (Join-Path $repoRoot "plugins") -Destination (Join-Path $packageRoot "plugins")
 
 $startPs1 = @'
 $ErrorActionPreference = "Stop"
