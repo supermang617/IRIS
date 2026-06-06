@@ -1,4 +1,5 @@
 export const MAX_VISION_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_VIDEO_BYTES = 64 * 1024 * 1024;
 export const MAX_DOCUMENT_BYTES = 512 * 1024;
 export const MAX_DOCUMENT_CHARS = 8000;
 
@@ -53,6 +54,15 @@ export function validateDocumentSize(file) {
   }
 }
 
+export function validateVideoSize(file) {
+  if (!file || Number(file.size) <= 0) {
+    throw new Error("Video attachment needs a non-empty mp4, webm, or mov file.");
+  }
+  if (Number(file.size) > MAX_VIDEO_BYTES) {
+    throw new Error("Video attachment is too large. Limit is 64 MB.");
+  }
+}
+
 export function normalizeDocumentText(raw) {
   const clean = String(raw || "").replace(/\0/g, "").trim();
   if (!clean) {
@@ -62,6 +72,10 @@ export function normalizeDocumentText(raw) {
     text: clean.slice(0, MAX_DOCUMENT_CHARS),
     truncated: clean.length > MAX_DOCUMENT_CHARS
   };
+}
+
+export function unsupportedAttachmentMessage() {
+  return "Attach a png, jpg, jpeg, webp, mp4, webm, mov, txt, md, csv, json, log, or rtf file.";
 }
 
 export function promptWithDocument(prompt, document) {

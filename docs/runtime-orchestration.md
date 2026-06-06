@@ -10,9 +10,9 @@ For v0.1, the best safe runtime shape is:
 
 - Ollama runs as the local model service on `127.0.0.1:11434`.
 - Iris runs as the Tauri desktop shell plus Rust command bridge.
-- Hermes remains a restricted Iris-owned sidecar, started by Iris only when the
-  Hermes environment gates are explicitly enabled.
-- The Iris memory broker is loopback-only on `127.0.0.1:48731` when enabled.
+- Hermes remains a restricted Iris-owned sidecar, started by Iris for local RAG
+  and staged memory-transfer work.
+- The Iris memory broker is loopback-only on `127.0.0.1:48731`.
 
 Hermes should not be a separate visible app that the beginner manually opens.
 It should run as a hidden child process owned by Iris, with stdin/stdout JSON
@@ -34,8 +34,8 @@ target:
 - Fallback models: disabled
 - Model auto-selection: disabled
 - Model pulling by runtime: disabled
-- Hermes enabled by default: false
-- Hermes sidecar enabled by default: false
+- Hermes enabled by default: true
+- Hermes sidecar enabled by default: true
 - Hermes research: requires explicit user research request
 - Hermes acting tools: none
 - Memory broker external network: none
@@ -44,20 +44,23 @@ These settings intentionally favor reliability and privacy over maximum raw
 throughput. Iris, Hermes, and Ollama share one local model path so they do not
 fight for VRAM/RAM or create inconsistent answers.
 
-## Enabling Hermes For Manual Testing
+## Hermes Manual Testing
 
-Hermes is currently a gated test feature. To test it from a developer checkout,
-set:
+Hermes is enabled for local RAG by default. Start Iris from the normal launcher.
+Iris starts the loopback broker and Hermes sidecar when a Hermes task is
+submitted. Hermes must pass the runtime tool audit before task execution.
+
+Use these desktop commands:
 
 ```powershell
-$env:IRIS_HERMES_ENABLED="true"
-$env:IRIS_HERMES_SIDECAR_ENABLED="true"
-$env:IRIS_HERMES_MEMORY_BROKER_ENABLED="true"
+hermes status
+hermes: summarize what you know from memory
+hermes research: find relevant approved memory about Iris testing
+hermes code: suggest the smallest fix for the current failing check
+hermes staging
+hermes accept <number>
+hermes reject <number>
 ```
-
-Then start Iris from the repo or release. Iris is responsible for starting the
-Hermes sidecar when a Hermes task is submitted. Hermes must pass the runtime
-tool audit before it is allowed to answer.
 
 Do not configure Hermes as a Windows startup app yet. It should not run without
 Iris because Iris owns the safety policy, memory broker, and final response

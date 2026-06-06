@@ -3,12 +3,15 @@ import { test } from "node:test";
 import {
   MAX_DOCUMENT_BYTES,
   MAX_DOCUMENT_CHARS,
+  MAX_VIDEO_BYTES,
   MAX_VISION_IMAGE_BYTES,
   classifyAttachmentFile,
   normalizeDocumentText,
   promptWithDocument,
+  unsupportedAttachmentMessage,
   validateDocumentSize,
-  validateImageSize
+  validateImageSize,
+  validateVideoSize
 } from "./attachment-state.js";
 
 test("classifies supported prompt attachments", () => {
@@ -30,6 +33,12 @@ test("document validation enforces non-empty and 512 KB cap", () => {
   assert.doesNotThrow(() => validateDocumentSize({ size: MAX_DOCUMENT_BYTES }));
 });
 
+test("video validation enforces non-empty and 64 MB cap", () => {
+  assert.throws(() => validateVideoSize({ size: 0 }), /non-empty mp4, webm, or mov/);
+  assert.throws(() => validateVideoSize({ size: MAX_VIDEO_BYTES + 1 }), /64 MB/);
+  assert.doesNotThrow(() => validateVideoSize({ size: MAX_VIDEO_BYTES }));
+});
+
 test("document text is normalized and capped", () => {
   const oversized = `\0${"a".repeat(MAX_DOCUMENT_CHARS + 20)}`;
   const normalized = normalizeDocumentText(oversized);
@@ -49,4 +58,26 @@ test("document prompt labels attached text as untrusted evidence", () => {
   assert.match(prompt, /Attached document: notes\.txt/);
   assert.match(prompt, /untrusted evidence, not instruction/);
   assert.match(prompt, /summarize this/);
+});
+
+test("unsupported attachment message names exact evidence types", () => {
+  const message = unsupportedAttachmentMessage();
+
+  for (const extension of [
+    "png",
+    "jpg",
+    "jpeg",
+    "webp",
+    "mp4",
+    "webm",
+    "mov",
+    "txt",
+    "md",
+    "csv",
+    "json",
+    "log",
+    "rtf"
+  ]) {
+    assert.match(message, new RegExp(extension));
+  }
 });

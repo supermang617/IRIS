@@ -8,7 +8,7 @@ export function classifyVoiceTranscript(transcript, state) {
   }
 
   if (state.interruptionOnly) {
-    if (isInterruption(normalized) || isBareWakeWord(normalized)) {
+    if (isInterruption(normalized) || isBareWakeWord(normalized) || findWakeMatch(normalized)) {
       return { action: "interrupt", prompt: "", source: "interruption", status: "Interrupted." };
     }
 
@@ -67,6 +67,7 @@ function findWakeMatch(text) {
     /\birish\b[\s,.:;!?-]*/i,
     /\beric\s+sway\s*up\b[\s,.:;!?-]*/i,
     /\bhi\s+i'?m\s+eric\s+sway\s*up\b[\s,.:;!?-]*/i,
+    /\bi\s+always\b[\s,.:;!?-]*/i,
     /\bi\s+(?:are|hear|here)\s+a?\s*wake\s*up\b[\s,.:;!?-]*/i
   ];
   for (const pattern of patterns) {

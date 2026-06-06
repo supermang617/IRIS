@@ -384,6 +384,16 @@ fn hermes_staging_list() -> Result<Vec<StagedMemoryProposal>, String> {
 }
 
 #[tauri::command]
+fn hermes_accept_staged_memory(id: u64) -> Result<Vec<StagedMemoryProposal>, String> {
+    accept_staged_memory(id)
+}
+
+#[tauri::command]
+fn hermes_reject_staged_memory(id: u64) -> Result<Vec<StagedMemoryProposal>, String> {
+    reject_staged_memory(id)
+}
+
+#[tauri::command]
 fn hermes_safety_audit() -> Result<HermesSafetyAuditResponse, String> {
     hermes_safety_audit_snapshot()
 }
@@ -1345,7 +1355,7 @@ fn lexical_similarity(left: &str, right: &str) -> f32 {
 }
 
 fn start_hermes_memory_broker_if_enabled() {
-    if !env_flag("IRIS_HERMES_ENABLED") || !env_flag("IRIS_HERMES_MEMORY_BROKER_ENABLED") {
+    if !hermes_enabled() || !hermes_memory_broker_enabled() {
         return;
     }
     let _ = HERMES_BROKER_STARTED.get_or_init(|| {
@@ -1361,6 +1371,28 @@ fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
+}
+
+fn env_flag_default(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(default)
+}
+
+fn hermes_enabled() -> bool {
+    env_flag_default("IRIS_HERMES_ENABLED", true)
+}
+
+fn hermes_sidecar_enabled() -> bool {
+    env_flag_default("IRIS_HERMES_SIDECAR_ENABLED", true)
+}
+
+fn hermes_memory_broker_enabled() -> bool {
+    env_flag_default("IRIS_HERMES_MEMORY_BROKER_ENABLED", true)
+}
+
+fn hermes_memory_search_enabled() -> bool {
+    env_flag_default("IRIS_HERMES_ALLOW_SEARCH", true)
 }
 
 fn hermes_inference_provider() -> String {
@@ -1442,14 +1474,17 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
             "maxProposalChars": MAX_HERMES_PROPOSAL_CHARS,
             "activeMemoryItems": load_memories().map(|items| items.len()).unwrap_or(0),
             "stagingItems": load_staged_memory_proposals().map(|items| items.len()).unwrap_or(0),
-            "hermesEnabled": env_flag("IRIS_HERMES_ENABLED"),
-            "searchEnabled": env_flag("IRIS_HERMES_ALLOW_SEARCH"),
+            "hermesEnabled": hermes_enabled(),
+            "searchEnabled": hermes_memory_search_enabled(),
             "onedriveSyncEnabled": env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
             "inferenceProvider": hermes_inference_provider()
         })),
         ("POST", "/memory/search") => {
-            if !env_flag("IRIS_HERMES_ALLOW_SEARCH") {
-                return json_error("403 Forbidden", "Hermes memory search is disabled");
+            if !hermes_memory_search_enabled() {
+                return json_error(
+                    "403 Forbidden",
+                    "Hermes memory search is disabled by local policy",
+                );
             }
             match serde_json::from_str::<MemorySearchRequest>(body)
                 .map_err(|err| err.to_string())
@@ -1523,15 +1558,15 @@ fn json_error(status: &'static str, error: &str) -> (&'static str, String) {
 
 fn hermes_status_snapshot() -> HermesStatusResponse {
     HermesStatusResponse {
-        enabled: env_flag("IRIS_HERMES_ENABLED"),
-        sidecar_enabled: env_flag("IRIS_HERMES_SIDECAR_ENABLED"),
-        broker_enabled: env_flag("IRIS_HERMES_MEMORY_BROKER_ENABLED"),
+        enabled: hermes_enabled(),
+        sidecar_enabled: hermes_sidecar_enabled(),
+        broker_enabled: hermes_memory_broker_enabled(),
         running: hermes_sidecar_running(),
         profile: "iris_restricted",
         broker_url: "http://127.0.0.1:48731",
         tools: ["iris_query_memory", "iris_propose_memory"],
         acting_tools: [],
-        search_enabled: env_flag("IRIS_HERMES_ALLOW_SEARCH"),
+        search_enabled: hermes_memory_search_enabled(),
         onedrive_sync_enabled: env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
         sequential_tasks_only: true,
         runtime_tool_audit_passed: !hermes_sidecar_running()
@@ -1606,17 +1641,14 @@ fn hermes_sidecar_running() -> bool {
 
 fn start_hermes_sidecar() -> Result<(), String> {
     validate_hermes_provider_policy()?;
-    if !env_flag("IRIS_HERMES_ENABLED") {
-        return Err("Hermes is disabled; set IRIS_HERMES_ENABLED=true first".to_string());
+    if !hermes_enabled() {
+        return Err("Hermes is disabled by local policy".to_string());
     }
-    if !env_flag("IRIS_HERMES_SIDECAR_ENABLED") {
-        return Err(
-            "Hermes sidecar lifecycle is disabled; set IRIS_HERMES_SIDECAR_ENABLED=true first"
-                .to_string(),
-        );
+    if !hermes_sidecar_enabled() {
+        return Err("Hermes sidecar lifecycle is disabled by local policy".to_string());
     }
-    if !env_flag("IRIS_HERMES_MEMORY_BROKER_ENABLED") {
-        return Err("Hermes sidecar requires IRIS_HERMES_MEMORY_BROKER_ENABLED=true".to_string());
+    if !hermes_memory_broker_enabled() {
+        return Err("Hermes sidecar requires the Iris memory broker".to_string());
     }
     start_hermes_memory_broker_if_enabled();
 
@@ -1672,8 +1704,8 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
     let _task_guard = task_lock.lock().map_err(|err| err.to_string())?;
     validate_hermes_task(&request)?;
     validate_hermes_provider_policy()?;
-    if !env_flag("IRIS_HERMES_ENABLED") {
-        return Err("Hermes is disabled".to_string());
+    if !hermes_enabled() {
+        return Err("Hermes is disabled by local policy".to_string());
     }
     if !hermes_sidecar_running() {
         start_hermes_sidecar()?;
@@ -1787,9 +1819,9 @@ fn validate_hermes_task(request: &HermesTaskRequest) -> Result<(), String> {
     match request.mode {
         HermesTaskMode::Reason | HermesTaskMode::CodeSuggestion => Ok(()),
         HermesTaskMode::Research => {
-            if !env_flag("IRIS_HERMES_ALLOW_SEARCH") || !request.explicit_user_research_request {
+            if !hermes_memory_search_enabled() || !request.explicit_user_research_request {
                 return Err(
-                    "Hermes research requires IRIS_HERMES_ALLOW_SEARCH=true and an explicit user research request"
+                    "Hermes research requires enabled local memory search and an explicit user research request"
                         .to_string(),
                 );
             }
@@ -2491,21 +2523,23 @@ mod tests {
     }
 
     #[test]
-    fn search_route_is_disabled_by_default() {
+    fn search_route_is_enabled_by_default_for_local_rag() {
         let (_status, body) = handle_hermes_broker_request(
             "POST /memory/search HTTP/1.1\r\n\r\n{\"query\":\"iris\",\"limit\":5}",
         );
 
-        assert!(body.contains("\"ok\":false"));
-        assert!(body.contains("disabled"));
+        assert!(body.contains("\"ok\":true"));
+        assert!(body.contains("\"readOnly\":true"));
     }
 
     #[test]
-    fn hermes_status_is_disabled_and_text_only_by_default() {
+    fn hermes_status_is_enabled_and_data_only_by_default() {
         let status = hermes_status_snapshot();
 
-        assert!(!status.enabled);
-        assert!(!status.sidecar_enabled);
+        assert!(status.enabled);
+        assert!(status.sidecar_enabled);
+        assert!(status.broker_enabled);
+        assert!(status.search_enabled);
         assert_eq!(status.profile, "iris_restricted");
         assert_eq!(status.tools, ["iris_query_memory", "iris_propose_memory"]);
         assert!(status.acting_tools.is_empty());
@@ -2674,6 +2708,8 @@ pub fn run() {
             dashboard_snapshot,
             delete_memory,
             edit_memory,
+            hermes_accept_staged_memory,
+            hermes_reject_staged_memory,
             hermes_safety_audit,
             hermes_start_sidecar,
             hermes_staging_list,

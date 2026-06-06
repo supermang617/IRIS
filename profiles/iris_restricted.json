@@ -1,6 +1,6 @@
 {
   "name": "iris_restricted",
-  "enabled": false,
+  "enabled": true,
   "inference": {
     "provider": "ollama_local",
     "model_source": "manifest.json",
@@ -43,7 +43,7 @@
     "export_available": false
   },
   "sidecar": {
-    "enabled_by_default": false,
+    "enabled_by_default": true,
     "lifecycle_owner": "iris",
     "script": "plugins/hermes_sidecar/sidecar.py",
     "transport": "stdin_stdout_json",

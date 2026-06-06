@@ -4,8 +4,10 @@ import {
   classifyAttachmentFile,
   normalizeDocumentText,
   promptWithDocument,
+  unsupportedAttachmentMessage,
   validateDocumentSize,
-  validateImageSize
+  validateImageSize,
+  validateVideoSize
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { classifyVoiceTranscript } from "./voice-state.js";
@@ -18,6 +20,7 @@ const elements = {
   attachmentPreview: document.querySelector("#attachment-preview"),
   attachmentRemove: document.querySelector("#attachment-remove"),
   attachmentStrip: document.querySelector("#attachment-strip"),
+  attachButton: document.querySelector("#attach-button"),
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
@@ -152,12 +155,24 @@ function isUsableTranscript(transcript) {
     "(music)",
     "(upbeat music)",
     "[silence]",
-    "(silence)"
+    "(silence)",
+    "[inaudible]",
+    "(inaudible)",
+    "[no speech]",
+    "(no speech)",
+    "[typing]",
+    "(typing)",
+    "[keyboard clicking]",
+    "(keyboard clicking)"
   ]);
   if (blocked.has(normalized)) {
     return false;
   }
-  return !normalized.includes("music playing");
+  return (
+    !normalized.includes("music playing") &&
+    !normalized.includes("keyboard clicking") &&
+    !normalized.includes("inaudible")
+  );
 }
 
 function rememberTurn(role, text) {
@@ -382,6 +397,52 @@ async function logVoiceLatencyReport(trace) {
 
 async function handleMemoryCommand(text) {
   const clean = String(text || "").trim();
+  const hermesResearchMatch = clean.match(/^hermes\s+research\s*[:,-]?\s+(.+)$/i);
+  if (hermesResearchMatch) {
+    await runHermesTask("research", hermesResearchMatch[1], true);
+    return true;
+  }
+
+  const hermesCodeMatch = clean.match(/^hermes\s+code\s*[:,-]?\s+(.+)$/i);
+  if (hermesCodeMatch) {
+    await runHermesTask("code_suggestion", hermesCodeMatch[1], false);
+    return true;
+  }
+
+  if (/^hermes\s+status$/i.test(clean)) {
+    const status = await call("hermes_status");
+    const audit = await call("hermes_safety_audit");
+    elements.hudOutput.textContent = formatHermesStatus(status, audit);
+    return true;
+  }
+
+  if (/^hermes\s+staging$/i.test(clean)) {
+    const staged = await call("hermes_staging_list");
+    elements.hudOutput.textContent = formatStagedMemories(staged);
+    return true;
+  }
+
+  const acceptMatch = clean.match(/^hermes\s+accept\s+(\d+)$/i);
+  if (acceptMatch) {
+    const staged = await call("hermes_accept_staged_memory", { id: Number(acceptMatch[1]) });
+    elements.hudOutput.textContent = `Hermes memory accepted.\n\n${formatStagedMemories(staged)}`;
+    await refreshMemoryPanel();
+    return true;
+  }
+
+  const rejectMatch = clean.match(/^hermes\s+reject\s+(\d+)$/i);
+  if (rejectMatch) {
+    const staged = await call("hermes_reject_staged_memory", { id: Number(rejectMatch[1]) });
+    elements.hudOutput.textContent = `Hermes memory rejected.\n\n${formatStagedMemories(staged)}`;
+    return true;
+  }
+
+  const hermesMatch = clean.match(/^hermes\s*[:,-]?\s+(.+)$/i);
+  if (hermesMatch) {
+    await runHermesTask("reason", hermesMatch[1], false);
+    return true;
+  }
+
   const addMatch = clean.match(/^(?:remember|memory\s+add)\s*[:,-]?\s+(.+)$/i);
   if (addMatch) {
     const memories = await call("add_memory", { text: addMatch[1] });
@@ -414,7 +475,7 @@ async function handleMemoryCommand(text) {
 
   if (/^memory\s+help$/i.test(clean)) {
     elements.hudOutput.textContent =
-      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\n\nIris stores up to 40 short memories.";
+      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Hermes can query approved memory and propose staged memory.";
     return true;
   }
 
@@ -426,6 +487,49 @@ function formatMemories(memories) {
     return "No memories saved.";
   }
   return memories.map((memory) => `${memory.id}. ${memory.text}`).join("\n");
+}
+
+async function runHermesTask(mode, text, explicitUserResearchRequest) {
+  const clean = String(text || "").trim();
+  if (!clean) {
+    elements.hudOutput.textContent = "Type a Hermes task first.";
+    return;
+  }
+  elements.hudOutput.textContent = "Hermes thinking locally.";
+  const response = await call("hermes_submit_task", {
+    request: {
+      mode,
+      text: clean,
+      explicitUserResearchRequest
+    }
+  });
+  const staged = Array.isArray(response.memoryProposals) && response.memoryProposals.length > 0
+    ? `\n\nStaged memory:\n${formatStagedMemories(response.memoryProposals)}`
+    : "";
+  elements.hudOutput.textContent = `${response.text}${staged}`;
+}
+
+function formatHermesStatus(status, audit) {
+  return [
+    `Hermes enabled: ${Boolean(status.enabled)}`,
+    `Sidecar enabled: ${Boolean(status.sidecarEnabled)}`,
+    `Broker enabled: ${Boolean(status.brokerEnabled)}`,
+    `Running: ${Boolean(status.running)}`,
+    `Search enabled: ${Boolean(status.searchEnabled)}`,
+    `Tools: ${(status.tools || []).join(", ")}`,
+    `Acting tools: ${(status.actingTools || []).length}`,
+    `Safety audit: ${Boolean(audit.ok)}`,
+    `External network: ${Boolean(audit.externalNetwork)}`
+  ].join("\n");
+}
+
+function formatStagedMemories(staged) {
+  if (!Array.isArray(staged) || staged.length === 0) {
+    return "No staged Hermes memories.";
+  }
+  return staged
+    .map((item) => `${item.id}. [${item.status}/${item.verdict}] ${item.text}`)
+    .join("\n");
 }
 
 async function toggleMemoryPanel() {
@@ -668,6 +772,7 @@ function setInputsDisabled(disabled) {
   elements.hudInput.disabled = disabled;
   elements.sendButton.disabled = disabled;
   elements.attachmentRemove.disabled = disabled;
+  elements.attachButton.disabled = disabled;
   elements.voiceButton.disabled = false;
   elements.visionButton.disabled = disabled;
   elements.screenButton.disabled = disabled;
@@ -814,6 +919,13 @@ elements.voiceButton.addEventListener("click", () => {
   listenOnce("push");
 });
 
+elements.attachButton.addEventListener("click", () => {
+  if (thinking || speaking || cameraCaptureInProgress) {
+    return;
+  }
+  elements.visionFileInput.click();
+});
+
 elements.memoryButton.addEventListener("click", () => {
   toggleMemoryPanel().catch((error) => {
     elements.hudOutput.textContent = String(error);
@@ -955,7 +1067,7 @@ async function attachFile(file) {
       setDocumentAttachment(await readDocumentAttachment(file));
       return;
     default:
-      throw new Error("Attach an image, a supported video, or a plain text document.");
+      throw new Error(unsupportedAttachmentMessage());
   }
 }
 
@@ -1060,9 +1172,7 @@ async function snapshotFromStream(stream) {
 }
 
 async function snapshotFromVideoFile(file) {
-  if (file.size <= 0) {
-    throw new Error("Video attachment needs a non-empty file.");
-  }
+  validateVideoSize(file);
   const video = document.createElement("video");
   video.muted = true;
   video.playsInline = true;

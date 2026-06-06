@@ -108,8 +108,8 @@ fn snapshot_from_parts(
             filesystem_scope: iris_policy::FILESYSTEM_SCOPE,
         },
         hermes: HermesStatus {
-            enabled_by_default: false,
-            sidecar_enabled_by_default: false,
+            enabled_by_default: true,
+            sidecar_enabled_by_default: true,
             lifecycle_owner: "iris",
             transport: "stdin_stdout_json",
             broker_url: "http://127.0.0.1:48731",
@@ -117,7 +117,7 @@ fn snapshot_from_parts(
             approved_tools: vec!["iris_query_memory", "iris_propose_memory"],
             acting_tools: Vec::new(),
             parallel_inference_streams: 1,
-            status: "disabled_by_default_gated_loopback_only",
+            status: "enabled_local_rag_helper_no_computer_control",
         },
     }
 }
@@ -169,7 +169,8 @@ mod tests {
         assert!(!snapshot.model.fallback_models_allowed);
         assert_eq!(snapshot.num_ctx_ceiling, 8192);
         assert_eq!(snapshot.safety.runtime_network, "Runtime Network: Disabled");
-        assert!(!snapshot.hermes.enabled_by_default);
+        assert!(snapshot.hermes.enabled_by_default);
+        assert!(snapshot.hermes.sidecar_enabled_by_default);
         assert_eq!(snapshot.hermes.lifecycle_owner, "iris");
         assert_eq!(snapshot.hermes.broker_url, "http://127.0.0.1:48731");
         assert_eq!(
@@ -178,5 +179,9 @@ mod tests {
         );
         assert!(snapshot.hermes.acting_tools.is_empty());
         assert_eq!(snapshot.hermes.parallel_inference_streams, 1);
+        assert_eq!(
+            snapshot.hermes.status,
+            "enabled_local_rag_helper_no_computer_control"
+        );
     }
 }

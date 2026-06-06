@@ -6,6 +6,16 @@ Run this launcher from the repository root:
 C:\Projects\IRIS\Start Iris.vbs
 ```
 
+Before opening the desktop shell, run the launcher self-check:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Projects\IRIS\Start Iris.ps1" -SelfCheck
+```
+
+The self-check runs the read-only preflight wizard, the repository audit, and
+the runtime self-check. If it fails, fix the reported local prerequisite before
+starting manual desktop testing.
+
 The launcher also refreshes Iris shortcuts on your user Desktop, Start Menu, and Windows pinned-taskbar shortcut folder. Windows may still require manually choosing "Pin to taskbar" from the visible shortcut if Explorer does not honor programmatic pinning.
 
 Do not open `target\debug\iris-tauri.exe` directly after a `tauri dev` run. A dev-built debug executable can try to load `127.0.0.1` and show a connection-refused page if the dev server is not running. The launcher rebuilds the standalone debug shell first, then starts Iris.
@@ -36,7 +46,7 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 10. Try `Iris what can you do right now?` as one phrase and confirm only the request after `Iris` is sent.
 11. While Iris is speaking, say `Iris`, `stop`, or `Iris stop`.
 12. Confirm Iris stops speaking and returns to listening.
-13. Paste or drag a small png, jpg, jpeg, or webp image into the text bar.
+13. Click the attachment icon, paste, or drag a small png, jpg, jpeg, or webp image into the text bar.
 14. Confirm a small attachment preview appears above the text bar, then ask Iris what is in the image.
 15. Click and drag the narrow strip above the text bar or the small handle at the left of the text bar.
 16. Confirm the Iris window moves without disrupting typing or buttons.
@@ -48,9 +58,9 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 22. Confirm Iris briefly hides, captures the area underneath the Iris window, answers what it sees, and speaks the answer.
 23. Type a screen-specific question, then click the screen icon.
 24. Confirm Iris uses that typed question for the screen-area capture.
-25. Drag a small mp4, webm, or mov video into the text bar.
+25. Click the attachment icon, paste, or drag a small mp4, webm, or mov video into the text bar.
 26. Confirm Iris attaches one video frame preview for the next prompt.
-27. Drag a txt, md, csv, json, log, or rtf text document into the text bar.
+27. Click the attachment icon, paste, or drag a txt, md, csv, json, log, or rtf text document into the text bar.
 28. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
 
 ## Hermes and Memory Boundary Checks
@@ -65,13 +75,13 @@ cargo run -p iris-runtime -- --dashboard-json
 
 Expected:
 
-- Hermes is disabled by default unless explicitly enabled by environment flags.
+- Hermes is enabled by default as an Iris-owned local RAG and memory-transfer helper.
 - Hermes exposes only `iris_query_memory` and `iris_propose_memory`.
-- Hermes cannot write active memory.
+- Hermes can propose staged memory, and Iris can transfer it into active memory only after explicit `hermes accept <number>`.
 - Hermes cannot access raw memory files.
 - Hermes cannot access OneDrive.
 - Hermes cannot run commands, edit files, control browsers/windows, use clipboard, or operate the computer.
-- Memory search is disabled unless `IRIS_HERMES_ALLOW_SEARCH=true`.
+- Memory search is enabled for local approved memory by default.
 - Memory proposals go to staging and require Iris/user approval before promotion.
 - OneDrive archive export remains unavailable until real encryption is implemented.
 - OneDrive paths are cold archive only and must end with `.iris-memory-archive.enc`.
@@ -109,6 +119,7 @@ If Iris stops listening, the last few lines of this file should show whether nat
 - No system control should occur.
 - No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
 - No continuous screen capture should occur. The screen icon performs one explicit capped capture of the area under Iris.
+- File attachments are user selected through the attachment icon, paste, or drag/drop, and are consumed by the next prompt only.
 - The configured model remains `huihui_ai/gemma-4-abliterated:e2b`.
 - The configured TTS voice remains Kokoro `af_heart`.
 - Wake-word mode is armed by default.

@@ -92,6 +92,18 @@ test("wake up mishear from diagnostics arms listening", () => {
   assert.equal(decision.action, "arm-wake-followup");
 });
 
+test("Iris command misheard as I always still submits request", () => {
+  const decision = classifyVoiceTranscript("I always tell me one long sentence about law.", {
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false
+  });
+
+  assert.equal(decision.action, "submit");
+  assert.equal(decision.prompt, "tell me one long sentence about law.");
+  assert.equal(decision.source, "wake-word");
+});
+
 test("armed wake word submits the follow-up utterance", () => {
   const decision = classifyVoiceTranscript("what can you do right now", {
     voiceLoop: false,
@@ -129,6 +141,18 @@ test("interruption word stops speech in any voice mode", () => {
 test("bare Iris interrupts only during speech interruption listening", () => {
   const decision = classifyVoiceTranscript("Iris", {
     voiceLoop: true,
+    wakeWord: true,
+    wakeCommandArmed: false,
+    interruptionOnly: true
+  });
+
+  assert.equal(decision.action, "interrupt");
+  assert.equal(decision.source, "interruption");
+});
+
+test("embedded Iris interrupts during speech interruption listening", () => {
+  const decision = classifyVoiceTranscript("- Stamps it. - Iris. - And these.", {
+    voiceLoop: false,
     wakeWord: true,
     wakeCommandArmed: false,
     interruptionOnly: true

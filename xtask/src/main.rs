@@ -55,6 +55,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "app/index.html",
         "docs/adaptive-shell.md",
         "docs/download-and-run.md",
+        "docs/finish-checklist.md",
         "docs/github-settings.md",
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
@@ -98,6 +99,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let spec = read(root.join("SPEC.md"))?;
     let limitations = read(root.join("known-limitations.md"))?;
     let download = read(root.join("docs/download-and-run.md"))?;
+    let finish_checklist = read(root.join("docs/finish-checklist.md"))?;
     let architecture = read(root.join("docs/iris-architecture.md"))?;
     let installer = read(root.join("docs/installer-preflight.md"))?;
     let signed_installer = read(root.join("docs/signed-installer-decision.md"))?;
@@ -137,7 +139,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     for required in [
         "Hermes",
-        "disabled by default",
+        "enabled for local memory query/proposal by default",
         "iris_query_memory",
         "iris_propose_memory",
         "OneDrive",
@@ -211,6 +213,17 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         return Err(
             "download guide must describe cloning, manual testing, and bug-fix scope".to_string(),
         );
+    }
+    for required in [
+        "Phase 1: Manual Desktop Readiness",
+        "Start Iris.ps1 -SelfCheck",
+        "docs/manual-test.md",
+        "No fallback models",
+        "No autonomous computer use",
+    ] {
+        if !finish_checklist.contains(required) {
+            return Err(format!("finish checklist missing `{required}`"));
+        }
     }
     if !architecture.contains("That is not fully active in v0.1")
         || !architecture.contains("prompt-injection defense")
@@ -442,7 +455,7 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
     let profile = read(root.join("profiles/iris_restricted.json"))?;
     for required in [
         "\"name\": \"iris_restricted\"",
-        "\"enabled\": false",
+        "\"enabled\": true",
         "\"provider\": \"ollama_local\"",
         "\"model_source\": \"manifest.json\"",
         "\"endpoint\": \"http://127.0.0.1:11434/api/generate\"",
@@ -477,7 +490,7 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "\"export_available\": false",
         "\"acting_tools\": []",
         "\"external_network\": false",
-        "\"enabled_by_default\": false",
+        "\"enabled_by_default\": true",
         "\"lifecycle_owner\": \"iris\"",
         "\"script\": \"plugins/hermes_sidecar/sidecar.py\"",
         "\"transport\": \"stdin_stdout_json\"",
@@ -685,7 +698,7 @@ mod tests {
     fn hermes_profile_declares_phase3_lifecycle_bounds() {
         let profile = read(test_root().join("profiles/iris_restricted.json")).unwrap();
 
-        assert!(profile.contains("\"enabled_by_default\": false"));
+        assert!(profile.contains("\"enabled_by_default\": true"));
         assert!(profile.contains("\"lifecycle_owner\": \"iris\""));
         assert!(profile.contains("\"transport\": \"stdin_stdout_json\""));
         assert!(profile.contains("\"research_requires_explicit_user_request\": true"));

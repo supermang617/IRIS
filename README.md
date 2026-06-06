@@ -18,7 +18,7 @@ Contact: super.mangmail@gmail.com
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.
 - Document-image OCR: local Tesseract OCR when installed.
 - Memory: Iris-owned local memory plus a restricted Hermes broker/staging path.
-- Hermes: optional restricted text-only sidecar, disabled by default.
+- Hermes: restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal by default.
 - OneDrive archive policy: cold archive only, encrypted archive names must end with `.iris-memory-archive.enc`.
 
 No fallback models, model pulling, model auto-selection, critic/worker split, multi-model debate, external runtime network, clipboard access, browser automation, or computer control are enabled.
@@ -127,6 +127,7 @@ C:\Projects\IRIS\Start Iris.vbs
 ```
 
 Manual test checklist: `docs/manual-test.md`.
+Finish checklist: `docs/finish-checklist.md`.
 
 Diagnostics:
 

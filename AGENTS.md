@@ -44,7 +44,7 @@ Allowed public contribution scope: bug fixes, diagnostics fixes, documentation f
 
 The active runtime baseline includes local Ollama text/vision inference, native local ASR, Kokoro ONNX TTS, one-shot image/camera/screen-area evidence probes, Iris-owned local memory, restricted Hermes memory broker/staging, and OneDrive cold-archive policy only.
 
-Hermes remains disabled by default, fail-closed, text-only, sequential, single-model, and restricted to `iris_query_memory` and `iris_propose_memory`. Hermes must not expose acting tools or access shell, file edit, browser, clipboard, window, process, automation, plugin, OneDrive, raw memory, model switching, model pulling, fallback-model, or external-network surfaces.
+Hermes is enabled by default as an Iris-owned local RAG and memory-transfer helper. Hermes may act only inside Iris-owned data boundaries: query approved memory, propose memory into staging, and transfer staged memory into active Iris memory only after explicit Iris/user acceptance. Hermes remains fail-closed, text-only, sequential, single-model, and restricted to `iris_query_memory` and `iris_propose_memory`. Hermes must not expose shell, file edit, browser, clipboard, window, process, automation, plugin, OneDrive, raw memory, model switching, model pulling, fallback-model, external-network, or autonomous computer-control surfaces.
 
 Before a public cleanup commit or push, run:
 
