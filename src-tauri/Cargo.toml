@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2024"
 
 [dependencies]
-cpal = "0.15.3"
+cpal = "0.17.3"
 iris-config = { path = "../crates/iris-config" }
 iris-core-types = { path = "../crates/iris-core-types" }
 iris-hardware = { path = "../crates/iris-hardware" }
