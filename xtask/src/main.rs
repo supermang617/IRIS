@@ -417,10 +417,11 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "multiModelDebate",
         "parallelInferenceStreams",
         "contains_prompt_injection_text",
+        "should_summarize_memory",
+        "iris_broker.iris_generate_text",
+        "propose_memory_if_requested",
         "stdin",
         "stdout",
-        "No files edited, commands run, or tests executed",
-        "No external browsing was performed",
     ] {
         if !sidecar.contains(required) {
             return Err(format!("Hermes sidecar missing `{required}`"));

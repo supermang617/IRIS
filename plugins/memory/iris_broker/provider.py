@@ -102,6 +102,41 @@ def iris_query_memory(query: str, limit: int = 5) -> dict[str, Any]:
     return _broker_post(SEARCH_ENDPOINT, {"query": clean_query, "limit": min(max(limit, 1), 10)})
 
 
+def iris_generate_text(prompt: str) -> str:
+    clean_prompt = prompt.strip()
+    if not clean_prompt:
+        raise ValueError("generation prompt cannot be empty")
+    payload = {
+        "model": configured_iris_model(),
+        "prompt": clean_prompt,
+        "stream": False,
+        "think": False,
+        "keep_alive": "10m",
+        "options": {
+            "num_predict": 384,
+            "temperature": 0.1,
+            "top_k": 20,
+            "top_p": 0.8,
+        },
+    }
+    request = urllib.request.Request(
+        IRIS_OLLAMA_GENERATE_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise IrisBrokerUnavailable(f"local Ollama unavailable: {error}") from error
+    parsed = json.loads(data.decode("utf-8"))
+    text = str(parsed.get("response", "")).strip()
+    if not text:
+        raise IrisBrokerUnavailable("local Ollama returned an empty Hermes response")
+    return text
+
+
 def iris_propose_memory(text: str, source: str = "hermes", evidence: str | None = None) -> dict[str, Any]:
     clean_text = " ".join(text.split())
     if not clean_text:

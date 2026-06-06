@@ -1179,6 +1179,20 @@ fn web_proposal_missing_evidence(source: Option<&str>, evidence: Option<&str>) -
 
 fn search_active_memories(query: &str, limit: usize) -> Result<Vec<MemorySearchResult>, String> {
     let query = normalize_hermes_query(query)?;
+    let capped_limit = limit.min(10);
+    if query == "*" {
+        let mut memories = load_memories()?;
+        memories.sort_by_key(|memory| std::cmp::Reverse(memory.updated_ms));
+        memories.truncate(capped_limit);
+        return Ok(memories
+            .into_iter()
+            .map(|memory| MemorySearchResult {
+                id: memory.id,
+                text: memory.text,
+                score: 1.0,
+            })
+            .collect());
+    }
     let query_lower = query.to_ascii_lowercase();
     let mut results = load_memories()?
         .into_iter()
@@ -1202,7 +1216,7 @@ fn search_active_memories(query: &str, limit: usize) -> Result<Vec<MemorySearchR
             .total_cmp(&left.score)
             .then(left.id.cmp(&right.id))
     });
-    results.truncate(limit.min(10));
+    results.truncate(capped_limit);
     Ok(results)
 }
 
@@ -2530,6 +2544,13 @@ mod tests {
 
         assert!(body.contains("\"ok\":true"));
         assert!(body.contains("\"readOnly\":true"));
+    }
+
+    #[test]
+    fn memory_search_wildcard_is_valid_for_summary_tasks() {
+        let found = search_active_memories("*", 3).expect("wildcard memory search");
+
+        assert!(found.len() <= 3);
     }
 
     #[test]

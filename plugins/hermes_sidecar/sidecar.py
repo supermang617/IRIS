@@ -13,6 +13,13 @@ MAX_TASK_CHARS = 2000
 ALLOWED_MODES = {"reason", "research", "code_suggestion"}
 EXPOSED_TOOLS = ["iris_query_memory", "iris_propose_memory"]
 ACTING_TOOLS: list[str] = []
+MEMORY_SUMMARY_TRIGGERS = (
+    "what you know from memory",
+    "what do you know from memory",
+    "summarize memory",
+    "summarize what you know",
+    "memory summary",
+)
 
 sys.path.insert(0, str(PROVIDER_DIR))
 
@@ -57,18 +64,22 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("research mode requires an explicit user research request")
 
     memory = []
+    memory_error = ""
     if mode in {"reason", "research"}:
         try:
-            memory = iris_broker.iris_query_memory(text[:120], 5).get("results", [])
-        except Exception:
+            query = "*" if should_summarize_memory(text) else text[:120]
+            memory = iris_broker.iris_query_memory(query, 8).get("results", [])
+        except Exception as error:
+            memory_error = str(error)
             memory = []
 
-    response_text = bounded_response(mode, text, memory)
+    proposals = propose_memory_if_requested(text)
+    response_text = model_response(mode, text, memory, memory_error)
     return {
         "ok": True,
         "mode": mode,
         "text": response_text[:MAX_RESPONSE_CHARS],
-        "memoryProposals": [],
+        "memoryProposals": proposals,
     }
 
 
@@ -112,15 +123,79 @@ def contains_prompt_injection_text(text: str) -> bool:
     return any(phrase in lowered for phrase in blocked)
 
 
-def bounded_response(mode: str, text: str, memory: list[dict[str, Any]]) -> str:
-    if mode == "code_suggestion":
-        return f"Hermes code suggestion only. No files edited, commands run, or tests executed. Suggestion: {text}"
-    if memory:
-        memory_lines = "; ".join(str(item.get("text", "")) for item in memory[:3] if item.get("text"))
-        return f"Hermes reasoning summary using Iris-approved memory only: {text} Relevant memory: {memory_lines}"
-    if mode == "research":
-        return f"Hermes research summary is bounded to approved local broker context. No external browsing was performed. Task: {text}"
-    return f"Hermes reasoning summary: {text}"
+def should_summarize_memory(text: str) -> bool:
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in MEMORY_SUMMARY_TRIGGERS)
+
+
+def propose_memory_if_requested(text: str) -> list[dict[str, Any]]:
+    lowered = text.lower()
+    prefixes = (
+        "remember that ",
+        "save to memory ",
+        "save this to memory ",
+        "propose memory ",
+        "stage memory ",
+    )
+    proposal = ""
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            proposal = text[len(prefix) :].strip(" :-")
+            break
+    if not proposal:
+        return []
+    try:
+        result = iris_broker.iris_propose_memory(proposal, "hermes_task")
+    except Exception as error:
+        return [{
+            "id": 0,
+            "text": f"Hermes memory proposal failed: {error}",
+            "source": "hermes_task",
+            "status": "rejected",
+            "verdict": "rejected",
+            "createdMs": 0,
+            "updatedMs": 0,
+        }]
+    staging_id = result.get("staging_id") or result.get("stagingId") or 0
+    return [{
+        "id": int(staging_id),
+        "text": proposal,
+        "source": "hermes_task",
+        "status": "pending" if staging_id else "rejected",
+        "verdict": str(result.get("verdict", "staged")),
+        "createdMs": 0,
+        "updatedMs": 0,
+    }]
+
+
+def model_response(mode: str, text: str, memory: list[dict[str, Any]], memory_error: str) -> str:
+    memory_block = format_memory(memory)
+    if memory_error:
+        memory_block = f"Memory retrieval failed: {memory_error}"
+    prompt = (
+        "You are Hermes, Iris's local RAG and memory-transfer helper.\n"
+        "Use only local approved Iris memory shown below and the user's task.\n"
+        "Do not claim capabilities outside Iris-owned local memory and RAG boundaries.\n"
+        "If memory is empty, say what is missing and give the best local next step.\n"
+        "Be direct and useful.\n\n"
+        f"Mode: {mode}\n"
+        f"Approved memory:\n{memory_block}\n\n"
+        f"User task: {text}\n"
+        "Hermes:"
+    )
+    try:
+        return iris_broker.iris_generate_text(prompt)
+    except Exception as error:
+        return f"Hermes could not complete the task because local model generation failed: {error}"
+
+
+def format_memory(memory: list[dict[str, Any]]) -> str:
+    lines = []
+    for item in memory:
+        text = str(item.get("text", "")).strip()
+        if text:
+            lines.append(f"- {text}")
+    return "\n".join(lines) if lines else "(no approved memory retrieved)"
 
 
 def _emit(payload: dict[str, Any]) -> None:
