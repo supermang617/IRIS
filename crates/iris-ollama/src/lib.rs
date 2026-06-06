@@ -34,7 +34,7 @@ pub struct OllamaSettings {
 
 impl OllamaSettings {
     pub fn from_manifest(manifest: &iris_config::ProjectManifest) -> Result<Self, String> {
-        manifest.validate_phase0_policy()?;
+        manifest.validate_v0_1_policy()?;
         Ok(Self {
             generate_url: DEFAULT_OLLAMA_GENERATE_URL.to_string(),
             model_id: manifest.model_policy.model_id.clone(),

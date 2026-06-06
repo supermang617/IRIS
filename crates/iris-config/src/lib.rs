@@ -24,7 +24,7 @@ pub struct ProjectSection {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ModelPolicy {
-    pub phase0_loads_model: bool,
+    pub runtime_loads_model: bool,
     pub provider: String,
     pub model_id: String,
     pub model_display_name: String,
@@ -93,14 +93,14 @@ impl ProjectManifest {
         serde_json::from_str(input).map_err(|err| format!("invalid Iris manifest JSON: {err}"))
     }
 
-    pub fn validate_phase0_policy(&self) -> Result<(), String> {
+    pub fn validate_v0_1_policy(&self) -> Result<(), String> {
         require(
             self.project.target_platform == "windows",
             "Iris prototype target platform must be windows",
         )?;
         require(
-            !self.model_policy.phase0_loads_model,
-            "Phase 0 must not load a model",
+            !self.model_policy.runtime_loads_model,
+            "Iris runtime must not eagerly load a model from manifest policy",
         )?;
         require(
             self.model_policy.provider == "ollama_local",
@@ -231,7 +231,7 @@ pub fn load_manifest_from_workspace(start: impl AsRef<Path>) -> Result<ProjectMa
     let input = std::fs::read_to_string(&manifest_path)
         .map_err(|err| format!("{}: {err}", manifest_path.display()))?;
     let manifest = ProjectManifest::from_json_str(&input)?;
-    manifest.validate_phase0_policy()?;
+    manifest.validate_v0_1_policy()?;
     Ok(manifest)
 }
 
@@ -270,9 +270,9 @@ mod tests {
     const VALID_MANIFEST: &str = include_str!("../../../manifest.json");
 
     #[test]
-    fn validates_phase0_manifest_policy() {
+    fn validates_v0_1_manifest_policy() {
         let manifest = ProjectManifest::from_json_str(VALID_MANIFEST).unwrap();
-        manifest.validate_phase0_policy().unwrap();
+        manifest.validate_v0_1_policy().unwrap();
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
             "\"fallback_models_allowed\": true",
         );
         let manifest = ProjectManifest::from_json_str(&input).unwrap();
-        assert!(manifest.validate_phase0_policy().is_err());
+        assert!(manifest.validate_v0_1_policy().is_err());
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
             "\"runtime_external_network\": \"enabled\"",
         );
         let manifest = ProjectManifest::from_json_str(&input).unwrap();
-        assert!(manifest.validate_phase0_policy().is_err());
+        assert!(manifest.validate_v0_1_policy().is_err());
     }
 
     #[test]

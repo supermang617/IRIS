@@ -6,7 +6,7 @@
     "target_platform": "windows"
   },
   "model_policy": {
-    "phase0_loads_model": false,
+    "runtime_loads_model": false,
     "provider": "ollama_local",
     "model_id": "huihui_ai/gemma-4-abliterated:e2b",
     "model_display_name": "Huihui Gemma 4 Abliterated E2B",

@@ -1,4 +1,4 @@
-use iris_cognition::CognitionStub;
+use iris_cognition::GatedEchoCognition;
 use iris_context_gate::gate_context;
 use iris_core_types::{
     AssistantRequest, AssistantResponse, ContextSource, GatedContextBundle, RawContextItem,
@@ -16,14 +16,14 @@ impl HudInput {
 }
 
 #[derive(Debug, Default)]
-pub struct Phase0Hud {
-    cognition: CognitionStub,
+pub struct LocalHud {
+    cognition: GatedEchoCognition,
 }
 
-impl Phase0Hud {
+impl LocalHud {
     pub fn new() -> Self {
         Self {
-            cognition: CognitionStub::new(),
+            cognition: GatedEchoCognition::new(),
         }
     }
 
@@ -37,7 +37,7 @@ impl Phase0Hud {
     }
 
     pub fn reset_after_panic_stop(&mut self) {
-        self.cognition = CognitionStub::new();
+        self.cognition = GatedEchoCognition::new();
     }
 
     pub fn is_panic_stopped(&self) -> bool {
@@ -67,15 +67,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn typed_hud_input_gets_dummy_response() {
-        let hud = Phase0Hud::new();
+    fn typed_hud_input_gets_local_response() {
+        let hud = LocalHud::new();
         let response = hud.submit_text(HudInput::typed("what can you do?"));
         assert!(response.text.contains("what can you do?"));
     }
 
     #[test]
-    fn panic_stop_blocks_dummy_response_until_reset() {
-        let mut hud = Phase0Hud::new();
+    fn panic_stop_blocks_local_response_until_reset() {
+        let mut hud = LocalHud::new();
         hud.panic_stop();
         assert!(hud.is_panic_stopped());
 

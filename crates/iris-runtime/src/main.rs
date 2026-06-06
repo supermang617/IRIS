@@ -38,14 +38,14 @@ fn run() -> Result<(), String> {
         }
         Some("--self-check") | None => {
             print_startup_banner()?;
-            print_response("Phase 0 startup self-check");
+            print_response("Iris startup self-check");
             Ok(())
         }
         Some("--help") | Some("-h") => {
             print_help();
             Ok(())
         }
-        Some(other) => Err(format!("unsupported Phase 0 runtime option: {other}")),
+        Some(other) => Err(format!("unsupported Iris runtime option: {other}")),
     }
 }
 
@@ -99,11 +99,11 @@ fn print_image_probe_response(image_path: &str, prompt: &str) {
 
 fn run_interactive() -> Result<(), String> {
     print_startup_banner()?;
-    println!("Phase 0 typed HUD ready.");
-    println!("Controls: :panic stops dummy cognition, :reset resumes it, :quit exits.");
+    println!("Iris typed HUD ready.");
+    println!("Controls: :panic stops local cognition, :reset resumes it, :quit exits.");
 
     let stdin = io::stdin();
-    let mut hud = iris_ui::Phase0Hud::new();
+    let mut hud = iris_ui::LocalHud::new();
     let mut stdout = io::stdout();
 
     loop {

@@ -1,11 +1,11 @@
 use iris_core_types::{AssistantRequest, AssistantResponse, AuthorityClass, GatedContextBundle};
 
 #[derive(Debug, Clone, Default)]
-pub struct CognitionStub {
+pub struct GatedEchoCognition {
     cancelled: bool,
 }
 
-impl CognitionStub {
+impl GatedEchoCognition {
     pub fn new() -> Self {
         Self { cancelled: false }
     }
@@ -21,17 +21,17 @@ impl CognitionStub {
     pub fn respond(&self, request: AssistantRequest) -> AssistantResponse {
         if self.cancelled {
             return AssistantResponse {
-                text: "Panic Stop is active. Dummy cognition work was cancelled.".to_string(),
+                text: "Panic Stop is active. Local cognition work was cancelled.".to_string(),
                 memory_candidates: Vec::new(),
                 cancelled: true,
             };
         }
 
-        dummy_response(&request.gated_context)
+        gated_echo_response(&request.gated_context)
     }
 }
 
-pub fn dummy_response(bundle: &GatedContextBundle) -> AssistantResponse {
+pub fn gated_echo_response(bundle: &GatedContextBundle) -> AssistantResponse {
     let user_text = bundle
         .items
         .iter()
@@ -46,7 +46,7 @@ pub fn dummy_response(bundle: &GatedContextBundle) -> AssistantResponse {
     };
 
     AssistantResponse::text_only(format!(
-        "Phase 0 dummy response: I received gated input: {user_text}.{evidence_note}"
+        "Local gated response: I received gated input: {user_text}.{evidence_note}"
     ))
 }
 
@@ -60,15 +60,15 @@ mod tests {
     #[test]
     fn responds_only_to_gated_context() {
         let bundle = gate_context(vec![RawContextItem::new(ContextSource::HudText, "hello")]);
-        let response = dummy_response(&bundle);
+        let response = gated_echo_response(&bundle);
         assert!(response.text.contains("hello"));
         assert!(!response.cancelled);
     }
 
     #[test]
-    fn panic_stop_cancels_dummy_work() {
+    fn panic_stop_cancels_local_work() {
         let bundle = gate_context(vec![RawContextItem::new(ContextSource::HudText, "hello")]);
-        let mut cognition = CognitionStub::new();
+        let mut cognition = GatedEchoCognition::new();
         cognition.cancel();
         let response = cognition.respond(AssistantRequest {
             gated_context: bundle,
