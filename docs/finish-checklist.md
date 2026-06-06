@@ -52,18 +52,20 @@ Exit criteria:
 
 ## Phase 4: Local Memory and Hermes RAG
 
-Goal: make Hermes useful as a local RAG and memory-transfer helper while keeping computer-control surfaces out.
+Goal: make Hermes useful as a research, local RAG, and memory-transfer helper while keeping computer-control surfaces out.
 
 - Keep Hermes enabled by default for Iris-owned local memory query and staged memory proposal.
-- Keep exposed Hermes tools limited to `iris_query_memory` and `iris_propose_memory`.
+- Keep exposed Hermes tools limited to `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
+- Route natural Iris online/research requests through Hermes.
 - Confirm proposals stay staged until Iris/user approval.
 - Confirm OneDrive remains cold archive policy only.
 - Support manual desktop commands for Hermes status, local reasoning, local research, code suggestion text, staging, accept, and reject.
 
 Exit criteria:
 
-- `cargo run -p iris-runtime -- --dashboard-json` reports Hermes as enabled local RAG with no acting tools.
+- `cargo run -p iris-runtime -- --dashboard-json` reports Hermes as enabled sandboxed research/RAG with no acting tools.
 - Manual testing shows Hermes can query approved memory and propose staged memory.
+- Manual testing shows Iris can route online/research requests through Hermes web research.
 - Manual testing shows Hermes cannot write active memory without explicit accept and cannot access OneDrive.
 
 ## Phase 5: Release Hardening

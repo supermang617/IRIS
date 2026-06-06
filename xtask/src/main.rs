@@ -366,10 +366,11 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "STATUS_ENDPOINT = \"/memory/status\"",
         "SEARCH_ENDPOINT = \"/memory/search\"",
         "PROPOSE_ENDPOINT = \"/memory/propose\"",
-        "EXPOSED_TOOLS = (\"iris_query_memory\", \"iris_propose_memory\")",
+        "EXPOSED_TOOLS = (\"iris_query_memory\", \"iris_propose_memory\", \"iris_web_research\")",
         "def startup_check()",
         "def iris_query_memory(",
         "def iris_propose_memory(",
+        "def iris_web_research(",
         "PROMPT_INJECTION_PHRASES",
         "web_proposal_missing_evidence",
         "def inference_policy()",
@@ -411,7 +412,7 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "iris_broker.startup_check()",
         "runtime_status()",
         "ALLOWED_MODES = {\"reason\", \"research\", \"code_suggestion\"}",
-        "EXPOSED_TOOLS = [\"iris_query_memory\", \"iris_propose_memory\"]",
+        "EXPOSED_TOOLS = [\"iris_query_memory\", \"iris_propose_memory\", \"iris_web_research\"]",
         "ACTING_TOOLS: list[str] = []",
         "sequentialTasksOnly",
         "multiModelDebate",
@@ -490,7 +491,7 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "\"live_json_memory_on_onedrive\": false",
         "\"export_available\": false",
         "\"acting_tools\": []",
-        "\"external_network\": false",
+        "\"external_network\": true",
         "\"enabled_by_default\": true",
         "\"lifecycle_owner\": \"iris\"",
         "\"script\": \"plugins/hermes_sidecar/sidecar.py\"",
@@ -513,7 +514,13 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         }
     }
     let tools = profile_array_values(&profile, "tools")?;
-    if tools != ["iris_query_memory", "iris_propose_memory"] {
+    if tools
+        != [
+            "iris_query_memory",
+            "iris_propose_memory",
+            "iris_web_research",
+        ]
+    {
         return Err(format!(
             "Hermes restricted profile exposes unexpected tools: {}",
             tools.join(", ")
@@ -663,7 +670,14 @@ mod tests {
         let tools = profile_array_values(&profile, "tools").unwrap();
         let acting_tools = profile_array_values(&profile, "acting_tools").unwrap();
 
-        assert_eq!(tools, ["iris_query_memory", "iris_propose_memory"]);
+        assert_eq!(
+            tools,
+            [
+                "iris_query_memory",
+                "iris_propose_memory",
+                "iris_web_research"
+            ]
+        );
         assert!(acting_tools.is_empty());
     }
 

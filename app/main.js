@@ -10,6 +10,7 @@ import {
   validateVideoSize
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
+import { classifyHermesRoute } from "./hermes-routing.js";
 import { classifyVoiceTranscript } from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
@@ -397,17 +398,7 @@ async function logVoiceLatencyReport(trace) {
 
 async function handleMemoryCommand(text) {
   const clean = String(text || "").trim();
-  const hermesResearchMatch = clean.match(/^hermes\s+research\s*[:,-]?\s+(.+)$/i);
-  if (hermesResearchMatch) {
-    await runHermesTask("research", hermesResearchMatch[1], true);
-    return true;
-  }
-
-  const hermesCodeMatch = clean.match(/^hermes\s+code\s*[:,-]?\s+(.+)$/i);
-  if (hermesCodeMatch) {
-    await runHermesTask("code_suggestion", hermesCodeMatch[1], false);
-    return true;
-  }
+  const hermesRoute = classifyHermesRoute(clean);
 
   if (/^hermes\s+status$/i.test(clean)) {
     const status = await call("hermes_status");
@@ -437,9 +428,13 @@ async function handleMemoryCommand(text) {
     return true;
   }
 
-  const hermesMatch = clean.match(/^hermes\s*[:,-]?\s+(.+)$/i);
-  if (hermesMatch) {
-    await runHermesTask("reason", hermesMatch[1], false);
+  if (hermesRoute.route !== "none") {
+    await runHermesTask(
+      hermesRoute.mode,
+      hermesRoute.text,
+      hermesRoute.mode === "research",
+      hermesRoute.route
+    );
     return true;
   }
 
@@ -475,7 +470,7 @@ async function handleMemoryCommand(text) {
 
   if (/^memory\s+help$/i.test(clean)) {
     elements.hudOutput.textContent =
-      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Hermes can query approved memory and propose staged memory.";
+      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Online and research requests are routed through Iris to Hermes.";
     return true;
   }
 
@@ -489,13 +484,13 @@ function formatMemories(memories) {
   return memories.map((memory) => `${memory.id}. ${memory.text}`).join("\n");
 }
 
-async function runHermesTask(mode, text, explicitUserResearchRequest) {
+async function runHermesTask(mode, text, explicitUserResearchRequest, route = "explicit") {
   const clean = String(text || "").trim();
   if (!clean) {
     elements.hudOutput.textContent = "Type a Hermes task first.";
     return;
   }
-  elements.hudOutput.textContent = "Hermes thinking locally.";
+  elements.hudOutput.textContent = route === "implicit" ? "Iris is researching through Hermes." : "Hermes thinking locally.";
   const response = await call("hermes_submit_task", {
     request: {
       mode,
@@ -506,7 +501,7 @@ async function runHermesTask(mode, text, explicitUserResearchRequest) {
   const staged = Array.isArray(response.memoryProposals) && response.memoryProposals.length > 0
     ? `\n\nStaged memory:\n${formatStagedMemories(response.memoryProposals)}`
     : "";
-  elements.hudOutput.textContent = `${response.text}${staged}`;
+  elements.hudOutput.textContent = route === "implicit" ? `Iris found this through Hermes:\n\n${response.text}${staged}` : `${response.text}${staged}`;
 }
 
 function formatHermesStatus(status, audit) {

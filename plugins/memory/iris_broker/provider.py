@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import html
+import base64
 import os
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -14,9 +18,12 @@ STATUS_ENDPOINT = "/memory/status"
 SEARCH_ENDPOINT = "/memory/search"
 PROPOSE_ENDPOINT = "/memory/propose"
 REQUEST_TIMEOUT_SECONDS = 5
+WEB_TIMEOUT_SECONDS = 10
 MAX_QUERY_CHARS = 120
 MAX_PROPOSAL_CHARS = 240
-EXPOSED_TOOLS = ("iris_query_memory", "iris_propose_memory")
+EXPOSED_TOOLS = ("iris_query_memory", "iris_propose_memory", "iris_web_research")
+IRIS_HERMES_WEB_SEARCH_URL = "https://www.bing.com/search"
+GITHUB_API_URL = "https://api.github.com"
 PROFILE_NAME = "iris_restricted"
 PROMPT_INJECTION_PHRASES = (
     "ignore previous instructions",
@@ -135,6 +142,123 @@ def iris_generate_text(prompt: str) -> str:
     if not text:
         raise IrisBrokerUnavailable("local Ollama returned an empty Hermes response")
     return text
+
+
+def iris_web_research(query: str, limit: int = 5) -> dict[str, Any]:
+    clean_query = " ".join(query.split())
+    if not clean_query:
+        raise ValueError("web research query cannot be empty")
+    if len(clean_query) > MAX_QUERY_CHARS:
+        clean_query = clean_query[:MAX_QUERY_CHARS].strip()
+    if contains_prompt_injection_text(clean_query):
+        raise ValueError("web research query contains prompt-injection language")
+    authoritative = _authoritative_release_lookup(clean_query)
+    if authoritative:
+        return {
+            "query": clean_query,
+            "results": authoritative[: min(max(limit, 1), 5)],
+        }
+    params = urllib.parse.urlencode({"q": clean_query})
+    request = urllib.request.Request(
+        f"{IRIS_HERMES_WEB_SEARCH_URL}?{params}",
+        method="GET",
+        headers={
+            "User-Agent": "Mozilla/5.0 Project-Iris-Hermes/0.1",
+            "Accept": "text/html",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=WEB_TIMEOUT_SECONDS) as response:
+            data = response.read(256_000)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise IrisBrokerUnavailable(f"Hermes web research unavailable: {error}") from error
+    html_text = data.decode("utf-8", errors="replace")
+    return {
+        "query": clean_query,
+        "results": _parse_bing_html(html_text, min(max(limit, 1), 5)),
+    }
+
+
+def _authoritative_release_lookup(query: str) -> list[dict[str, str]]:
+    repo = _release_repo_for_query(query)
+    if not repo:
+        return []
+    request = urllib.request.Request(
+        f"{GITHUB_API_URL}/repos/{repo}/releases/latest",
+        method="GET",
+        headers={
+            "User-Agent": "Project-Iris-Hermes/0.1",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=WEB_TIMEOUT_SECONDS) as response:
+            data = response.read(128_000)
+    except (urllib.error.URLError, TimeoutError):
+        return []
+    parsed = json.loads(data.decode("utf-8"))
+    name = str(parsed.get("name") or parsed.get("tag_name") or "").strip()
+    tag = str(parsed.get("tag_name") or "").strip()
+    url = str(parsed.get("html_url") or "").strip()
+    published = str(parsed.get("published_at") or "").strip()
+    body = " ".join(str(parsed.get("body") or "").split())
+    snippet_parts = []
+    if tag:
+        snippet_parts.append(f"tag {tag}")
+    if published:
+        snippet_parts.append(f"published {published}")
+    if body:
+        snippet_parts.append(body[:420])
+    return [{
+        "title": f"{repo} latest release: {name}".strip(),
+        "url": url,
+        "snippet": "; ".join(snippet_parts),
+    }]
+
+
+def _release_repo_for_query(query: str) -> str:
+    lowered = query.lower()
+    if "ollama" in lowered and "release" in lowered:
+        return "ollama/ollama"
+    return ""
+
+
+def _parse_bing_html(html_text: str, limit: int) -> list[dict[str, str]]:
+    results = []
+    blocks = re.split(r'<li[^>]+class="[^"]*b_algo[^"]*"', html_text)
+    for block in blocks[1:]:
+        link_match = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>', block, re.I | re.S)
+        if not link_match:
+            continue
+        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.I | re.S)
+        url = _clean_bing_url(html.unescape(link_match.group(1)))
+        title = _plain_html_text(link_match.group(2))
+        snippet = _plain_html_text(snippet_match.group(1)) if snippet_match else ""
+        if title:
+            results.append({"title": title[:180], "url": url[:500], "snippet": snippet[:500]})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _plain_html_text(value: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(html.unescape(text).split())
+
+
+def _clean_bing_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    encoded = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
+    if encoded.startswith("a1"):
+        payload = encoded[2:]
+        padding = "=" * (-len(payload) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode(f"{payload}{padding}").decode("utf-8")
+            if decoded.startswith(("http://", "https://")):
+                return decoded
+        except (ValueError, UnicodeDecodeError):
+            pass
+    return url
 
 
 def iris_propose_memory(text: str, source: str = "hermes", evidence: str | None = None) -> dict[str, Any]:

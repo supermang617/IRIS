@@ -11,7 +11,7 @@ PROVIDER_DIR = REPO_ROOT / "plugins" / "memory" / "iris_broker"
 MAX_RESPONSE_CHARS = 4000
 MAX_TASK_CHARS = 2000
 ALLOWED_MODES = {"reason", "research", "code_suggestion"}
-EXPOSED_TOOLS = ["iris_query_memory", "iris_propose_memory"]
+EXPOSED_TOOLS = ["iris_query_memory", "iris_propose_memory", "iris_web_research"]
 ACTING_TOOLS: list[str] = []
 MEMORY_SUMMARY_TRIGGERS = (
     "what you know from memory",
@@ -65,6 +65,8 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 
     memory = []
     memory_error = ""
+    web_results = []
+    web_error = ""
     if mode in {"reason", "research"}:
         try:
             query = "*" if should_summarize_memory(text) else text[:120]
@@ -72,9 +74,14 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
         except Exception as error:
             memory_error = str(error)
             memory = []
+    if mode == "research":
+        try:
+            web_results = iris_broker.iris_web_research(web_query_from_task(text), 5).get("results", [])
+        except Exception as error:
+            web_error = str(error)
 
     proposals = propose_memory_if_requested(text)
-    response_text = model_response(mode, text, memory, memory_error)
+    response_text = model_response(mode, text, memory, memory_error, web_results, web_error)
     return {
         "ok": True,
         "mode": mode,
@@ -128,6 +135,36 @@ def should_summarize_memory(text: str) -> bool:
     return any(trigger in lowered for trigger in MEMORY_SUMMARY_TRIGGERS)
 
 
+def web_query_from_task(text: str) -> str:
+    clean = " ".join(text.split()).strip(" .")
+    lowered = clean.lower()
+    prefixes = (
+        "iris, look online for ",
+        "look online for ",
+        "look up ",
+        "search online for ",
+        "search the web for ",
+        "search the internet for ",
+        "research ",
+        "check online for ",
+        "find online ",
+    )
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            clean = clean[len(prefix) :].strip(" .")
+            break
+    for suffix in (
+        " and summarize the useful sources",
+        " and summarize useful sources",
+        " and summarize it",
+        " and summarize",
+    ):
+        if clean.lower().endswith(suffix):
+            clean = clean[: -len(suffix)].strip(" .")
+            break
+    return clean[:120]
+
+
 def propose_memory_if_requested(text: str) -> list[dict[str, Any]]:
     lowered = text.lower()
     prefixes = (
@@ -168,18 +205,31 @@ def propose_memory_if_requested(text: str) -> list[dict[str, Any]]:
     }]
 
 
-def model_response(mode: str, text: str, memory: list[dict[str, Any]], memory_error: str) -> str:
+def model_response(
+    mode: str,
+    text: str,
+    memory: list[dict[str, Any]],
+    memory_error: str,
+    web_results: list[dict[str, Any]] | None = None,
+    web_error: str = "",
+) -> str:
     memory_block = format_memory(memory)
     if memory_error:
         memory_block = f"Memory retrieval failed: {memory_error}"
+    web_block = format_web_results(web_results or [])
+    if web_error:
+        web_block = f"Web research failed: {web_error}"
     prompt = (
-        "You are Hermes, Iris's local RAG and memory-transfer helper.\n"
-        "Use only local approved Iris memory shown below and the user's task.\n"
-        "Do not claim capabilities outside Iris-owned local memory and RAG boundaries.\n"
-        "If memory is empty, say what is missing and give the best local next step.\n"
+        "You are Hermes, Iris's sandboxed research, RAG, and memory-transfer helper.\n"
+        "Use approved Iris memory, approved web research snippets, and the user's task.\n"
+        "Approved web research has already been fetched before this prompt.\n"
+        "If web results are present, summarize them and cite their URLs instead of saying you need to search.\n"
+        "Do not claim computer-control capabilities. Do not invent sources.\n"
+        "If evidence is empty, say what is missing and give the best next step.\n"
         "Be direct and useful.\n\n"
         f"Mode: {mode}\n"
         f"Approved memory:\n{memory_block}\n\n"
+        f"Approved web research:\n{web_block}\n\n"
         f"User task: {text}\n"
         "Hermes:"
     )
@@ -196,6 +246,17 @@ def format_memory(memory: list[dict[str, Any]]) -> str:
         if text:
             lines.append(f"- {text}")
     return "\n".join(lines) if lines else "(no approved memory retrieved)"
+
+
+def format_web_results(results: list[dict[str, Any]]) -> str:
+    lines = []
+    for item in results:
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        snippet = str(item.get("snippet", "")).strip()
+        if title or snippet:
+            lines.append(f"- {title} {url} {snippet}".strip())
+    return "\n".join(lines) if lines else "(no approved web research retrieved)"
 
 
 def _emit(payload: dict[str, Any]) -> None:

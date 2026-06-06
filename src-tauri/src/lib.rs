@@ -151,7 +151,7 @@ struct HermesStatusResponse {
     running: bool,
     profile: &'static str,
     broker_url: &'static str,
-    tools: [&'static str; 2],
+    tools: [&'static str; 3],
     acting_tools: [String; 0],
     search_enabled: bool,
     onedrive_sync_enabled: bool,
@@ -1578,7 +1578,11 @@ fn hermes_status_snapshot() -> HermesStatusResponse {
         running: hermes_sidecar_running(),
         profile: "iris_restricted",
         broker_url: "http://127.0.0.1:48731",
-        tools: ["iris_query_memory", "iris_propose_memory"],
+        tools: [
+            "iris_query_memory",
+            "iris_propose_memory",
+            "iris_web_research",
+        ],
         acting_tools: [],
         search_enabled: hermes_memory_search_enabled(),
         onedrive_sync_enabled: env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
@@ -1601,6 +1605,7 @@ fn hermes_safety_audit_snapshot() -> Result<HermesSafetyAuditResponse, String> {
             tools: vec![
                 "iris_query_memory".to_string(),
                 "iris_propose_memory".to_string(),
+                "iris_web_research".to_string(),
             ],
             acting_tools: Vec::new(),
             provider: "ollama_local".to_string(),
@@ -1795,7 +1800,13 @@ fn audit_hermes_runtime_tool_registry() -> Result<HermesRuntimeStatus, String> {
     if status.profile != "iris_restricted" {
         return Err("Hermes runtime profile must be iris_restricted".to_string());
     }
-    if status.tools != ["iris_query_memory", "iris_propose_memory"] {
+    if status.tools
+        != [
+            "iris_query_memory",
+            "iris_propose_memory",
+            "iris_web_research",
+        ]
+    {
         return Err("Hermes runtime exposed unexpected tools".to_string());
     }
     if !status.acting_tools.is_empty() {
@@ -2562,7 +2573,14 @@ mod tests {
         assert!(status.broker_enabled);
         assert!(status.search_enabled);
         assert_eq!(status.profile, "iris_restricted");
-        assert_eq!(status.tools, ["iris_query_memory", "iris_propose_memory"]);
+        assert_eq!(
+            status.tools,
+            [
+                "iris_query_memory",
+                "iris_propose_memory",
+                "iris_web_research"
+            ]
+        );
         assert!(status.acting_tools.is_empty());
         assert!(status.sequential_tasks_only);
     }
@@ -2646,7 +2664,14 @@ mod tests {
         assert!(!audit.critic_worker_split);
         assert!(!audit.multi_model_debate);
         assert_eq!(audit.parallel_inference_streams, 1);
-        assert_eq!(audit.tools, ["iris_query_memory", "iris_propose_memory"]);
+        assert_eq!(
+            audit.tools,
+            [
+                "iris_query_memory",
+                "iris_propose_memory",
+                "iris_web_research"
+            ]
+        );
         assert!(audit.acting_tools.is_empty());
         assert!(audit.sequential_tasks_only);
     }

@@ -71,7 +71,8 @@
   },
   "tools": [
     "iris_query_memory",
-    "iris_propose_memory"
+    "iris_propose_memory",
+    "iris_web_research"
   ],
   "acting_tools": [],
   "forbidden_tools": [
@@ -92,10 +93,12 @@
     "automation_plugin"
   ],
   "network": {
-    "external_network": false,
+    "external_network": true,
     "allowed_hosts": [
       "127.0.0.1",
-      "localhost"
+      "localhost",
+      "www.bing.com",
+      "api.github.com"
     ]
   }
 }

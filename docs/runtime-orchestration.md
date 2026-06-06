@@ -38,7 +38,7 @@ target:
 - Hermes sidecar enabled by default: true
 - Hermes research: requires explicit user research request
 - Hermes acting tools: none
-- Memory broker external network: none
+- Hermes web research: enabled through a restricted text-only search fetcher
 
 These settings intentionally favor reliability and privacy over maximum raw
 throughput. Iris, Hermes, and Ollama share one local model path so they do not
@@ -46,7 +46,7 @@ fight for VRAM/RAM or create inconsistent answers.
 
 ## Hermes Manual Testing
 
-Hermes is enabled for local RAG by default. Start Iris from the normal launcher.
+Hermes is enabled for local RAG and web research by default. Start Iris from the normal launcher.
 Iris starts the loopback broker and Hermes sidecar when a Hermes task is
 submitted. Hermes must pass the runtime tool audit before task execution.
 
@@ -56,6 +56,7 @@ Use these desktop commands:
 hermes status
 hermes: summarize what you know from memory
 hermes research: find relevant approved memory about Iris testing
+look online for the latest Ollama release
 hermes code: suggest the smallest fix for the current failing check
 hermes staging
 hermes accept <number>
@@ -76,9 +77,10 @@ When all pieces are healthy:
 - Iris preflight reports Ollama/model PASS.
 - Iris text ask returns a short local response.
 - Iris image probe describes the known local test image.
-- Hermes status reports only `iris_query_memory` and `iris_propose_memory`.
+- Hermes status reports only `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Hermes reports `parallelInferenceStreams: 1`.
 - Hermes reports no acting tools.
+- Natural online/research requests submitted to Iris route through Hermes.
 - Memory proposals remain staged until Iris/user approval.
 
 ## What Not To Change

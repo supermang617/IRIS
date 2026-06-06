@@ -34,6 +34,6 @@ The active model is vision-capable. Iris must use this same model for future ima
 
 ## Implemented Memory Baseline
 
-Memory is now present only as an Iris-owned local broker/staging foundation. Hermes may query approved memory and propose memory to staging through `iris_query_memory` and `iris_propose_memory`; it cannot write active memory, inspect raw memory files, access OneDrive, run commands, edit files, use the clipboard, control browsers/windows, or operate the computer.
+Memory is now present only as an Iris-owned local broker/staging foundation. Hermes may query approved memory, propose memory to staging, and perform restricted text-only web research through `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`; it cannot write active memory, inspect raw memory files, access OneDrive, run commands, edit files, use the clipboard, control browsers/windows, or operate the computer.
 
 OneDrive remains cold archive only. Archive paths must end with `.iris-memory-archive.enc`, export is unavailable until real encryption is implemented, and live JSON/SQLite memory stores must not be placed under OneDrive.

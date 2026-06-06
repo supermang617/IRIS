@@ -113,11 +113,15 @@ fn snapshot_from_parts(
             lifecycle_owner: "iris",
             transport: "stdin_stdout_json",
             broker_url: "http://127.0.0.1:48731",
-            external_network: false,
-            approved_tools: vec!["iris_query_memory", "iris_propose_memory"],
+            external_network: true,
+            approved_tools: vec![
+                "iris_query_memory",
+                "iris_propose_memory",
+                "iris_web_research",
+            ],
             acting_tools: Vec::new(),
             parallel_inference_streams: 1,
-            status: "enabled_local_rag_helper_no_computer_control",
+            status: "enabled_sandboxed_research_rag_helper_no_computer_control",
         },
     }
 }
@@ -175,13 +179,17 @@ mod tests {
         assert_eq!(snapshot.hermes.broker_url, "http://127.0.0.1:48731");
         assert_eq!(
             snapshot.hermes.approved_tools,
-            vec!["iris_query_memory", "iris_propose_memory"]
+            vec![
+                "iris_query_memory",
+                "iris_propose_memory",
+                "iris_web_research"
+            ]
         );
         assert!(snapshot.hermes.acting_tools.is_empty());
         assert_eq!(snapshot.hermes.parallel_inference_streams, 1);
         assert_eq!(
             snapshot.hermes.status,
-            "enabled_local_rag_helper_no_computer_control"
+            "enabled_sandboxed_research_rag_helper_no_computer_control"
         );
     }
 }

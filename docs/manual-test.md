@@ -75,8 +75,9 @@ cargo run -p iris-runtime -- --dashboard-json
 
 Expected:
 
-- Hermes is enabled by default as an Iris-owned local RAG and memory-transfer helper.
-- Hermes exposes only `iris_query_memory` and `iris_propose_memory`.
+- Hermes is enabled by default as an Iris-owned research, local RAG, and memory-transfer helper.
+- Hermes exposes only `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
+- Natural Iris requests such as `look online for the latest Ollama release` route through Hermes research.
 - Hermes can propose staged memory, and Iris can transfer it into active memory only after explicit `hermes accept <number>`.
 - Hermes cannot access raw memory files.
 - Hermes cannot access OneDrive.
