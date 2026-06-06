@@ -60,7 +60,7 @@ Record `PASS`, `FAIL`, or `BLOCKED` for each row.
 | Desktop launch | `.\Start Iris.bat` | Opens the Iris desktop window. |  |  |
 | Voice test | Type a short prompt and listen. | Iris responds and attempts local Kokoro speech. |  |  |
 | Kokoro path | Verify `tools\kokoro_tts.py` and bundled Kokoro files exist. | Kokoro model, voice file, and helper are present. |  |  |
-| Hermes status | Run `.\bin\iris-runtime.exe --dashboard-json`. | Hermes remains disabled unless explicitly enabled and exposes no acting tools. |  |  |
+| Hermes status | Run `.\bin\iris-runtime.exe --dashboard-json`. | Hermes is enabled as an Iris-owned sandboxed research/RAG helper and exposes no acting tools. |  |  |
 | Local-only binding | While Iris is open, inspect listening ports. | No new non-loopback listener is introduced by Iris. |  |  |
 | Shutdown and relaunch | Close Iris, then run `.\Start Iris.bat` again. | Iris closes cleanly and reopens. |  |  |
 

@@ -1456,7 +1456,9 @@ fn handle_hermes_broker_stream(mut stream: TcpStream) -> Result<(), String> {
             .map_err(|err| format!("failed to write broker response: {err}"))?;
         return Ok(());
     }
-    let request = String::from_utf8_lossy(&buffer[..count]);
+    let mut request_bytes = buffer[..count].to_vec();
+    read_remaining_hermes_http_request(&mut stream, &mut request_bytes)?;
+    let request = String::from_utf8_lossy(&request_bytes);
     let (status, body) = handle_hermes_broker_request(&request);
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1466,6 +1468,57 @@ fn handle_hermes_broker_stream(mut stream: TcpStream) -> Result<(), String> {
     stream
         .write_all(response.as_bytes())
         .map_err(|err| format!("failed to write broker response: {err}"))
+}
+
+fn read_remaining_hermes_http_request(
+    stream: &mut TcpStream,
+    request_bytes: &mut Vec<u8>,
+) -> Result<(), String> {
+    let Some(expected_len) = expected_hermes_http_request_len(request_bytes)? else {
+        return Ok(());
+    };
+    while request_bytes.len() < expected_len {
+        if request_bytes.len() >= MAX_HERMES_HTTP_REQUEST_BYTES {
+            return Err("Hermes broker request is too large".to_string());
+        }
+        let mut chunk = [0_u8; 1024];
+        let count = stream
+            .read(&mut chunk)
+            .map_err(|err| format!("failed to read broker request body: {err}"))?;
+        if count == 0 {
+            break;
+        }
+        request_bytes.extend_from_slice(&chunk[..count]);
+    }
+    Ok(())
+}
+
+fn expected_hermes_http_request_len(request_bytes: &[u8]) -> Result<Option<usize>, String> {
+    let Some(split_index) = request_bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+    else {
+        return Ok(None);
+    };
+    let header_text = String::from_utf8_lossy(&request_bytes[..split_index]);
+    let content_length = header_text
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            (name.trim().eq_ignore_ascii_case("content-length")).then_some(value.trim())
+        })
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|err| format!("invalid content-length: {err}"))
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let expected = split_index + 4 + content_length;
+    if expected > MAX_HERMES_HTTP_REQUEST_BYTES {
+        return Err("Hermes broker request is too large".to_string());
+    }
+    Ok(Some(expected))
 }
 
 fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
@@ -2555,6 +2608,31 @@ mod tests {
 
         assert!(body.contains("\"ok\":true"));
         assert!(body.contains("\"readOnly\":true"));
+    }
+
+    #[test]
+    fn broker_expected_request_len_uses_content_length() {
+        let body = "{\"query\":\"*\",\"limit\":3}";
+        let request = format!(
+            "POST /memory/search HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let expected = expected_hermes_http_request_len(request.as_bytes())
+            .expect("valid content length")
+            .expect("expected length");
+
+        assert_eq!(expected, request.as_bytes().len());
+    }
+
+    #[test]
+    fn broker_expected_request_len_rejects_oversized_body() {
+        let request = format!(
+            "POST /memory/search HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_HERMES_HTTP_REQUEST_BYTES + 1
+        );
+
+        assert!(expected_hermes_http_request_len(request.as_bytes()).is_err());
     }
 
     #[test]

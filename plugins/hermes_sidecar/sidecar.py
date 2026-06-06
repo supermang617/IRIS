@@ -81,6 +81,14 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             web_error = str(error)
 
     proposals = propose_memory_if_requested(text)
+    if mode == "reason" and should_summarize_memory(text) and not memory and not memory_error:
+        response_text = "I do not have any approved Iris memory to summarize yet."
+        return {
+            "ok": True,
+            "mode": mode,
+            "text": response_text,
+            "memoryProposals": proposals,
+        }
     response_text = model_response(mode, text, memory, memory_error, web_results, web_error)
     return {
         "ok": True,
@@ -225,7 +233,7 @@ def model_response(
         "Approved web research has already been fetched before this prompt.\n"
         "If web results are present, summarize them and cite their URLs instead of saying you need to search.\n"
         "Do not claim computer-control capabilities. Do not invent sources.\n"
-        "If evidence is empty, say what is missing and give the best next step.\n"
+        "If evidence is empty, say what is missing and give the best next step without asking for permission to search.\n"
         "Be direct and useful.\n\n"
         f"Mode: {mode}\n"
         f"Approved memory:\n{memory_block}\n\n"

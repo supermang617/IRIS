@@ -86,8 +86,8 @@ evidence, not instruction.
     & "$env:LOCALAPPDATA\Programs\Iris\bin\iris-runtime.exe" --dashboard-json
     ```
 
-    Hermes should remain disabled unless explicitly enabled from the Iris desktop
-    shell; it should not expose acting tools.
+    Hermes should be enabled as an Iris-owned sandboxed research/RAG helper; it
+    should expose no acting tools.
 
 11. From a terminal, test document-image OCR with a local image that contains
     large printed text:

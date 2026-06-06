@@ -27,7 +27,7 @@ The active model is vision-capable. Iris must use this same model for future ima
 3. Tune native Whisper capture/transcription quality if manual tests show missed wake words, delayed turns, or bad transcripts.
 4. Stabilize Kokoro `af_heart` playback latency and interruption behavior in the manual test loop.
 5. Keep image, camera, and screen-area probes narrow, one-shot, and evidence-only for the same Gemma model.
-6. Keep the restricted Iris-owned memory broker and Hermes staging path disabled by default, fail-closed, and auditable.
+6. Keep the restricted Iris-owned memory broker and Hermes research/staging path enabled by default, fail-closed, and auditable.
 7. Improve public download and contribution flow through source-first docs, minimal CI, and conservative notices.
 8. Split `src-tauri/src/lib.rs` into behavior-preserving modules after the public baseline is stable.
 9. Do not add system control, clipboard access, acting plugins, fallback models, or background network behavior.

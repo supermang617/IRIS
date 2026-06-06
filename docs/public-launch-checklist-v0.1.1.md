@@ -65,7 +65,7 @@ Mark each item `PASS`, `FAIL`, or `BLOCKED`.
 | Text ask | Iris answers through local Ollama or reports the local prerequisite clearly. |  |  |
 | Image probe | Iris handles a local image prompt or reports the local prerequisite clearly. |  |  |
 | Voice | Kokoro speech works when optional speech prerequisites are installed. |  |  |
-| Hermes boundary | Dashboard JSON shows Hermes disabled unless explicitly enabled and no acting tools. |  |  |
+| Hermes boundary | Dashboard JSON shows Hermes enabled as an Iris-owned sandboxed research/RAG helper with no acting tools. |  |  |
 | Shutdown/relaunch | Iris closes and opens again cleanly. |  |  |
 
 ## Bug Report Format
