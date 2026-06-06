@@ -18,6 +18,7 @@ fn run_audit() -> Result<(), String> {
     assert_required_files(&root)?;
     assert_manifest_policy(&root)?;
     assert_public_docs(&root)?;
+    assert_local_diagnostics_are_parseable(&root)?;
     assert_cognition_boundaries(&root)?;
     assert_hermes_phase2_profile(&root)?;
     assert_forbidden_api_absence(&root)?;
@@ -88,6 +89,64 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn assert_local_diagnostics_are_parseable(root: &Path) -> Result<(), String> {
+    let voice_events = root.join("diagnostics/voice-events.jsonl");
+    if !voice_events.exists() {
+        return Ok(());
+    }
+    let content = read(&voice_events)?;
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !looks_like_voice_event_json(trimmed) || contains_invalid_json_escape(trimmed) {
+            return Err(format!(
+                "diagnostics/voice-events.jsonl line {} is not valid Iris JSONL",
+                index + 1
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn looks_like_voice_event_json(line: &str) -> bool {
+    line.starts_with('{')
+        && line.ends_with('}')
+        && line.contains("\"timestamp_ms\":")
+        && line.contains("\"event\":")
+        && line.contains("\"detail\":")
+}
+
+fn contains_invalid_json_escape(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            let Some(next) = bytes.get(index + 1).copied() else {
+                return true;
+            };
+            match next {
+                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => index += 2,
+                b'u' => {
+                    if index + 5 >= bytes.len()
+                        || !bytes[index + 2..=index + 5]
+                            .iter()
+                            .all(u8::is_ascii_hexdigit)
+                    {
+                        return true;
+                    }
+                    index += 6;
+                }
+                _ => return true,
+            }
+        } else {
+            index += 1;
+        }
+    }
+    false
 }
 
 fn assert_public_docs(root: &Path) -> Result<(), String> {
@@ -791,5 +850,25 @@ mod tests {
         assert!(profile.contains("\"live_sqlite_on_onedrive\": false"));
         assert!(profile.contains("\"live_json_memory_on_onedrive\": false"));
         assert!(profile.contains("\"export_available\": false"));
+    }
+
+    #[test]
+    fn diagnostics_escape_check_allows_valid_json_escapes() {
+        assert!(!contains_invalid_json_escape(
+            r#"{"timestamp_ms":1,"event":"x","detail":"I didn't say \"no\"","mode":"wake"}"#
+        ));
+        assert!(looks_like_voice_event_json(
+            r#"{"timestamp_ms":1,"event":"x","detail":"ok"}"#
+        ));
+    }
+
+    #[test]
+    fn diagnostics_escape_check_rejects_rust_style_escapes() {
+        assert!(contains_invalid_json_escape(
+            r#"{"timestamp_ms":1,"event":"x","detail":"I didn\'t"}"#
+        ));
+        assert!(contains_invalid_json_escape(
+            r#"{"timestamp_ms":1,"event":"x","detail":"\u{266a}"}"#
+        ));
     }
 }

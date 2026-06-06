@@ -104,6 +104,7 @@ The important events are:
 
 - `native_asr_start_requested`
 - `native_asr_result`
+- `native_asr_no_input`
 - `native_asr_error`
 - `speech_interruption_listen_start`
 - `speech_interruption_result`

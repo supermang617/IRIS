@@ -1,5 +1,7 @@
 target/
 node_modules/
+__pycache__/
+*.py[cod]
 src-tauri/gen/
 .cargo/
 tmp/
