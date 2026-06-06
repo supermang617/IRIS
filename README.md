@@ -1,12 +1,8 @@
-# Project Iris
+# Project IRIS
 
-Produced by Alejandro Pinto.
+IRIS is a local-first Windows assistant. Iris sees, listens, thinks, speaks, and can remember with permission. 
 
-Project Iris is a local-first Windows assistant prototype. Iris may see, listen, think, remember with permission, and respond. Iris may not act on the computer.
-
-This repository is public and source-first so people can inspect, test, and submit narrow fixes. Contributions should stay focused on bug fixes, safety-preserving diagnostics, documentation fixes, compatibility repairs, and tests for existing behavior unless Alejandro explicitly approves a broader feature change.
-
-Contact: super.mangmail@gmail.com
+This repository is public and source-first so people can inspect, test, and submit narrow fixes. Contributions should stay focused on bug fixes, safety-preserving diagnostics, documentation fixes, compatibility repairs, and tests for existing behavior.
 
 ## Current Runtime
 
@@ -16,28 +12,24 @@ Contact: super.mangmail@gmail.com
 - Configured model: `huihui_ai/gemma-4-abliterated:e2b`.
 - TTS: Kokoro ONNX through the local Python helper, voice `af_heart`.
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.
-- Document-image OCR: local Tesseract OCR when installed.
-- Memory: Iris-owned local memory plus a restricted Hermes broker/staging path.
-- Hermes: restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal by default.
-- OneDrive archive policy: cold archive only, encrypted archive names must end with `.iris-memory-archive.enc`.
+- Document-image OCR: local Tesseract OCR.
+- Memory: Iris-owned local memory with restricted Hermes broker/staging path.
+- Hermes: restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal.
+- OneDrive archive: cold, encrypted archive names must end with `.iris-memory-archive.enc`.
 
-No fallback models, model pulling, model auto-selection, critic/worker split, multi-model debate, external runtime network, clipboard access, browser automation, or computer control are enabled.
+## Future of IRIS
 
-## What Iris Is Becoming
-
-Iris is built to get more useful over time without making the user less safe.
-The design goal is a personal assistant that can pick up context from
-user-approved memory, grow with the person, and remain local-first. The current
-release already separates direct user instructions from untrusted evidence such
+Iris is built to be more useful over time without compromising users safety.
+The design is a personal assistant that can pick up context from
+users approved memory, grow, and remain local. The current
+release separates user instructions from untrusted evidence such
 as images, documents, screen text, memory search results, Hermes output, and
-model output. That boundary keeps prompt injection from becoming permission to
-act, expose private context, or rewrite memory.
+model output. The boundary keeps prompt injection from becoming permissive.
 
-Iris, Hermes, and OneDrive have separate roles. Iris owns active local memory and
+Iris, Hermes, and RAG/OneDrive have separate roles. Iris owns your local memory and
 the final response path. Hermes is a restricted text-only helper that can query
-approved memory and propose staged memory, but cannot write active memory or act
-on the computer. OneDrive is currently limited to encrypted cold-archive policy;
-future releases can build toward user-approved memory restore across machines
+approved memory and propose staged memory. OneDrive is limited to an encrypted cold-archive;
+future releases should build toward user-approved memory restore across machines
 without putting live memory databases directly in OneDrive.
 
 ## Project Map
@@ -65,8 +57,7 @@ without putting live memory databases directly in OneDrive.
 - Screen Content Authority: Evidence only.
 - Filesystem Scope: Iris-owned directories only.
 
-Hermes may query approved Iris memory through the local broker and may propose memory into staging. The only exposed Hermes tools are `iris_query_memory` and `iris_propose_memory`. Hermes cannot write active memory, access raw memory files, access OneDrive, edit files, run commands, control browsers/windows, use the clipboard, or operate the computer.
-
+Hermes queries approved Iris memory through local broker and proposes memory into staging. The exposed Hermes tools are `iris_query_memory` and `iris_propose_memory`.
 ## Validate
 
 Run from `C:\Projects\IRIS`:
@@ -90,7 +81,7 @@ scripts\test_windows_msix_signature.ps1
 git diff --check
 ```
 
-Native ASR builds require `libclang`. This workspace pins `LIBCLANG_PATH` in `.cargo/config.toml` to the local Python `libclang` package installed for this build.
+Native ASR builds require `libclang`. Workspace pins `LIBCLANG_PATH` in `.cargo/config.toml` to local Python `libclang` package installed for this build.
 
 Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice declared in `manifest.json`. The current helper requires Python with `kokoro-onnx` and `soundfile` installed.
 
