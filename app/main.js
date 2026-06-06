@@ -11,6 +11,7 @@ import {
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
+import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./panic-state.js";
 import { classifyAsrError, classifyVoiceTranscript } from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
@@ -31,6 +32,7 @@ const elements = {
   memoryButton: document.querySelector("#memory-button"),
   memoryList: document.querySelector("#memory-list"),
   memoryPanel: document.querySelector("#memory-panel"),
+  panicButton: document.querySelector("#panic-button"),
   screenButton: document.querySelector("#screen-button"),
   visionButton: document.querySelector("#vision-button"),
   visionFileInput: document.querySelector("#vision-file-input"),
@@ -54,6 +56,7 @@ let activeAudio = null;
 let activeSpeechResolve = null;
 let activeListenMode = "idle";
 let stopListeningRequested = false;
+let panicStopActive = false;
 let pendingVoiceLatency = null;
 let selectedVisionImage = null;
 let selectedDocument = null;
@@ -230,6 +233,10 @@ async function warmRuntimeBeforeListening() {
 }
 
 async function submitMessage(text, source = "typed") {
+  if (!canSubmitWhilePanicStopped(panicStopActive)) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return;
+  }
   if (thinking || speaking) {
     return;
   }
@@ -303,6 +310,10 @@ async function submitMessage(text, source = "typed") {
 }
 
 async function submitImageMessage(prompt, latencyTrace) {
+  if (!canSubmitWhilePanicStopped(panicStopActive)) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return;
+  }
   const image = selectedVisionImage;
   clearAttachment();
 
@@ -345,6 +356,10 @@ async function submitImageMessage(prompt, latencyTrace) {
 }
 
 async function submitScreenAreaMessage() {
+  if (!canSubmitWhilePanicStopped(panicStopActive)) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return;
+  }
   if (thinking || speaking) {
     return;
   }
@@ -397,6 +412,10 @@ async function logVoiceLatencyReport(trace) {
 }
 
 async function handleMemoryCommand(text) {
+  if (!canSubmitWhilePanicStopped(panicStopActive)) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return true;
+  }
   const clean = String(text || "").trim();
   const hermesRoute = classifyHermesRoute(clean);
 
@@ -764,16 +783,54 @@ async function monitorSpeechInterruption(runId) {
 }
 
 function setInputsDisabled(disabled) {
-  elements.hudInput.disabled = disabled;
-  elements.sendButton.disabled = disabled;
+  const gatedDisabled = disabled || panicStopActive;
+  elements.hudInput.disabled = gatedDisabled;
+  elements.sendButton.disabled = gatedDisabled;
   elements.attachmentRemove.disabled = disabled;
-  elements.attachButton.disabled = disabled;
+  elements.attachButton.disabled = gatedDisabled;
   elements.voiceButton.disabled = false;
-  elements.visionButton.disabled = disabled;
-  elements.screenButton.disabled = disabled;
-  elements.memoryButton.disabled = disabled;
-  elements.memoryAddButton.disabled = disabled;
-  elements.memoryAddInput.disabled = disabled;
+  elements.visionButton.disabled = gatedDisabled;
+  elements.screenButton.disabled = gatedDisabled;
+  elements.memoryButton.disabled = gatedDisabled;
+  elements.memoryAddButton.disabled = gatedDisabled;
+  elements.memoryAddInput.disabled = gatedDisabled;
+}
+
+function renderPanicStop() {
+  elements.panicButton.classList.toggle("active", panicStopActive);
+  elements.panicButton.setAttribute("aria-pressed", panicStopActive ? "true" : "false");
+  elements.panicButton.setAttribute("title", panicStopActive ? "Resume Iris" : "Panic Stop");
+  elements.panicButton.setAttribute("aria-label", panicStopActive ? "Resume Iris" : "Panic Stop");
+  setInputsDisabled(thinking || speaking || listening);
+}
+
+function togglePanicStop() {
+  panicStopActive = nextPanicState(panicStopActive);
+  if (panicStopActive) {
+    stopListeningRequested = true;
+    voiceLoop = false;
+    wakeCommandArmed = false;
+    pendingVoiceLatency = null;
+    setListening(false);
+    activeListenMode = "idle";
+    if (activeAudio) {
+      activeAudio.pause();
+      activeAudio = null;
+    }
+    if (activeSpeechResolve) {
+      activeSpeechResolve();
+      activeSpeechResolve = null;
+    }
+    speaking = false;
+    elements.voiceStatus.textContent = "Panic Stop active.";
+  } else {
+    stopListeningRequested = false;
+    elements.voiceStatus.textContent = "Wake word armed. Say Iris.";
+    restartListeningIfReady(250);
+  }
+  elements.hudOutput.textContent = panicStatusText(panicStopActive);
+  logVoice(panicStopActive ? "panic_stop_active" : "panic_stop_cleared");
+  renderPanicStop();
 }
 
 function setListening(nextListening) {
@@ -800,12 +857,12 @@ function startWindowDrag() {
 }
 
 function restartListeningIfReady(delayMs = 650) {
-  if ((!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
+  if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
     return;
   }
 
   window.setTimeout(() => {
-    if ((!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
+    if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
       return;
     }
     listenOnce(wakeWord ? "wake" : "loop");
@@ -813,6 +870,10 @@ function restartListeningIfReady(delayMs = 650) {
 }
 
 async function listenOnce(mode) {
+  if (panicStopActive) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return;
+  }
   if (listening || thinking || speaking) {
     return;
   }
@@ -823,6 +884,10 @@ async function listenOnce(mode) {
   elements.voiceStatus.textContent = mode === "push" ? "Listening..." : "Listening for Iris.";
   try {
     const result = await call("native_asr_listen_once");
+    if (panicStopActive) {
+      pendingVoiceLatency = null;
+      return;
+    }
     const transcript = String(result.text || "").trim();
     logVoice("native_asr_result", `${result.elapsed_ms}ms; ${transcript}`);
     pendingVoiceLatency = {
@@ -837,6 +902,9 @@ async function listenOnce(mode) {
     elements.hudOutput.textContent = transcript;
     handleVoiceTranscript(transcript);
   } catch (error) {
+    if (panicStopActive) {
+      return;
+    }
     const asrError = classifyAsrError(error);
     elements.voiceStatus.textContent = asrError.status;
     if (asrError.severity === "error") {
@@ -909,6 +977,10 @@ elements.hudForm.addEventListener("submit", async (event) => {
 });
 
 elements.voiceButton.addEventListener("click", () => {
+  if (panicStopActive) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return;
+  }
   if (listening && activeListenMode === "push") {
     stopListeningRequested = true;
     return;
@@ -919,13 +991,17 @@ elements.voiceButton.addEventListener("click", () => {
 });
 
 elements.attachButton.addEventListener("click", () => {
-  if (thinking || speaking || cameraCaptureInProgress) {
+  if (panicStopActive || thinking || speaking || cameraCaptureInProgress) {
     return;
   }
   elements.visionFileInput.click();
 });
 
 elements.memoryButton.addEventListener("click", () => {
+  if (panicStopActive) {
+    elements.hudOutput.textContent = panicStatusText(true);
+    return;
+  }
   toggleMemoryPanel().catch((error) => {
     elements.hudOutput.textContent = String(error);
   });
@@ -946,6 +1022,10 @@ elements.attachmentRemove.addEventListener("click", () => {
   clearAttachment();
 });
 
+elements.panicButton.addEventListener("click", () => {
+  togglePanicStop();
+});
+
 elements.windowDragStrip.addEventListener("pointerdown", () => {
   startWindowDrag();
 });
@@ -955,7 +1035,7 @@ elements.dragHandle.addEventListener("pointerdown", () => {
 });
 
 elements.visionButton.addEventListener("click", () => {
-  if (thinking || speaking || cameraCaptureInProgress) {
+  if (panicStopActive || thinking || speaking || cameraCaptureInProgress) {
     return;
   }
   lookWithCamera().catch((error) => {
@@ -964,7 +1044,7 @@ elements.visionButton.addEventListener("click", () => {
 });
 
 elements.screenButton.addEventListener("click", () => {
-  if (thinking || speaking) {
+  if (panicStopActive || thinking || speaking) {
     return;
   }
   submitScreenAreaMessage().catch((error) => {
@@ -1291,6 +1371,7 @@ function renderAttachmentSelection() {
 
 renderVoiceCapability();
 renderAttachmentSelection();
+renderPanicStop();
 logVoice("app_started");
 refreshDashboard();
 warmRuntimeBeforeListening();

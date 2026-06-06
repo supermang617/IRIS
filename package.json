@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:voice": "node --test app/voice-state.test.mjs app/attachment-state.test.mjs app/attachment-url.test.mjs app/hermes-routing.test.mjs",
+    "test:voice": "node --test app/voice-state.test.mjs app/attachment-state.test.mjs app/attachment-url.test.mjs app/hermes-routing.test.mjs app/panic-state.test.mjs",
     "test:python": "python -m unittest discover -s plugins/hermes_sidecar -p test_*.py && python -m unittest discover -s plugins/memory/iris_broker -p test_*.py",
     "tauri": "tauri",
     "dev": "tauri dev",
