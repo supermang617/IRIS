@@ -8,6 +8,8 @@ Contact: super.mangmail@gmail.com
 
 For v0.1, the best safe runtime shape is:
 
+- The Iris launcher starts Ollama hidden/minimized when needed and waits for
+  `127.0.0.1:11434`.
 - Ollama runs as the local model service on `127.0.0.1:11434`.
 - Iris runs as the Tauri desktop shell plus Rust command bridge.
 - Hermes remains a restricted Iris-owned sidecar, started by Iris for local RAG
@@ -16,8 +18,9 @@ For v0.1, the best safe runtime shape is:
 
 Hermes should not be a separate visible app that the beginner manually opens.
 It should run as a hidden child process owned by Iris, with stdin/stdout JSON
-transport, fixed tools, and a startup audit. Ollama may run minimized or as the
-normal Ollama background app because it is the local model server.
+transport, fixed tools, and a startup audit. Ollama should also not require a
+separate user action during normal use: opening Iris should start Ollama in the
+background when the executable is available.
 
 ## Default v0.1 Settings
 

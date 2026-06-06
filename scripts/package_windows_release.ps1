@@ -117,11 +117,43 @@ Require-File -Path $whisperModel
 
 Set-Location -LiteralPath $root
 
+function Test-CommandAvailable {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Test-OllamaReady {
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 2
+        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
+    } catch {
+        return $false
+    }
+}
+
+function Start-OllamaForIris {
+    if (Test-OllamaReady) {
+        return
+    }
+    if (-not (Test-CommandAvailable -Name "ollama")) {
+        throw "Ollama is not available on PATH. Run Iris Setup Wizard or install Ollama for Windows."
+    }
+    Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
+    for ($attempt = 1; $attempt -le 20; $attempt++) {
+        Start-Sleep -Milliseconds 500
+        if (Test-OllamaReady) {
+            return
+        }
+    }
+    throw "Ollama did not become ready on 127.0.0.1:11434 after launch."
+}
+
 if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
     & $runtimeExe --self-check
     exit $LASTEXITCODE
 }
 
+Start-OllamaForIris
 Start-Process -FilePath $desktopExe -WorkingDirectory $root
 '@
 

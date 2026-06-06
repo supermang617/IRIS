@@ -111,6 +111,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let github_settings = read(root.join("docs/github-settings.md"))?;
     let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.1.md"))?;
     let manual_end_user_test = read(root.join("docs/manual-end-user-test-v0.1.0.md"))?;
+    let launcher = read(root.join("Start Iris.ps1"))?;
+    let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
 
     for (name, content) in [
         ("README.md", &readme),
@@ -260,7 +262,9 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if !runtime_orchestration.contains("Ollama runs as the local model service")
+    if !runtime_orchestration
+        .contains("The Iris launcher starts Ollama hidden/minimized when needed")
+        || !runtime_orchestration.contains("Ollama runs as the local model service")
         || !runtime_orchestration.contains("Hermes remains a restricted Iris-owned sidecar")
         || !runtime_orchestration.contains("parallelInferenceStreams: 1")
         || !runtime_orchestration.contains("Do not configure Hermes as a Windows startup app yet")
@@ -269,6 +273,25 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             "runtime orchestration doc must describe Iris/Ollama/Hermes process model and settings"
                 .to_string(),
         );
+    }
+    for (name, content) in [
+        ("Start Iris.ps1", launcher.as_str()),
+        (
+            "scripts/package_windows_release.ps1",
+            package_script.as_str(),
+        ),
+    ] {
+        for required in [
+            "function Start-OllamaForIris",
+            "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/tags\"",
+            "Start-Process -FilePath \"ollama\" -ArgumentList \"serve\" -WindowStyle Hidden",
+        ] {
+            if !content.contains(required) {
+                return Err(format!(
+                    "{name} missing Ollama auto-start requirement `{required}`"
+                ));
+            }
+        }
     }
     for required in [
         "Actions default token read-only",

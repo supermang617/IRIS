@@ -16,6 +16,10 @@ The self-check runs the read-only preflight wizard, the repository audit, and
 the runtime self-check. If it fails, fix the reported local prerequisite before
 starting manual desktop testing.
 
+Normal desktop launch is one UI: open Iris only. `Start Iris.ps1` starts Ollama
+hidden if it is not already listening on `127.0.0.1:11434`, then opens the Iris
+desktop shell.
+
 The launcher also refreshes Iris shortcuts on your user Desktop, Start Menu, and Windows pinned-taskbar shortcut folder. Windows may still require manually choosing "Pin to taskbar" from the visible shortcut if Explorer does not honor programmatic pinning.
 
 Do not open `target\debug\iris-tauri.exe` directly after a `tauri dev` run. A dev-built debug executable can try to load `127.0.0.1` and show a connection-refused page if the dev server is not running. The launcher rebuilds the standalone debug shell first, then starts Iris.
