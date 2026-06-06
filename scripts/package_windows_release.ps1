@@ -132,9 +132,73 @@ function Test-OllamaReady {
     }
 }
 
-function Start-OllamaForIris {
-    if (Test-OllamaReady) {
+function Get-IrisModelId {
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        return [string]$manifest.model_policy.model_id
+    } catch {
+        return ""
+    }
+}
+
+function Test-OllamaModelManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ModelsRoot,
+        [Parameter(Mandatory = $true)][string]$ModelId
+    )
+    $parts = $ModelId.Split(":", 2)
+    if ($parts.Count -ne 2) {
+        return $false
+    }
+    $nameParts = $parts[0].Split("/", 2)
+    if ($nameParts.Count -ne 2) {
+        return $false
+    }
+    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $nameParts[0] (Join-Path $nameParts[1] $parts[1])))
+    return Test-Path -LiteralPath $manifest -PathType Leaf
+}
+
+function Use-IrisOllamaModelStore {
+    $modelId = Get-IrisModelId
+    if (-not $modelId) {
         return
+    }
+    $candidates = @($env:OLLAMA_MODELS, "C:\.ollama", (Join-Path $env:USERPROFILE ".ollama\models")) | Where-Object { $_ }
+    foreach ($candidate in $candidates) {
+        if (Test-OllamaModelManifest -ModelsRoot $candidate -ModelId $modelId) {
+            $env:OLLAMA_MODELS = $candidate
+            return
+        }
+    }
+}
+
+function Test-OllamaModelAvailable {
+    $modelId = Get-IrisModelId
+    if (-not $modelId) {
+        return $true
+    }
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 2
+        $tags = $response.Content | ConvertFrom-Json
+        return [bool](@($tags.models) | Where-Object { $_.name -eq $modelId } | Select-Object -First 1)
+    } catch {
+        return $false
+    }
+}
+
+function Stop-OllamaForIris {
+    Get-Process "ollama", "ollama app", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
+function Start-OllamaForIris {
+    Use-IrisOllamaModelStore
+
+    if (Test-OllamaReady) {
+        if (Test-OllamaModelAvailable) {
+            return
+        }
+        Stop-OllamaForIris
+        Start-Sleep -Seconds 2
     }
     if (-not (Test-CommandAvailable -Name "ollama")) {
         throw "Ollama is not available on PATH. Run Iris Setup Wizard or install Ollama for Windows."
@@ -165,6 +229,7 @@ function Test-IrisAlreadyRunning {
 }
 
 if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
+    Start-OllamaForIris
     & $runtimeExe --self-check
     exit $LASTEXITCODE
 }

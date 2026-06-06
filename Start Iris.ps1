@@ -25,12 +25,83 @@ function Test-OllamaReady {
     }
 }
 
+function Get-IrisModelId {
+    $manifestPath = Join-Path $repoRoot "manifest.json"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return ""
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        return [string]$manifest.model_policy.model_id
+    } catch {
+        return ""
+    }
+}
+
+function Test-OllamaModelManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ModelsRoot,
+        [Parameter(Mandatory = $true)][string]$ModelId
+    )
+    $parts = $ModelId.Split(":", 2)
+    if ($parts.Count -ne 2) {
+        return $false
+    }
+    $nameParts = $parts[0].Split("/", 2)
+    if ($nameParts.Count -ne 2) {
+        return $false
+    }
+    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $nameParts[0] (Join-Path $nameParts[1] $parts[1])))
+    return Test-Path -LiteralPath $manifest -PathType Leaf
+}
+
+function Use-IrisOllamaModelStore {
+    param([Parameter(Mandatory = $true)][string]$LogPath)
+    $modelId = Get-IrisModelId
+    if (-not $modelId) {
+        return
+    }
+    $candidates = @($env:OLLAMA_MODELS, "C:\.ollama", (Join-Path $env:USERPROFILE ".ollama\models")) | Where-Object { $_ }
+    foreach ($candidate in $candidates) {
+        if (Test-OllamaModelManifest -ModelsRoot $candidate -ModelId $modelId) {
+            $env:OLLAMA_MODELS = $candidate
+            "[$(Get-Date -Format o)] Using Ollama model store $candidate for $modelId." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+            return
+        }
+    }
+}
+
+function Test-OllamaModelAvailable {
+    $modelId = Get-IrisModelId
+    if (-not $modelId) {
+        return $true
+    }
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 2
+        $tags = $response.Content | ConvertFrom-Json
+        return [bool](@($tags.models) | Where-Object { $_.name -eq $modelId } | Select-Object -First 1)
+    } catch {
+        return $false
+    }
+}
+
+function Stop-OllamaForIris {
+    Get-Process "ollama", "ollama app", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
 function Start-OllamaForIris {
     param([Parameter(Mandatory = $true)][string]$LogPath)
 
+    Use-IrisOllamaModelStore -LogPath $LogPath
+
     if (Test-OllamaReady) {
-        "[$(Get-Date -Format o)] Ollama is already listening on 127.0.0.1:11434." | Out-File -FilePath $LogPath -Encoding utf8 -Append
-        return
+        if (Test-OllamaModelAvailable) {
+            "[$(Get-Date -Format o)] Ollama is already listening on 127.0.0.1:11434 with the Iris model available." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+            return
+        }
+        "[$(Get-Date -Format o)] Restarting Ollama so Iris can use the configured model store." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+        Stop-OllamaForIris
+        Start-Sleep -Seconds 2
     }
 
     if (-not (Test-CommandAvailable -Name "ollama")) {
@@ -96,6 +167,8 @@ try {
         } else {
             throw "Missing Iris preflight script: $preflightScript"
         }
+
+        Start-OllamaForIris -LogPath $logPath
 
         cmd.exe /c "cargo run -p xtask >> `"$logPath`" 2>&1"
         $xtaskExitCode = $LASTEXITCODE

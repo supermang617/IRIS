@@ -11,7 +11,9 @@ import {
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
+import { shouldClearInputOnSubmit } from "./input-state.js";
 import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./panic-state.js";
+import { formatStagedMemories } from "./staging-state.js";
 import { classifyAsrError, classifyVoiceTranscript } from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
@@ -239,6 +241,9 @@ async function submitMessage(text, source = "typed") {
   }
   if (thinking || speaking) {
     return;
+  }
+  if (shouldClearInputOnSubmit(text, thinking || speaking)) {
+    elements.hudInput.value = "";
   }
   const latencyTrace = new VoiceLatencyTrace();
   if (pendingVoiceLatency) {
@@ -535,15 +540,6 @@ function formatHermesStatus(status, audit) {
     `Safety audit: ${Boolean(audit.ok)}`,
     `External network: ${Boolean(audit.externalNetwork)}`
   ].join("\n");
-}
-
-function formatStagedMemories(staged) {
-  if (!Array.isArray(staged) || staged.length === 0) {
-    return "No staged Hermes memories.";
-  }
-  return staged
-    .map((item) => `${item.id}. [${item.status}/${item.verdict}] ${item.text}`)
-    .join("\n");
 }
 
 async function toggleMemoryPanel() {
