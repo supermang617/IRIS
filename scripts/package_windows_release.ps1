@@ -149,12 +149,30 @@ function Start-OllamaForIris {
     throw "Ollama did not become ready on 127.0.0.1:11434 after launch."
 }
 
+function Test-IrisAlreadyRunning {
+    param([Parameter(Mandatory = $true)][string]$ExecutablePath)
+    $resolved = [System.IO.Path]::GetFullPath($ExecutablePath)
+    foreach ($process in @(Get-Process iris-tauri -ErrorAction SilentlyContinue)) {
+        try {
+            if ([System.IO.Path]::GetFullPath($process.Path) -ieq $resolved) {
+                return $true
+            }
+        } catch {
+            continue
+        }
+    }
+    return $false
+}
+
 if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
     & $runtimeExe --self-check
     exit $LASTEXITCODE
 }
 
 Start-OllamaForIris
+if (Test-IrisAlreadyRunning -ExecutablePath $desktopExe) {
+    exit 0
+}
 Start-Process -FilePath $desktopExe -WorkingDirectory $root
 '@
 

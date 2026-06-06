@@ -51,6 +51,21 @@ function Start-OllamaForIris {
     throw "Ollama did not become ready on 127.0.0.1:11434 after launch."
 }
 
+function Test-IrisAlreadyRunning {
+    param([Parameter(Mandatory = $true)][string]$ExecutablePath)
+    $resolved = [System.IO.Path]::GetFullPath($ExecutablePath)
+    foreach ($process in @(Get-Process iris-tauri -ErrorAction SilentlyContinue)) {
+        try {
+            if ([System.IO.Path]::GetFullPath($process.Path) -ieq $resolved) {
+                return $true
+            }
+        } catch {
+            continue
+        }
+    }
+    return $false
+}
+
 if (-not $env:IRIS_HERMES_ENABLED) {
     $env:IRIS_HERMES_ENABLED = "true"
 }
@@ -123,6 +138,11 @@ try {
     }
 
     Start-OllamaForIris -LogPath $logPath
+
+    if (Test-IrisAlreadyRunning -ExecutablePath $exePath) {
+        "[$(Get-Date -Format o)] Iris is already running from $exePath." | Out-File -FilePath $logPath -Encoding utf8 -Append
+        return
+    }
 
     "[$(Get-Date -Format o)] Starting $exePath" | Out-File -FilePath $logPath -Encoding utf8 -Append
     Start-Process -FilePath $exePath -WorkingDirectory $repoRoot
