@@ -1,10 +1,6 @@
 # Contributing
 
-Produced by Alejandro Pinto.
-
-Project Iris is currently open for bug fixes, diagnostics fixes, documentation fixes, compatibility fixes, and safety-preserving test coverage.
-
-Contact: super.mangmail@gmail.com
+IRIS is currently open for bug fixes, diagnostics fixes, documentation fixes, compatibility fixes, and safety-preserving test coverage.
 
 ## Allowed Contributions
 
