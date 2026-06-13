@@ -86,9 +86,11 @@ jobs:
           $exitCode = $LASTEXITCODE
           Write-Host $output
           if ($exitCode -eq 0) {
-            throw "Offline CI self-check unexpectedly succeeded without Ollama."
+            throw "Offline CI self-check unexpectedly succeeded without bundled models or Ollama."
           }
-          if ($output -notmatch "Ollama/model health check failed") {
+          $expectedFailure = $output -match "missing Kokoro model" -or
+            $output -match "Ollama/model health check failed"
+          if (-not $expectedFailure) {
             throw "Offline CI self-check did not report the expected prerequisite failure."
           }
 
