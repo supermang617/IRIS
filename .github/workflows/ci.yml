@@ -105,7 +105,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
           cargo metadata --format-version 1 | Set-Content diagnostics\cargo-metadata.json
           npm ls --all --json | Set-Content diagnostics\npm-dependencies.json
-          .\.iris-runtime\hermes\.venv\Scripts\python.exe -m pip freeze | Set-Content diagnostics\hermes-python-dependencies.txt
+          uv pip list --python .\.iris-runtime\hermes\.venv\Scripts\python.exe --format freeze | Set-Content diagnostics\hermes-python-dependencies.txt
 
       - name: Upload dependency inventory
         uses: actions/upload-artifact@v6
