@@ -13,7 +13,7 @@ the source code, not third-party model files or downloaded assets.
 - Windows 10 or Windows 11.
 - Microsoft Edge WebView2 Runtime.
 - Ollama running locally on `127.0.0.1:11434` with
-  `huihui_ai/gemma-4-abliterated:e2b` available.
+  `qwen3.5:9b` available.
 - Python is required only for Kokoro TTS helper use. The portable ZIP includes
   the Kokoro model and voice files, but Python packages such as `kokoro-onnx`
   and `soundfile` must be installed by the user if TTS helper execution is used.
@@ -21,9 +21,12 @@ the source code, not third-party model files or downloaded assets.
   for explicit user-selected document images and treats OCR text as untrusted
   evidence.
 
-Iris remains local-only. Runtime model traffic is restricted to local Ollama
-loopback. Iris does not add computer automation, shell execution tools, browser
-control, clipboard control, plugin execution, or external cloud/API calls.
+Model traffic remains local to Ollama loopback. Safe mode does not act.
+An explicitly approved Agentic Session can use the packaged Hermes file,
+PowerShell, process, and isolated browser tools. High-risk actions require
+separate confirmation, the browser uses a dedicated Iris profile, and clipboard,
+mouse, keyboard, general window control, arbitrary plugins, and cloud model APIs
+remain unavailable.
 
 ## Download the Portable ZIP
 
@@ -100,6 +103,9 @@ are missing.
 - `models\whisper\ggml-tiny.en.bin`
 - `tools\kokoro_tts.py`
 - `profiles\iris_restricted.json`
+- `profiles\iris_agentic.json`
+- `.iris-runtime\hermes` pinned Hermes Agent environment
+- `.iris-runtime\browser` pinned agent-browser and Chrome for Testing runtime
 - `capabilities\v0_1_capability_ledger.toml`
 - user-facing docs, license, notice, security notes, known limitations, assets
 

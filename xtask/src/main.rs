@@ -21,6 +21,10 @@ fn run_audit() -> Result<(), String> {
     assert_local_diagnostics_are_parseable(&root)?;
     assert_cognition_boundaries(&root)?;
     assert_hermes_phase2_profile(&root)?;
+    assert_hermes_agentic_profile(&root)?;
+    assert_hermes_acp_runtime(&root)?;
+    assert_hermes_browser_runtime(&root)?;
+    assert_release_hardening(&root)?;
     assert_forbidden_api_absence(&root)?;
     Ok(())
 }
@@ -71,6 +75,10 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/iris_setup_wizard.ps1",
         "scripts/package_windows_release.ps1",
         "scripts/package_windows_msix.ps1",
+        "scripts/provision_hermes_acp.ps1",
+        "scripts/provision_iris_browser.ps1",
+        "scripts/test_python.ps1",
+        "scripts/benchmark_hermes_model.py",
         "scripts/test_windows_release_download.ps1",
         "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
@@ -80,8 +88,16 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         ".github/workflows/dependency-review.yml",
         ".github/workflows/release.yml",
         "plugins/hermes_sidecar/sidecar.py",
+        "plugins/hermes_acp/iris_acp.py",
+        "plugins/hermes_acp/iris_memory_tools.py",
+        "plugins/hermes_acp/iris_browser_tools.py",
+        "plugins/hermes_acp/test_iris_browser_tools.py",
+        "plugins/hermes_acp/test_iris_memory_tools.py",
         "plugins/memory/iris_broker/provider.py",
         "profiles/iris_restricted.json",
+        "profiles/iris_agentic.json",
+        "profiles/hermes_agent_0_16_0.json",
+        "profiles/iris_browser.json",
     ] {
         let path = root.join(relative);
         if !path.exists() {
@@ -238,6 +254,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "cargo test --workspace",
         "cargo clippy --workspace",
         "npm run test:voice",
+        "npm run test:python",
+        "cargo run -p xtask",
         "git diff --check",
     ] {
         if !ci.contains(required) {
@@ -293,7 +311,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         return Err("architecture doc must distinguish current Iris/Hermes/OneDrive capability from future memory roaming".to_string());
     }
     if !installer.contains("Iris Setup Wizard.bat")
-        || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
+        || !installer.contains("ollama pull qwen3.5:9b")
         || !installer.contains("never installs or downloads")
         || !installer.contains("Tesseract")
     {
@@ -304,7 +322,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if !windows_installer.contains("iris-windows.zip")
         || !windows_installer.contains("iris-windows.zip.sha256")
         || !windows_installer.contains("%LOCALAPPDATA%\\Programs\\Iris")
-        || !windows_installer.contains("no runtime computer automation")
+        || !windows_installer.contains("Agentic browser, file, PowerShell, and process tools")
     {
         return Err(
             "windows installer doc must describe ZIP assets, optional install path, and safety boundary"
@@ -314,7 +332,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if !signed_installer.contains("MSIX with App Installer")
         || !signed_installer.contains("makeappx.exe")
         || !signed_installer.contains("signtool.exe")
-        || !signed_installer.contains("no runtime external network")
+        || !signed_installer.contains("approval-gated Hermes session")
     {
         return Err(
             "signed installer decision doc must describe MSIX recommendation, tooling, signing, and safety boundary"
@@ -324,7 +342,11 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if !runtime_orchestration
         .contains("The Iris launcher starts Ollama hidden/minimized when needed")
         || !runtime_orchestration.contains("Ollama runs as the local model service")
-        || !runtime_orchestration.contains("Hermes remains a restricted Iris-owned sidecar")
+        || !runtime_orchestration.contains("Safe Hermes remains a restricted Iris-owned sidecar")
+        || !runtime_orchestration.contains("pinned Hermes Agent 0.16.0")
+        || !runtime_orchestration
+            .contains("Agentic action tools: `read_file`, `write_file`, `patch`, `search_files`,")
+        || !runtime_orchestration.contains("`terminal`, `process`")
         || !runtime_orchestration.contains("parallelInferenceStreams: 1")
         || !runtime_orchestration.contains("Do not configure Hermes as a Windows startup app yet")
     {
@@ -342,7 +364,11 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     ] {
         for required in [
             "function Start-OllamaForIris",
+            "function Test-OllamaRuntimeCompatible",
+            "{ \"library\" }",
+            "$env:OLLAMA_CONTEXT_LENGTH",
             "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/tags\"",
+            "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/ps\"",
             "Start-Process -FilePath \"ollama\" -ArgumentList \"serve\" -WindowStyle Hidden",
         ] {
             if !content.contains(required) {
@@ -398,7 +424,7 @@ fn assert_manifest_policy(root: &Path) -> Result<(), String> {
     for required in [
         "\"target_platform\": \"windows\"",
         "\"provider\": \"ollama_local\"",
-        "\"model_id\": \"huihui_ai/gemma-4-abliterated:e2b\"",
+        "\"model_id\": \"qwen3.5:9b\"",
         "\"single_model_only\": true",
         "\"fallback_models_allowed\": false",
         "\"num_ctx_ceiling\": 8192",
@@ -638,6 +664,364 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
+    let profile = read(root.join("profiles/iris_agentic.json"))?;
+    for required in [
+        "\"name\": \"iris_agentic\"",
+        "\"enabled\": true",
+        "\"startup_default\": false",
+        "\"requires_explicit_user_session\": true",
+        "\"inactivity_timeout_minutes\": 30",
+        "\"expires_on_iris_exit\": true",
+        "\"expires_on_panic_stop\": true",
+        "\"expires_on_mode_change\": true",
+        "\"duplicate_sessions_allowed\": false",
+        "\"provider\": \"hermes_agent\"",
+        "\"version\": \"0.16.0\"",
+        "\"transport\": \"acp_stdio\"",
+        "\"lifecycle_owner\": \"iris\"",
+        "\"local_ollama_only\": true",
+        "\"cloud_fallback\": false",
+        "\"native_durable_memory\": false",
+        "\"boundary\": \"advisory_unrestricted_powershell\"",
+        "\"scope_expansion_requires_confirmation\": true",
+        "\"authority\": \"iris\"",
+        "\"direct_promotion\": false",
+        "\"tool_results_are_untrusted_evidence\": true",
+        "\"provenance_required\": true",
+    ] {
+        if !profile.contains(required) {
+            return Err(format!("Hermes agentic profile missing `{required}`"));
+        }
+    }
+    let tools = profile_array_values(&profile, "session_approved_tools")?;
+    if tools
+        != [
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+            "terminal",
+            "process",
+            "browser_open",
+            "browser_snapshot",
+            "browser_click",
+            "browser_fill",
+            "browser_press",
+            "browser_screenshot",
+            "browser_get_url",
+            "browser_upload",
+            "browser_download",
+            "browser_close",
+        ]
+    {
+        return Err(format!(
+            "Hermes agentic profile exposes unexpected session tools: {}",
+            tools.join(", ")
+        ));
+    }
+    let enabled_tools = profile_array_values(&profile, "currently_enabled_tools")?;
+    if enabled_tools
+        != [
+            "iris_query_memory",
+            "iris_propose_memory",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+            "terminal",
+            "process",
+            "browser_open",
+            "browser_snapshot",
+            "browser_click",
+            "browser_fill",
+            "browser_press",
+            "browser_screenshot",
+            "browser_get_url",
+            "browser_upload",
+            "browser_download",
+            "browser_close",
+        ]
+    {
+        return Err(format!(
+            "Hermes agentic profile exposes unexpected current tools: {}",
+            enabled_tools.join(", ")
+        ));
+    }
+    let acting_tools = profile_array_values(&profile, "currently_enabled_acting_tools")?;
+    if acting_tools
+        != [
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
+            "terminal",
+            "process",
+            "browser_open",
+            "browser_snapshot",
+            "browser_click",
+            "browser_fill",
+            "browser_press",
+            "browser_screenshot",
+            "browser_get_url",
+            "browser_upload",
+            "browser_download",
+            "browser_close",
+        ]
+    {
+        return Err(format!(
+            "Hermes agentic profile exposes unexpected acting tools: {}",
+            acting_tools.join(", ")
+        ));
+    }
+    let risks = profile_array_values(&profile, "always_confirm_risks")?;
+    for required in [
+        "destructive_git",
+        "install_or_admin",
+        "credentials",
+        "consequential_browser_submission",
+        "executable_download",
+        "payment",
+        "sensitive_files",
+        "scope_expansion",
+    ] {
+        if !risks.iter().any(|risk| risk == required) {
+            return Err(format!(
+                "Hermes agentic profile is missing confirmation risk `{required}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn assert_hermes_browser_runtime(root: &Path) -> Result<(), String> {
+    let profile = read(root.join("profiles/iris_browser.json"))?;
+    let provision = read(root.join("scripts/provision_iris_browser.ps1"))?;
+    let browser_tools = read(root.join("plugins/hermes_acp/iris_browser_tools.py"))?;
+    let safe_provider = read(root.join("plugins/memory/iris_broker/provider.py"))?;
+    for required in [
+        "\"provider\": \"agent-browser\"",
+        "\"version\": \"0.27.2\"",
+        "\"chrome_for_testing_version\": \"149.0.7827.115\"",
+        "\"headless_default\": true",
+        "\"manual_auth_headed_allowed\": true",
+        "\"private_network_navigation\": false",
+        "\"normal_browser_profile_reuse\": false",
+        "\"dedicated_profile\": \".iris-data/hermes-browser/profile\"",
+    ] {
+        if !profile.contains(required) {
+            return Err(format!("Iris browser profile missing `{required}`"));
+        }
+    }
+    for required in [
+        "agent-browser@0.27.2",
+        "RZNxZFvnspSxSmpjkZjM0Lv69ArwYr8t",
+        "1553389900824037aec828effab3051337df57a571e2f8800ee71cf8ed6fa76d",
+        "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56",
+    ] {
+        if !provision.contains(required) {
+            return Err(format!("Iris browser provisioner missing `{required}`"));
+        }
+    }
+    for required in [
+        "AGENT_BROWSER_PROFILE",
+        "AGENT_BROWSER_CONTENT_BOUNDARIES",
+        "IRIS_BROWSER_PREVIEW:",
+        "Browser navigation to private or local network addresses is blocked.",
+        "consequential browser submission",
+        "executable download",
+    ] {
+        if !browser_tools.contains(required) {
+            return Err(format!("Iris browser tools missing `{required}`"));
+        }
+    }
+    if safe_provider.contains("bing.com") || safe_provider.contains("_parse_bing_html") {
+        return Err("Safe Hermes must not use Bing HTML scraping".to_string());
+    }
+    Ok(())
+}
+
+fn assert_release_hardening(root: &Path) -> Result<(), String> {
+    let tauri = read(root.join("src-tauri/tauri.conf.json"))?;
+    for required in [
+        "\"csp\": \"default-src 'self' ipc: http://ipc.localhost",
+        "script-src 'self'",
+        "object-src 'none'",
+        "frame-src 'none'",
+        "form-action 'none'",
+    ] {
+        if !tauri.contains(required) {
+            return Err(format!("Tauri release CSP missing `{required}`"));
+        }
+    }
+
+    let package = read(root.join("scripts/package_windows_release.ps1"))?;
+    let installer = read(root.join("scripts/install_iris_windows.ps1"))?;
+    let release_smoke = read(root.join("scripts/test_windows_release_download.ps1"))?;
+    for required in [
+        ".iris-runtime\\hermes\\.venv",
+        ".iris-runtime\\browser\\node_modules",
+        ".iris-runtime\\browser\\browsers",
+        "volatile_data_packaged = $false",
+    ] {
+        if !package.contains(required) {
+            return Err(format!("release package script missing `{required}`"));
+        }
+    }
+    for required in ["\".iris-runtime\"", ".iris-runtime\\runtime-manifest.json"] {
+        if !installer.contains(required) {
+            return Err(format!(
+                "installer missing packaged runtime rule `{required}`"
+            ));
+        }
+    }
+    for forbidden_runtime in [
+        ".iris-runtime\\hermes\\home",
+        ".iris-data",
+        ".iris-runtime\\browser\\profile",
+        ".iris-runtime\\browser\\downloads",
+        ".iris-runtime\\browser\\command-output",
+    ] {
+        if !release_smoke.contains(forbidden_runtime) {
+            return Err(format!(
+                "release smoke test must reject volatile runtime path `{forbidden_runtime}`"
+            ));
+        }
+    }
+
+    let ci = read(root.join(".github/workflows/ci.yml"))?;
+    for required in [
+        "node-version: \"24\"",
+        "python-version: \"3.11\"",
+        "scripts\\provision_hermes_acp.ps1",
+        "scripts\\provision_iris_browser.ps1",
+        "npm run test:python",
+        "cargo run -p xtask",
+        "cargo run -p iris-runtime -- --dashboard-json",
+        "cargo clippy --workspace -- -D warnings",
+        "iris-dependency-inventory",
+    ] {
+        if !ci.contains(required) {
+            return Err(format!("CI release hardening missing `{required}`"));
+        }
+    }
+    Ok(())
+}
+
+fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
+    let metadata = read(root.join("profiles/hermes_agent_0_16_0.json"))?;
+    for required in [
+        "\"version\": \"0.16.0\"",
+        "\"release_tag\": \"v2026.6.5\"",
+        "\"release_commit\": \"3c231eb3979ab9c57d5cd6d02f1d577a3b718b43\"",
+        "\"wheel_sha256\": \"accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2\"",
+        "\"sigstore_transparency_entry\": 1737513268",
+        "\"trusted_publishing\": true",
+        "\"agent_client_protocol\": \"0.9.0\"",
+        "\"runtime_root\": \".iris-runtime/hermes\"",
+    ] {
+        if !metadata.contains(required) {
+            return Err(format!("Hermes ACP metadata missing `{required}`"));
+        }
+    }
+
+    let provision = read(root.join("scripts/provision_hermes_acp.ps1"))?;
+    for required in [
+        "hermes_agent-0.16.0-py3-none-any.whl",
+        "accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2",
+        "\"$Wheel[acp]\"",
+        "m.version('hermes-agent') == '0.16.0'",
+        "m.version('agent-client-protocol') == '0.9.0'",
+    ] {
+        if !provision.contains(required) {
+            return Err(format!("Hermes ACP provisioner missing `{required}`"));
+        }
+    }
+
+    let launcher = read(root.join("plugins/hermes_acp/iris_acp.py"))?;
+    let memory_tools = read(root.join("plugins/hermes_acp/iris_memory_tools.py"))?;
+    let action_tools = read(root.join("plugins/hermes_acp/iris_action_tools.py"))?;
+    for required in [
+        "IRIS_TOOLSET = \"iris-acp-bridge\"",
+        "register_iris_memory_tools",
+        "disabled_toolsets=DISABLED_TOOLSETS",
+        "session_db=None",
+        "skip_memory=True",
+        "skip_context_files=True",
+        "checkpoints_enabled=False",
+        "os.environ[\"HERMES_DISABLE_LAZY_INSTALLS\"] = \"1\"",
+        "IRIS_MAX_ITERATIONS = 8",
+        "IRIS_MAX_TOKENS = 512",
+        "max_iterations=IRIS_MAX_ITERATIONS",
+        "max_tokens=IRIS_MAX_TOKENS",
+        "reasoning_config={\"enabled\": False}",
+        "request_overrides={\"extra_body\": {\"think\": False}}",
+        "\"actingTools\": action_tools",
+        "\"nativeDurableMemory\": False",
+        "\"mcpAllowed\": False",
+        "Iris ACP bridge does not allow MCP servers",
+        "IRIS_HERMES_OLLAMA_BASE_URL",
+    ] {
+        if !launcher.contains(required) {
+            return Err(format!("Iris Hermes ACP launcher missing `{required}`"));
+        }
+    }
+    for required in [
+        "IRIS_MEMORY_TOOLS = (\"iris_query_memory\", \"iris_propose_memory\")",
+        "authority",
+        "instructionAuthority",
+        "durableMemoryPromoted",
+        "requiresUserDecision",
+        "IRIS_PROVENANCE:",
+    ] {
+        if !memory_tools.contains(required) {
+            return Err(format!("Iris Hermes memory tools missing `{required}`"));
+        }
+    }
+    for required in [
+        "IRIS_ACTION_TOOLS = (",
+        "\"read_file\"",
+        "\"write_file\"",
+        "\"patch\"",
+        "\"search_files\"",
+        "\"terminal\"",
+        "\"process\"",
+        "allow_permanent=False",
+        "scope expansion",
+        "sensitive files",
+        "POWERSHELL_DESCRIPTION",
+        "\"taskkill.exe\"",
+        "_sanitize_subprocess_env",
+        "MAX_PROCESS_OUTPUT_CHARS",
+        "HERMES_GIT_BASH_PATH",
+        "_upstream_file_path",
+    ] {
+        if !action_tools.contains(required) {
+            return Err(format!("Iris Hermes action guards missing `{required}`"));
+        }
+    }
+    for forbidden in [
+        "subprocess.run(",
+        "subprocess.Popen(",
+        "os.system(",
+        "shell=True",
+    ] {
+        if launcher.contains(forbidden) {
+            return Err(format!(
+                "Iris Hermes ACP launcher contains forbidden execution surface `{forbidden}`"
+            ));
+        }
+    }
+    for forbidden in ["shell=True", "cmd.exe", "os.system("] {
+        if action_tools.contains(forbidden) {
+            return Err(format!(
+                "Iris Hermes action adapter contains forbidden execution surface `{forbidden}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn profile_array_values(input: &str, key: &str) -> Result<Vec<String>, String> {
     let marker = format!("\"{key}\": [");
     let start = input
@@ -663,6 +1047,9 @@ fn assert_forbidden_api_absence(root: &Path) -> Result<(), String> {
             if is_loopback_inference_file(&file, pattern) {
                 continue;
             }
+            if is_approved_live_self_check_process_probe(&file, &content, pattern)? {
+                continue;
+            }
             if content.contains(pattern) {
                 return Err(format!(
                     "forbidden API pattern `{pattern}` found in {}",
@@ -672,6 +1059,41 @@ fn assert_forbidden_api_absence(root: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn is_approved_live_self_check_process_probe(
+    file: &Path,
+    content: &str,
+    pattern: &str,
+) -> Result<bool, String> {
+    let is_runtime = file
+        .components()
+        .any(|component| component.as_os_str() == "iris-runtime");
+    if !is_runtime || !matches!(pattern, "process::Command" | "Command::new") {
+        return Ok(false);
+    }
+    if !content.contains("fn validate_python_prerequisites") {
+        return Ok(false);
+    }
+    let constructor_count = content.matches("Command::new(").count();
+    let python_constructor_count = content.matches("Command::new(\"python\")").count();
+    let approved_agentic_probes = [
+        "Command::new(&hermes_python)",
+        "Command::new(&agent_browser)",
+        "fn validate_agentic_prerequisites",
+    ];
+    if constructor_count != 4
+        || python_constructor_count != 2
+        || approved_agentic_probes
+            .iter()
+            .any(|probe| !content.contains(probe))
+    {
+        return Err(
+            "iris-runtime self-check may launch only the four audited prerequisite probes"
+                .to_string(),
+        );
+    }
+    Ok(true)
 }
 
 fn is_loopback_inference_file(file: &Path, pattern: &str) -> bool {

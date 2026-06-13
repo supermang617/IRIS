@@ -39,10 +39,10 @@ what should work before filing a bug.
 - PASS: Local self-signed MSIX signature validation passed on the test machine.
 - PASS: Tesseract document OCR read a known document-image fixture.
 
-Capability note: Ollama `/api/tags` may omit `vision` for
-`huihui_ai/gemma-4-abliterated:e2b`, but `ollama show` and `/api/show` report
-`completion`, `vision`, `audio`, `tools`, and `thinking`. Iris preflight uses
-`/api/show` for this check.
+Capability note: Ollama `/api/tags` may omit `vision` for `qwen3.5:9b`, but
+`ollama show` and `/api/show` report `completion`, `vision`, `tools`, and
+`thinking`. Iris preflight uses `/api/show` for this check. Audio input remains
+an Iris ASR responsibility.
 
 Document-image note: direct Ollama image calls and Iris runtime image probes
 both failed simple OCR fixtures such as `ALPHA 742`, including deterministic

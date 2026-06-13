@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import json
-import html
-import base64
 import os
-import re
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -22,7 +18,6 @@ WEB_TIMEOUT_SECONDS = 10
 MAX_QUERY_CHARS = 120
 MAX_PROPOSAL_CHARS = 240
 EXPOSED_TOOLS = ("iris_query_memory", "iris_propose_memory", "iris_web_research")
-IRIS_HERMES_WEB_SEARCH_URL = "https://www.bing.com/search"
 GITHUB_API_URL = "https://api.github.com"
 PROFILE_NAME = "iris_restricted"
 PROMPT_INJECTION_PHRASES = (
@@ -158,25 +153,10 @@ def iris_web_research(query: str, limit: int = 5) -> dict[str, Any]:
             "query": clean_query,
             "results": authoritative[: min(max(limit, 1), 5)],
         }
-    params = urllib.parse.urlencode({"q": clean_query})
-    request = urllib.request.Request(
-        f"{IRIS_HERMES_WEB_SEARCH_URL}?{params}",
-        method="GET",
-        headers={
-            "User-Agent": "Mozilla/5.0 Project-Iris-Hermes/0.1",
-            "Accept": "text/html",
-        },
+    raise IrisBrokerUnavailable(
+        "Safe Hermes supports recognized primary-source lookups only. "
+        "Start an Agentic Session for isolated browser research."
     )
-    try:
-        with urllib.request.urlopen(request, timeout=WEB_TIMEOUT_SECONDS) as response:
-            data = response.read(256_000)
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise IrisBrokerUnavailable(f"Hermes web research unavailable: {error}") from error
-    html_text = data.decode("utf-8", errors="replace")
-    return {
-        "query": clean_query,
-        "results": _parse_bing_html(html_text, min(max(limit, 1), 5)),
-    }
 
 
 def _authoritative_release_lookup(query: str) -> list[dict[str, str]]:
@@ -194,8 +174,10 @@ def _authoritative_release_lookup(query: str) -> list[dict[str, str]]:
     try:
         with urllib.request.urlopen(request, timeout=WEB_TIMEOUT_SECONDS) as response:
             data = response.read(128_000)
-    except (urllib.error.URLError, TimeoutError):
-        return []
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise IrisBrokerUnavailable(
+            f"Primary-source release lookup unavailable: {error}"
+        ) from error
     parsed = json.loads(data.decode("utf-8"))
     name = str(parsed.get("name") or parsed.get("tag_name") or "").strip()
     tag = str(parsed.get("tag_name") or "").strip()
@@ -223,44 +205,6 @@ def _release_repo_for_query(query: str) -> str:
     return ""
 
 
-def _parse_bing_html(html_text: str, limit: int) -> list[dict[str, str]]:
-    results = []
-    blocks = re.split(r'<li[^>]+class="[^"]*b_algo[^"]*"', html_text)
-    for block in blocks[1:]:
-        link_match = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>', block, re.I | re.S)
-        if not link_match:
-            continue
-        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.I | re.S)
-        url = _clean_bing_url(html.unescape(link_match.group(1)))
-        title = _plain_html_text(link_match.group(2))
-        snippet = _plain_html_text(snippet_match.group(1)) if snippet_match else ""
-        if title:
-            results.append({"title": title[:180], "url": url[:500], "snippet": snippet[:500]})
-        if len(results) >= limit:
-            break
-    return results
-
-
-def _plain_html_text(value: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", value)
-    return " ".join(html.unescape(text).split())
-
-
-def _clean_bing_url(url: str) -> str:
-    parsed = urllib.parse.urlparse(url)
-    encoded = urllib.parse.parse_qs(parsed.query).get("u", [""])[0]
-    if encoded.startswith("a1"):
-        payload = encoded[2:]
-        padding = "=" * (-len(payload) % 4)
-        try:
-            decoded = base64.urlsafe_b64decode(f"{payload}{padding}").decode("utf-8")
-            if decoded.startswith(("http://", "https://")):
-                return decoded
-        except (ValueError, UnicodeDecodeError):
-            pass
-    return url
-
-
 def iris_propose_memory(text: str, source: str = "hermes", evidence: str | None = None) -> dict[str, Any]:
     clean_text = " ".join(text.split())
     if not clean_text:
@@ -274,7 +218,7 @@ def iris_propose_memory(text: str, source: str = "hermes", evidence: str | None 
     payload = {"text": clean_text, "source": source}
     if evidence:
         payload["evidence"] = evidence
-    return _broker_post(PROPOSE_ENDPOINT, payload)
+    return _broker_post(PROPOSE_ENDPOINT, payload, allow_rejection=True)
 
 
 def contains_prompt_injection_text(text: str) -> bool:
@@ -298,11 +242,21 @@ def _broker_get(endpoint: str) -> dict[str, Any]:
     return _request("GET", endpoint, None)
 
 
-def _broker_post(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return _request("POST", endpoint, payload)
+def _broker_post(
+    endpoint: str,
+    payload: dict[str, Any],
+    allow_rejection: bool = False,
+) -> dict[str, Any]:
+    return _request("POST", endpoint, payload, allow_rejection=allow_rejection)
 
 
-def _request(method: str, endpoint: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+def _request(
+    method: str,
+    endpoint: str,
+    payload: dict[str, Any] | None,
+    *,
+    allow_rejection: bool = False,
+) -> dict[str, Any]:
     url = f"{broker_url()}{endpoint}"
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
@@ -317,6 +271,6 @@ def _request(method: str, endpoint: str, payload: dict[str, Any] | None) -> dict
     except (urllib.error.URLError, TimeoutError) as error:
         raise IrisBrokerUnavailable(f"Iris broker unavailable: {error}") from error
     parsed = json.loads(data.decode("utf-8"))
-    if not parsed.get("ok"):
+    if not parsed.get("ok") and not allow_rejection:
         raise IrisBrokerUnavailable(f"Iris broker rejected request: {parsed.get('error')}")
     return parsed

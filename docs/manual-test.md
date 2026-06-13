@@ -126,7 +126,7 @@ If Iris stops listening, the last few lines of this file should show whether nat
 - No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
 - No continuous screen capture should occur. The screen icon performs one explicit capped capture of the area under Iris.
 - File attachments are user selected through the attachment icon, paste, or drag/drop, and are consumed by the next prompt only.
-- The configured model remains `huihui_ai/gemma-4-abliterated:e2b`.
+- The configured model remains `qwen3.5:9b`.
 - The configured TTS voice remains Kokoro `af_heart`.
 - Wake-word mode is armed by default.
 - Push-to-talk and typed text must keep working.

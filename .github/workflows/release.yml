@@ -23,8 +23,13 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
       - name: Install LLVM for whisper-rs bindgen
         shell: pwsh
@@ -39,14 +44,24 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Provision pinned Hermes runtimes
+        shell: pwsh
+        run: |
+          python -m pip install uv
+          .\scripts\provision_hermes_acp.ps1
+          .\scripts\provision_iris_browser.ps1
+
       - name: Validate source
         shell: pwsh
         run: |
           cargo fmt --all -- --check
           cargo build --workspace
           cargo test --workspace
-          cargo clippy --workspace
+          cargo clippy --workspace -- -D warnings
           npm run test:voice
+          npm run test:python
+          cargo run -p xtask
+          cargo run -p iris-runtime -- --dashboard-json
           git diff --check
 
       - name: Restore release model assets
@@ -80,3 +95,5 @@ jobs:
           files: |
             release/dist/iris-windows.zip
             release/dist/iris-windows.zip.sha256
+            release/dist/install-iris-windows.ps1
+            release/dist/install-iris-windows.ps1.sha256

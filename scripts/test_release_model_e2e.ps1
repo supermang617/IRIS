@@ -8,7 +8,8 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $repoRoot
 $originalLocation = (Get-Location).Path
 
-$model = "huihui_ai/gemma-4-abliterated:e2b"
+$sourceManifest = Get-Content -LiteralPath (Join-Path $repoRoot "manifest.json") -Raw | ConvertFrom-Json
+$model = [string]$sourceManifest.model_policy.model_id
 $zipPath = Join-Path $repoRoot "release\dist\iris-windows.zip"
 
 function Require-File {
@@ -61,9 +62,15 @@ try {
     $runtime = Join-Path $extractRoot "bin\iris-runtime.exe"
     $launcher = Join-Path $extractRoot "Start Iris.ps1"
     $documentOcrScript = Join-Path $extractRoot "Iris Document OCR.ps1"
+    $releaseManifestPath = Join-Path $extractRoot "manifest.json"
     Require-File -Path $runtime
     Require-File -Path $launcher
     Require-File -Path $documentOcrScript
+    Require-File -Path $releaseManifestPath
+    $releaseManifest = Get-Content -LiteralPath $releaseManifestPath -Raw | ConvertFrom-Json
+    if ([string]$releaseManifest.model_policy.model_id -ne $model) {
+        throw "Release package is stale. Rebuild it with scripts/package_windows_release.ps1 before E2E testing."
+    }
 
     & $launcher --self-check | Out-Host
     if ($LASTEXITCODE -ne 0) {
@@ -99,12 +106,13 @@ try {
         throw "Vision model response did not identify the red circular object: $($vision.Output)"
     }
 
-    $documentBitmap = New-Object System.Drawing.Bitmap 640, 320
+    $documentBitmap = New-Object System.Drawing.Bitmap 1000, 360
     $documentGraphics = [System.Drawing.Graphics]::FromImage($documentBitmap)
     $documentGraphics.Clear([System.Drawing.Color]::White)
-    $font = New-Object System.Drawing.Font "Arial", 48, ([System.Drawing.FontStyle]::Bold)
+    $documentGraphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::SingleBitPerPixelGridFit
+    $font = New-Object System.Drawing.Font "Consolas", 72, ([System.Drawing.FontStyle]::Bold)
     $blackBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Black)
-    $documentGraphics.DrawString("IRIS TEST 742", $font, $blackBrush, 48, 96)
+    $documentGraphics.DrawString("IRIS 742", $font, $blackBrush, 80, 100)
     $blackBrush.Dispose()
     $font.Dispose()
     $documentGraphics.Dispose()

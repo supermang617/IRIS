@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyAsrError, classifyVoiceTranscript } from "./voice-state.js";
+import {
+  classifyAsrError,
+  classifyVoiceTranscript,
+  wakeRestartDelayMs
+} from "./voice-state.js";
 
 test("push-to-talk submits the full transcript", () => {
   assert.deepEqual(
@@ -208,4 +212,14 @@ test("unexpected ASR failures remain errors", () => {
     event: "native_asr_error",
     status: "model crashed"
   });
+});
+
+test("wake listener backs off after empty or ambient captures", () => {
+  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 1200);
+  assert.equal(
+    wakeRestartDelayMs("wake", "background television", "wait-for-wake"),
+    4000
+  );
+  assert.equal(wakeRestartDelayMs("wake", "Iris hello", "submit"), 650);
+  assert.equal(wakeRestartDelayMs("push", "", "ignore"), 650);
 });

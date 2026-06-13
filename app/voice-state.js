@@ -62,6 +62,19 @@ export function classifyAsrError(error) {
   return { severity: "error", event: "native_asr_error", status: message || "Native ASR failed." };
 }
 
+export function wakeRestartDelayMs(mode, transcript, action) {
+  if (mode !== "wake") {
+    return 650;
+  }
+  if (!String(transcript || "").trim()) {
+    return 1200;
+  }
+  if (action === "wait-for-wake" || action === "ignore") {
+    return 4000;
+  }
+  return 650;
+}
+
 function isInterruption(text) {
   return /^(iris[\s,.:;!?-]+)?(stop|pause|quiet|cancel|interrupt)\b/i.test(text);
 }

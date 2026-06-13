@@ -6,6 +6,7 @@ src-tauri/gen/
 .cargo/
 tmp/
 .iris-data/
+.iris-runtime/
 .vs/
 .codex/
 .codex_backup*/

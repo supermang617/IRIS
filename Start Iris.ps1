@@ -38,6 +38,16 @@ function Get-IrisModelId {
     }
 }
 
+function Get-IrisNumCtx {
+    $manifestPath = Join-Path $repoRoot "manifest.json"
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        return [int]$manifest.model_policy.num_ctx_ceiling
+    } catch {
+        return 8192
+    }
+}
+
 function Test-OllamaModelManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ModelsRoot,
@@ -48,10 +58,9 @@ function Test-OllamaModelManifest {
         return $false
     }
     $nameParts = $parts[0].Split("/", 2)
-    if ($nameParts.Count -ne 2) {
-        return $false
-    }
-    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $nameParts[0] (Join-Path $nameParts[1] $parts[1])))
+    $namespace = if ($nameParts.Count -eq 2) { $nameParts[0] } else { "library" }
+    $name = if ($nameParts.Count -eq 2) { $nameParts[1] } else { $nameParts[0] }
+    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $namespace (Join-Path $name $parts[1])))
     return Test-Path -LiteralPath $manifest -PathType Leaf
 }
 
@@ -85,6 +94,29 @@ function Test-OllamaModelAvailable {
     }
 }
 
+function Test-OllamaRuntimeCompatible {
+    $modelId = Get-IrisModelId
+    $requiredContext = Get-IrisNumCtx
+    if (-not $modelId -or $requiredContext -le 0) {
+        return $false
+    }
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/ps" -UseBasicParsing -TimeoutSec 2
+        $status = $response.Content | ConvertFrom-Json
+        $model = @($status.models) | Where-Object { $_.name -eq $modelId -or $_.model -eq $modelId } | Select-Object -First 1
+        return $null -ne $model -and [int64]$model.context_length -ge $requiredContext
+    } catch {
+        return $false
+    }
+}
+
+function Use-IrisOllamaRuntimeSettings {
+    param([Parameter(Mandatory = $true)][string]$LogPath)
+    $requiredContext = Get-IrisNumCtx
+    $env:OLLAMA_CONTEXT_LENGTH = [string]$requiredContext
+    "[$(Get-Date -Format o)] Ollama context length set to $requiredContext from manifest.json." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+}
+
 function Stop-OllamaForIris {
     Get-Process "ollama", "ollama app", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
@@ -93,13 +125,14 @@ function Start-OllamaForIris {
     param([Parameter(Mandatory = $true)][string]$LogPath)
 
     Use-IrisOllamaModelStore -LogPath $LogPath
+    Use-IrisOllamaRuntimeSettings -LogPath $LogPath
 
     if (Test-OllamaReady) {
-        if (Test-OllamaModelAvailable) {
-            "[$(Get-Date -Format o)] Ollama is already listening on 127.0.0.1:11434 with the Iris model available." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+        if ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
+            "[$(Get-Date -Format o)] Ollama is already listening with the Iris model and required context." | Out-File -FilePath $LogPath -Encoding utf8 -Append
             return
         }
-        "[$(Get-Date -Format o)] Restarting Ollama so Iris can use the configured model store." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+        "[$(Get-Date -Format o)] Restarting Ollama so Iris owns the configured model store and context." | Out-File -FilePath $LogPath -Encoding utf8 -Append
         Stop-OllamaForIris
         Start-Sleep -Seconds 2
     }
@@ -158,6 +191,8 @@ try {
 
     if ($SelfCheck) {
         "[$(Get-Date -Format o)] Running Iris launcher self-check." | Out-File -FilePath $logPath -Encoding utf8
+        Start-OllamaForIris -LogPath $logPath
+
         if (Test-Path -LiteralPath $preflightScript) {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $preflightScript *>> $logPath
             $preflightExitCode = $LASTEXITCODE
@@ -167,8 +202,6 @@ try {
         } else {
             throw "Missing Iris preflight script: $preflightScript"
         }
-
-        Start-OllamaForIris -LogPath $logPath
 
         cmd.exe /c "cargo run -p xtask >> `"$logPath`" 2>&1"
         $xtaskExitCode = $LASTEXITCODE

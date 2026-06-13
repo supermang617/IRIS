@@ -49,7 +49,7 @@ Require-OutputContains -Result $selfCheck -Needle "runtime_external_network=disa
 $dashboard = Invoke-Runtime -Arguments @("--dashboard-json")
 Require-Success -Result $dashboard -Name "dashboard json"
 $dashboardJson = $dashboard.Output | ConvertFrom-Json
-if ($dashboardJson.model.id -ne "huihui_ai/gemma-4-abliterated:e2b") {
+if ($dashboardJson.model.id -ne "qwen3.5:9b") {
     throw "dashboard model mismatch: $($dashboardJson.model.id)"
 }
 if ($dashboardJson.model.runtime_external_network -ne "disabled" -or $dashboardJson.model.loopback_only -ne $true) {

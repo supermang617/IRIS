@@ -1,10 +1,13 @@
+mod hermes_acp;
+mod hermes_policy;
+
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -19,6 +22,7 @@ static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
 static HERMES_BROKER_STARTED: OnceLock<()> = OnceLock::new();
 static HERMES_SIDECAR: OnceLock<Mutex<Option<HermesSidecar>>> = OnceLock::new();
 static HERMES_TASK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DIAGNOSTIC_SESSION: OnceLock<Mutex<Option<DiagnosticSessionSummary>>> = OnceLock::new();
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_STAGING_ITEMS: usize = 80;
 const MAX_HERMES_MEMORY_QUERY_CHARS: usize = 120;
@@ -30,6 +34,7 @@ const MAX_IMAGE_PROBE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SCREEN_CAPTURE_WIDTH: u32 = 1280;
 const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
 const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
+const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
 type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +78,10 @@ struct StagedMemoryProposal {
     id: u64,
     text: String,
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provenance: Option<MemoryProvenance>,
     status: StagingStatus,
     verdict: ProposalVerdict,
     created_ms: u128,
@@ -117,6 +126,19 @@ struct MemorySearchResult {
     id: u64,
     text: String,
     score: f32,
+    source: &'static str,
+    provenance: MemoryProvenance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryProvenance {
+    authority: String,
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    memory_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,10 +171,14 @@ struct HermesStatusResponse {
     sidecar_enabled: bool,
     broker_enabled: bool,
     running: bool,
-    profile: &'static str,
+    mode: hermes_policy::HermesMode,
+    panic_stop_active: bool,
+    agentic_runtime_available: bool,
+    agentic_session: Option<hermes_policy::AgenticSession>,
+    profile: String,
     broker_url: &'static str,
-    tools: [&'static str; 3],
-    acting_tools: [String; 0],
+    tools: Vec<String>,
+    acting_tools: Vec<String>,
     search_enabled: bool,
     onedrive_sync_enabled: bool,
     sequential_tasks_only: bool,
@@ -292,7 +318,7 @@ struct KokoroSettings {
 struct KokoroWorker {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    responses: mpsc::Receiver<Result<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,6 +347,7 @@ struct VoiceDiagnosticEvent {
 
 #[derive(Debug, Clone, Serialize)]
 struct VoiceDiagnosticLogRecord {
+    session_id: String,
     timestamp_ms: u128,
     event: String,
     detail: String,
@@ -331,6 +358,18 @@ struct VoiceDiagnosticLogRecord {
     voice_loop: bool,
     wake_word: bool,
     wake_command_armed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticSessionSummary {
+    session_id: String,
+    started_ms: u128,
+    updated_ms: u128,
+    process_id: u32,
+    event_count: u64,
+    latency_report_count: u64,
+    last_event: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -383,13 +422,199 @@ fn list_memories() -> Result<Vec<MemoryItem>, String> {
 
 #[tauri::command]
 fn hermes_status() -> HermesStatusResponse {
-    hermes_status_snapshot()
+    hermes_status_snapshot().unwrap_or_else(|_error| HermesStatusResponse {
+        enabled: false,
+        sidecar_enabled: false,
+        broker_enabled: false,
+        running: false,
+        mode: hermes_policy::HermesMode::Off,
+        panic_stop_active: false,
+        agentic_runtime_available: false,
+        agentic_session: None,
+        profile: "unavailable".to_string(),
+        broker_url: "http://127.0.0.1:48731",
+        tools: Vec::new(),
+        acting_tools: Vec::new(),
+        search_enabled: false,
+        onedrive_sync_enabled: false,
+        sequential_tasks_only: true,
+        runtime_tool_audit_passed: false,
+    })
 }
 
 #[tauri::command]
 fn hermes_start_sidecar() -> Result<HermesStatusResponse, String> {
     start_hermes_sidecar()?;
-    Ok(hermes_status_snapshot())
+    hermes_status_snapshot()
+}
+
+#[tauri::command]
+fn hermes_mode_status() -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    let root = workspace_root()?;
+    hermes_policy::set_agentic_runtime_available(hermes_acp::runtime_status(&root).installed);
+    hermes_policy::snapshot(timestamp_ms()?)
+}
+
+#[tauri::command]
+fn hermes_set_mode(
+    mode: hermes_policy::HermesMode,
+) -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    let snapshot = hermes_policy::set_mode(mode, timestamp_ms()?)?;
+    match mode {
+        hermes_policy::HermesMode::Off => {
+            stop_hermes_sidecar()?;
+            hermes_acp::stop();
+        }
+        hermes_policy::HermesMode::Safe => {
+            hermes_acp::stop();
+        }
+        hermes_policy::HermesMode::Agentic => {
+            stop_hermes_sidecar()?;
+        }
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn hermes_create_agentic_session(
+    workspace_path: String,
+) -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    stop_hermes_sidecar()?;
+    let root = workspace_root()?;
+    let runtime = hermes_acp::runtime_status(&root);
+    hermes_policy::set_agentic_runtime_available(runtime.installed);
+    if !runtime.installed {
+        return Err(
+            "Hermes Agent ACP is not provisioned. Run scripts/provision_hermes_acp.ps1."
+                .to_string(),
+        );
+    }
+    hermes_policy::create_agentic_session(
+        std::path::Path::new(workspace_path.trim()),
+        timestamp_ms()?,
+    )
+}
+
+#[tauri::command]
+fn hermes_end_agentic_session() -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    stop_hermes_sidecar()?;
+    hermes_acp::stop();
+    hermes_policy::end_agentic_session(timestamp_ms()?)
+}
+
+#[tauri::command]
+fn hermes_record_agentic_activity() -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    hermes_policy::record_agentic_activity(timestamp_ms()?)
+}
+
+#[tauri::command]
+fn hermes_panic_stop() -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    let snapshot = hermes_policy::activate_panic_stop(timestamp_ms()?)?;
+    let _ = stop_hermes_sidecar();
+    hermes_acp::stop();
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn hermes_clear_panic_stop() -> Result<hermes_policy::HermesPolicySnapshot, String> {
+    stop_hermes_sidecar()?;
+    hermes_acp::stop();
+    hermes_policy::clear_panic_stop(timestamp_ms()?)
+}
+
+#[tauri::command]
+fn hermes_agentic_runtime_status() -> Result<hermes_acp::HermesAcpRuntimeStatus, String> {
+    let root = workspace_root()?;
+    let status = hermes_acp::runtime_status(&root);
+    hermes_policy::set_agentic_runtime_available(status.installed);
+    Ok(status)
+}
+
+#[tauri::command]
+fn browser_preview_data_url(screenshot_path: String) -> Result<String, String> {
+    let root = workspace_root()?;
+    browser_preview_data_url_for(&root, std::path::Path::new(screenshot_path.trim()))
+}
+
+fn browser_preview_data_url_for(
+    workspace_root: &std::path::Path,
+    screenshot_path: &std::path::Path,
+) -> Result<String, String> {
+    let allowed_root = workspace_root
+        .join("diagnostics/browser")
+        .canonicalize()
+        .map_err(|err| format!("browser preview directory is unavailable: {err}"))?;
+    let candidate = if screenshot_path.is_absolute() {
+        screenshot_path.to_path_buf()
+    } else {
+        workspace_root.join(screenshot_path)
+    };
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|err| format!("browser preview is unavailable: {err}"))?;
+    if !candidate.starts_with(&allowed_root) {
+        return Err("browser preview path is outside the Iris diagnostics directory".to_string());
+    }
+    let metadata = fs::metadata(&candidate)
+        .map_err(|err| format!("failed to inspect browser preview: {err}"))?;
+    if !metadata.is_file() || metadata.len() > 10 * 1024 * 1024 {
+        return Err("browser preview must be an image no larger than 10 MB".to_string());
+    }
+    let mime = match candidate
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        _ => return Err("browser preview must be a PNG or JPEG image".to_string()),
+    };
+    let bytes =
+        fs::read(&candidate).map_err(|err| format!("failed to read browser preview: {err}"))?;
+    Ok(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
+#[tauri::command]
+fn hermes_pending_agentic_approval() -> Option<hermes_policy::ApprovalRequest> {
+    hermes_acp::pending_approval()
+}
+
+#[tauri::command]
+fn hermes_respond_agentic_approval(request_id: String, approved: bool) -> Result<(), String> {
+    hermes_acp::respond_to_approval(request_id.trim(), approved)
+}
+
+#[tauri::command]
+async fn hermes_submit_agentic_task(
+    text: String,
+) -> Result<hermes_acp::HermesAcpTaskResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let policy = hermes_policy::snapshot(timestamp_ms()?)?;
+        if policy.mode != hermes_policy::HermesMode::Agentic {
+            return Err("Hermes is not in Agentic mode".to_string());
+        }
+        let session = policy
+            .agentic_session
+            .ok_or_else(|| "Agentic Hermes session is unavailable".to_string())?;
+        let root = workspace_root()?;
+        let manifest = iris_config::load_manifest_from_workspace(&root)?;
+        let result = hermes_acp::submit_task(
+            &root,
+            &session.workspace_path,
+            &manifest.model_policy.model_id,
+            &text,
+        )?;
+        hermes_policy::record_agentic_activity(timestamp_ms()?)?;
+        Ok(result)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+fn hermes_cancel_agentic_task() {
+    hermes_acp::stop();
 }
 
 #[tauri::command]
@@ -559,13 +784,19 @@ fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> Imag
 }
 
 #[tauri::command]
-async fn native_asr_listen_once() -> Result<AsrCommandResponse, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (duration_ms, start_timeout_ms) = match mode.as_deref() {
+            Some("push") => (6_500, 4_500),
+            Some("loop") => (5_000, 2_500),
+            _ => (5_000, 1_800),
+        };
         native_asr_listen_for(
-            6_500,
+            duration_ms,
             CaptureEndpoint::Speech {
-                min_ms: 800,
-                trailing_silence_ms: 650,
+                min_ms: 650,
+                trailing_silence_ms: 550,
+                start_timeout_ms,
             },
         )
     })
@@ -588,8 +819,16 @@ fn native_asr_listen_for(
     let capture_started = Instant::now();
     let audio = record_microphone_mono_16khz(duration_ms, endpoint)?;
     let capture_elapsed_ms = capture_started.elapsed().as_millis();
+    if !audio.speech_detected {
+        return Ok(AsrCommandResponse {
+            text: String::new(),
+            elapsed_ms: started.elapsed().as_millis(),
+            capture_elapsed_ms: Some(capture_elapsed_ms),
+            stt_elapsed_ms: Some(0),
+        });
+    }
     let stt_started = Instant::now();
-    let text = transcribe_local_whisper(&audio)?;
+    let text = transcribe_local_whisper(&audio.samples)?;
     let stt_elapsed_ms = stt_started.elapsed().as_millis();
     Ok(AsrCommandResponse {
         text,
@@ -615,6 +854,10 @@ async fn warm_kokoro_tts() -> Result<(), String> {
         if guard.is_none() {
             *guard = Some(start_kokoro_worker(&settings)?);
         }
+        guard
+            .as_mut()
+            .ok_or_else(|| "Kokoro worker did not start".to_string())?
+            .synthesize("Ready.")?;
         Ok(())
     })
     .await
@@ -741,11 +984,20 @@ fn start_kokoro_worker(settings: &KokoroSettings) -> Result<KokoroWorker, String
         .stdout
         .take()
         .ok_or_else(|| "failed to open warm Kokoro stdout".to_string())?;
+    let (response_tx, responses) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let message = line.map_err(|err| format!("failed to read warm Kokoro response: {err}"));
+            if response_tx.send(message).is_err() {
+                break;
+            }
+        }
+    });
 
     Ok(KokoroWorker {
         child,
         stdin,
-        stdout: BufReader::new(stdout),
+        responses,
     })
 }
 
@@ -764,10 +1016,10 @@ impl KokoroWorker {
             .flush()
             .map_err(|err| format!("failed to flush warm Kokoro stdin: {err}"))?;
 
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .map_err(|err| format!("failed to read warm Kokoro response: {err}"))?;
+        let line = self
+            .responses
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .map_err(|err| format!("warm Kokoro response timed out: {err}"))??;
         if line.trim().is_empty() {
             return Err("warm Kokoro returned no response".to_string());
         }
@@ -777,6 +1029,21 @@ impl KokoroWorker {
             return Err(format!("warm Kokoro failed: {}", response.error));
         }
         base64_decode(&response.wav_b64)
+    }
+}
+
+impl Drop for KokoroWorker {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn stop_kokoro_worker() {
+    if let Some(slot) = KOKORO_WORKER.get()
+        && let Ok(mut worker) = slot.lock()
+    {
+        *worker = None;
     }
 }
 
@@ -880,6 +1147,30 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0] as u32;
+        let b = chunk.get(1).copied().unwrap_or(0) as u32;
+        let c = chunk.get(2).copied().unwrap_or(0) as u32;
+        let value = (a << 16) | (b << 8) | c;
+        output.push(ALPHABET[((value >> 18) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((value >> 12) & 0x3f) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[((value >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(value & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
 #[allow(dead_code)]
 fn _old_signature_anchor() {
     let _ = (
@@ -887,6 +1178,7 @@ fn _old_signature_anchor() {
         CaptureEndpoint::Speech {
             min_ms: 800,
             trailing_silence_ms: 650,
+            start_timeout_ms: 1_800,
         },
     );
 }
@@ -896,8 +1188,9 @@ fn log_voice_diagnostic(event: VoiceDiagnosticEvent) -> Result<(), String> {
     let workspace_root = workspace_root()?;
     let diagnostics_dir = workspace_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
+    let session_id = record_diagnostic_activity(&diagnostics_dir, Some(&event.event), false)?;
     let log_path = diagnostics_dir.join("voice-events.jsonl");
-    let line = voice_diagnostic_jsonl(timestamp_ms()?, event)?;
+    let line = voice_diagnostic_jsonl(&session_id, timestamp_ms()?, event)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -908,13 +1201,16 @@ fn log_voice_diagnostic(event: VoiceDiagnosticEvent) -> Result<(), String> {
 }
 
 fn voice_diagnostic_jsonl(
+    session_id: &str,
     timestamp_ms: u128,
     event: VoiceDiagnosticEvent,
 ) -> Result<String, String> {
+    let event_name = json_capped(&event.event);
     let record = VoiceDiagnosticLogRecord {
+        session_id: session_id.to_string(),
         timestamp_ms,
-        event: json_capped(&event.event),
-        detail: json_capped(&event.detail),
+        event: event_name.clone(),
+        detail: privacy_safe_diagnostic_detail(&event_name, &event.detail),
         mode: json_capped(&event.mode),
         listening: event.listening,
         thinking: event.thinking,
@@ -930,10 +1226,11 @@ fn voice_diagnostic_jsonl(
 
 #[tauri::command]
 fn log_voice_latency_report(trace: VoiceLatencyTrace) -> Result<String, String> {
-    let report = format_voice_latency_report(&trace);
     let workspace_root = workspace_root()?;
     let diagnostics_dir = workspace_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
+    let session_id = record_diagnostic_activity(&diagnostics_dir, None, true)?;
+    let report = format_voice_latency_report(&session_id, &trace);
     let log_path = diagnostics_dir.join("voice-latency.txt");
     let mut file = OpenOptions::new()
         .create(true)
@@ -946,9 +1243,10 @@ fn log_voice_latency_report(trace: VoiceLatencyTrace) -> Result<String, String> 
     Ok(report)
 }
 
-fn format_voice_latency_report(trace: &VoiceLatencyTrace) -> String {
+fn format_voice_latency_report(session_id: &str, trace: &VoiceLatencyTrace) -> String {
     format!(
         "Voice latency report\n\
+- session: {session_id}\n\
 - speech capture: {}\n\
 - STT: {}\n\
 - LLM first token: {}\n\
@@ -970,6 +1268,107 @@ fn format_voice_latency_report(trace: &VoiceLatencyTrace) -> String {
 
 fn format_optional_ms(value: Option<u128>) -> String {
     value.map_or_else(|| "n/a".to_string(), |ms| format!("{ms}ms"))
+}
+
+fn record_diagnostic_activity(
+    diagnostics_dir: &std::path::Path,
+    event: Option<&str>,
+    latency_report: bool,
+) -> Result<String, String> {
+    let state = DIAGNOSTIC_SESSION.get_or_init(|| Mutex::new(None));
+    let mut guard = state
+        .lock()
+        .map_err(|_| "diagnostic session state is unavailable".to_string())?;
+    let now = timestamp_ms()?;
+    if guard.is_none() {
+        rotate_diagnostic_file(&diagnostics_dir.join("voice-events.jsonl"))?;
+        rotate_diagnostic_file(&diagnostics_dir.join("voice-latency.txt"))?;
+        *guard = Some(DiagnosticSessionSummary {
+            session_id: format!("{now}-{}", std::process::id()),
+            started_ms: now,
+            updated_ms: now,
+            process_id: std::process::id(),
+            event_count: 0,
+            latency_report_count: 0,
+            last_event: "session_started".to_string(),
+        });
+    }
+
+    let summary = guard
+        .as_mut()
+        .ok_or_else(|| "diagnostic session initialization failed".to_string())?;
+    summary.updated_ms = now;
+    if let Some(event) = event {
+        summary.event_count += 1;
+        summary.last_event = json_capped(event);
+    }
+    if latency_report {
+        summary.latency_report_count += 1;
+        summary.last_event = "voice_latency_report".to_string();
+    }
+    let json = serde_json::to_vec_pretty(summary).map_err(|err| err.to_string())?;
+    fs::write(diagnostics_dir.join("current-session-summary.json"), json)
+        .map_err(|err| err.to_string())?;
+    Ok(summary.session_id.clone())
+}
+
+fn rotate_diagnostic_file(path: &std::path::Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("log");
+    for index in (1..=DIAGNOSTIC_ARCHIVE_COUNT).rev() {
+        let destination = path.with_extension(format!("{extension}.{index}"));
+        if index == DIAGNOSTIC_ARCHIVE_COUNT && destination.exists() {
+            fs::remove_file(&destination).map_err(|err| err.to_string())?;
+        }
+        if index > 1 {
+            let source = path.with_extension(format!("{extension}.{}", index - 1));
+            if source.exists() {
+                fs::rename(source, destination).map_err(|err| err.to_string())?;
+            }
+        }
+    }
+    fs::rename(path, path.with_extension(format!("{extension}.1"))).map_err(|err| err.to_string())
+}
+
+fn privacy_safe_diagnostic_detail(event: &str, detail: &str) -> String {
+    let detail = detail.trim();
+    match event {
+        "native_asr_result" | "speech_interruption_result" => {
+            let (timing, transcript) = detail.split_once(';').unwrap_or((detail, ""));
+            format!(
+                "{}; transcript_chars={}",
+                json_capped(timing.trim()),
+                transcript.trim().chars().count()
+            )
+        }
+        "speech_interruption_detected" => {
+            format!("transcript_chars={}", detail.chars().count())
+        }
+        "voice_decision" | "speech_interruption_decision" => {
+            let mut parts = detail.splitn(3, ':');
+            let action = parts.next().unwrap_or_default();
+            let source = parts.next().unwrap_or_default();
+            let prompt = parts.next().unwrap_or_default();
+            format!(
+                "{}:{}:prompt_chars={}",
+                json_capped(action),
+                json_capped(source),
+                prompt.chars().count()
+            )
+        }
+        _ => {
+            let capped = json_capped(detail);
+            match std::env::var("USERPROFILE") {
+                Ok(profile) if !profile.is_empty() => capped.replace(&profile, "%USERPROFILE%"),
+                _ => capped,
+            }
+        }
+    }
 }
 
 fn timestamp_ms() -> Result<u128, String> {
@@ -1208,6 +1607,13 @@ fn search_active_memories(query: &str, limit: usize) -> Result<Vec<MemorySearchR
                 id: memory.id,
                 text: memory.text,
                 score: 1.0,
+                source: "iris_active_memory",
+                provenance: MemoryProvenance {
+                    authority: "user_approved".to_string(),
+                    source: "iris_active_memory".to_string(),
+                    memory_id: Some(memory.id),
+                    evidence: None,
+                },
             })
             .collect());
     }
@@ -1225,6 +1631,13 @@ fn search_active_memories(query: &str, limit: usize) -> Result<Vec<MemorySearchR
                 id: memory.id,
                 text: memory.text,
                 score,
+                source: "iris_active_memory",
+                provenance: MemoryProvenance {
+                    authority: "user_approved".to_string(),
+                    source: "iris_active_memory".to_string(),
+                    memory_id: Some(memory.id),
+                    evidence: None,
+                },
             })
         })
         .collect::<Vec<_>>();
@@ -1306,6 +1719,25 @@ fn propose_hermes_memory(
             .chars()
             .take(80)
             .collect(),
+        evidence: evidence
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.chars().take(500).collect()),
+        provenance: Some(MemoryProvenance {
+            authority: "untrusted_proposal".to_string(),
+            source: source
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("hermes")
+                .chars()
+                .take(160)
+                .collect(),
+            memory_id: None,
+            evidence: evidence
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(500).collect()),
+        }),
         status: StagingStatus::Pending,
         verdict,
         created_ms: now,
@@ -1548,6 +1980,15 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
     if fields.len() < 2 {
         return json_error("400 Bad Request", "invalid HTTP request");
     }
+    let policy = timestamp_ms().and_then(hermes_policy::snapshot).unwrap_or(
+        hermes_policy::HermesPolicySnapshot {
+            mode: hermes_policy::HermesMode::Off,
+            startup_default: hermes_policy::HermesMode::Safe,
+            panic_stop_active: true,
+            agentic_runtime_available: false,
+            agentic_session: None,
+        },
+    );
     match (fields[0], fields[1]) {
         ("GET", "/memory/status") => json_ok(serde_json::json!({
             "ok": true,
@@ -1559,12 +2000,17 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
             "maxProposalChars": MAX_HERMES_PROPOSAL_CHARS,
             "activeMemoryItems": load_memories().map(|items| items.len()).unwrap_or(0),
             "stagingItems": load_staged_memory_proposals().map(|items| items.len()).unwrap_or(0),
-            "hermesEnabled": hermes_enabled(),
+            "hermesEnabled": hermes_enabled() && policy.mode != hermes_policy::HermesMode::Off,
+            "hermesMode": policy.mode,
+            "panicStopActive": policy.panic_stop_active,
             "searchEnabled": hermes_memory_search_enabled(),
             "onedriveSyncEnabled": env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
             "inferenceProvider": hermes_inference_provider()
         })),
         ("POST", "/memory/search") => {
+            if policy.mode == hermes_policy::HermesMode::Off {
+                return json_error("403 Forbidden", "Hermes is Off");
+            }
             if !hermes_memory_search_enabled() {
                 return json_error(
                     "403 Forbidden",
@@ -1586,18 +2032,23 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
                 Err(error) => json_error("400 Bad Request", &error),
             }
         }
-        ("POST", "/memory/propose") => match serde_json::from_str::<MemoryProposalRequest>(body)
-            .map_err(|err| err.to_string())
-            .and_then(|input| {
-                propose_hermes_memory(
-                    &input.text,
-                    input.source.as_deref(),
-                    input.evidence.as_deref(),
-                )
-            }) {
-            Ok(response) => json_ok(response),
-            Err(error) => json_error("400 Bad Request", &error),
-        },
+        ("POST", "/memory/propose") => {
+            if policy.mode == hermes_policy::HermesMode::Off {
+                return json_error("403 Forbidden", "Hermes is Off");
+            }
+            match serde_json::from_str::<MemoryProposalRequest>(body)
+                .map_err(|err| err.to_string())
+                .and_then(|input| {
+                    propose_hermes_memory(
+                        &input.text,
+                        input.source.as_deref(),
+                        input.evidence.as_deref(),
+                    )
+                }) {
+                Ok(response) => json_ok(response),
+                Err(error) => json_error("400 Bad Request", &error),
+            }
+        }
         ("GET", "/memory/staging/list") => {
             json_ok(load_staged_memory_proposals().unwrap_or_default())
         }
@@ -1641,26 +2092,71 @@ fn json_error(status: &'static str, error: &str) -> (&'static str, String) {
     )
 }
 
-fn hermes_status_snapshot() -> HermesStatusResponse {
-    HermesStatusResponse {
-        enabled: hermes_enabled(),
+fn hermes_status_snapshot() -> Result<HermesStatusResponse, String> {
+    let root = workspace_root()?;
+    let agentic_runtime = hermes_acp::runtime_status(&root);
+    hermes_policy::set_agentic_runtime_available(agentic_runtime.installed);
+    let policy = hermes_policy::snapshot(timestamp_ms()?)?;
+    let (profile, tools, acting_tools) = match policy.mode {
+        hermes_policy::HermesMode::Off => ("off".to_string(), Vec::new(), Vec::new()),
+        hermes_policy::HermesMode::Safe => (
+            "iris_restricted".to_string(),
+            vec![
+                "iris_query_memory".to_string(),
+                "iris_propose_memory".to_string(),
+                "iris_web_research".to_string(),
+            ],
+            Vec::new(),
+        ),
+        hermes_policy::HermesMode::Agentic => (
+            "iris_agentic".to_string(),
+            agentic_runtime
+                .exposed_tools
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect(),
+            vec![
+                "read_file".to_string(),
+                "write_file".to_string(),
+                "patch".to_string(),
+                "search_files".to_string(),
+                "terminal".to_string(),
+                "process".to_string(),
+                "browser_open".to_string(),
+                "browser_snapshot".to_string(),
+                "browser_click".to_string(),
+                "browser_fill".to_string(),
+                "browser_press".to_string(),
+                "browser_screenshot".to_string(),
+                "browser_get_url".to_string(),
+                "browser_upload".to_string(),
+                "browser_download".to_string(),
+                "browser_close".to_string(),
+            ],
+        ),
+    };
+    Ok(HermesStatusResponse {
+        enabled: hermes_enabled() && policy.mode != hermes_policy::HermesMode::Off,
         sidecar_enabled: hermes_sidecar_enabled(),
         broker_enabled: hermes_memory_broker_enabled(),
-        running: hermes_sidecar_running(),
-        profile: "iris_restricted",
+        running: match policy.mode {
+            hermes_policy::HermesMode::Agentic => agentic_runtime.running,
+            _ => hermes_sidecar_running(),
+        },
+        mode: policy.mode,
+        panic_stop_active: policy.panic_stop_active,
+        agentic_runtime_available: policy.agentic_runtime_available,
+        agentic_session: policy.agentic_session,
+        profile,
         broker_url: "http://127.0.0.1:48731",
-        tools: [
-            "iris_query_memory",
-            "iris_propose_memory",
-            "iris_web_research",
-        ],
-        acting_tools: [],
+        tools,
+        acting_tools,
         search_enabled: hermes_memory_search_enabled(),
         onedrive_sync_enabled: env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
         sequential_tasks_only: true,
         runtime_tool_audit_passed: !hermes_sidecar_running()
             || audit_hermes_runtime_tool_registry().is_ok(),
-    }
+    })
 }
 
 fn hermes_safety_audit_snapshot() -> Result<HermesSafetyAuditResponse, String> {
@@ -1729,7 +2225,27 @@ fn hermes_sidecar_running() -> bool {
         })
 }
 
+fn stop_hermes_sidecar() -> Result<(), String> {
+    let Some(state) = HERMES_SIDECAR.get() else {
+        return Ok(());
+    };
+    let mut guard = state.lock().map_err(|err| err.to_string())?;
+    let Some(mut sidecar) = guard.take() else {
+        return Ok(());
+    };
+    let _ = sidecar.child.kill();
+    sidecar
+        .child
+        .wait()
+        .map(|_| ())
+        .map_err(|err| format!("failed to stop Hermes sidecar: {err}"))
+}
+
 fn start_hermes_sidecar() -> Result<(), String> {
+    let policy = hermes_policy::snapshot(timestamp_ms()?)?;
+    if policy.mode != hermes_policy::HermesMode::Safe {
+        return Err("Restricted Hermes sidecar runs only in Safe mode".to_string());
+    }
     validate_hermes_provider_policy()?;
     if !hermes_enabled() {
         return Err("Hermes is disabled by local policy".to_string());
@@ -1792,6 +2308,20 @@ fn start_hermes_sidecar() -> Result<(), String> {
 fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, String> {
     let task_lock = HERMES_TASK_LOCK.get_or_init(|| Mutex::new(()));
     let _task_guard = task_lock.lock().map_err(|err| err.to_string())?;
+    let policy = hermes_policy::snapshot(timestamp_ms()?)?;
+    match policy.mode {
+        hermes_policy::HermesMode::Off => {
+            return Err(
+                "Hermes is Off. Switch Hermes to Safe or start an Agentic session.".to_string(),
+            );
+        }
+        hermes_policy::HermesMode::Agentic => {
+            return Err(
+                "Agentic Hermes tasks must use the supervised ACP submission path.".to_string(),
+            );
+        }
+        hermes_policy::HermesMode::Safe => {}
+    }
     validate_hermes_task(&request)?;
     validate_hermes_provider_policy()?;
     if !hermes_enabled() {
@@ -2229,13 +2759,19 @@ enum CaptureEndpoint {
     Speech {
         min_ms: u64,
         trailing_silence_ms: u64,
+        start_timeout_ms: u64,
     },
+}
+
+struct CapturedMicrophoneAudio {
+    samples: Vec<f32>,
+    speech_detected: bool,
 }
 
 fn record_microphone_mono_16khz(
     duration_ms: u64,
     endpoint: CaptureEndpoint,
-) -> Result<Vec<f32>, String> {
+) -> Result<CapturedMicrophoneAudio, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let host = cpal::default_host();
@@ -2296,7 +2832,7 @@ fn record_microphone_mono_16khz(
     stream
         .play()
         .map_err(|err| format!("failed to start microphone stream: {err}"))?;
-    wait_for_capture_endpoint(&captured, sample_rate, duration_ms, endpoint);
+    let speech_detected = wait_for_capture_endpoint(&captured, sample_rate, duration_ms, endpoint);
     drop(stream);
 
     if let Some(error) = error_state.lock().map_err(|err| err.to_string())?.clone() {
@@ -2308,7 +2844,10 @@ fn record_microphone_mono_16khz(
         return Err("microphone produced no audio samples".to_string());
     }
     let resampled = resample_linear(&source, sample_rate, 16_000);
-    Ok(pad_audio_with_silence(&resampled, 16_000, 250))
+    Ok(CapturedMicrophoneAudio {
+        samples: pad_audio_with_silence(&resampled, 16_000, 250),
+        speech_detected,
+    })
 }
 
 fn sample_rate_hz_from_debug(sample_rate_debug: &str) -> Result<u32, String> {
@@ -2326,15 +2865,24 @@ fn wait_for_capture_endpoint(
     sample_rate: u32,
     max_ms: u64,
     endpoint: CaptureEndpoint,
-) {
+) -> bool {
     match endpoint {
         CaptureEndpoint::Fixed => {
             thread::sleep(std::time::Duration::from_millis(max_ms));
+            true
         }
         CaptureEndpoint::Speech {
             min_ms,
             trailing_silence_ms,
-        } => wait_for_speech_endpoint(captured, sample_rate, max_ms, min_ms, trailing_silence_ms),
+            start_timeout_ms,
+        } => wait_for_speech_endpoint(
+            captured,
+            sample_rate,
+            max_ms,
+            min_ms,
+            trailing_silence_ms,
+            start_timeout_ms,
+        ),
     }
 }
 
@@ -2344,10 +2892,13 @@ fn wait_for_speech_endpoint(
     max_ms: u64,
     min_ms: u64,
     trailing_silence_ms: u64,
-) {
+    start_timeout_ms: u64,
+) -> bool {
     let started = Instant::now();
     let mut speech_started = false;
     let mut quiet_since: Option<Instant> = None;
+    let mut baseline_rms = 0.0_f32;
+    let mut consecutive_speech_windows = 0_u8;
 
     while started.elapsed().as_millis() < u128::from(max_ms) {
         thread::sleep(std::time::Duration::from_millis(80));
@@ -2358,22 +2909,42 @@ fn wait_for_speech_endpoint(
         };
         let captured_ms = samples_to_ms(snapshot.len(), sample_rate);
         let recent_rms = recent_rms(&snapshot, sample_rate, 180);
+        if captured_ms <= 450 {
+            baseline_rms = baseline_rms.max(recent_rms);
+            continue;
+        }
+        let speech_threshold = adaptive_speech_threshold(baseline_rms);
 
-        if recent_rms >= 0.012 {
-            speech_started = true;
+        if recent_rms >= speech_threshold {
+            consecutive_speech_windows = consecutive_speech_windows.saturating_add(1);
+            if consecutive_speech_windows >= 2 {
+                speech_started = true;
+            }
             quiet_since = None;
             continue;
         }
+        consecutive_speech_windows = 0;
 
-        if !speech_started || captured_ms < min_ms {
+        if !speech_started {
+            if captured_ms >= start_timeout_ms {
+                return false;
+            }
+            continue;
+        }
+        if captured_ms < min_ms {
             continue;
         }
 
         let quiet_start = quiet_since.get_or_insert_with(Instant::now);
         if quiet_start.elapsed().as_millis() >= u128::from(trailing_silence_ms) {
-            break;
+            return true;
         }
     }
+    speech_started
+}
+
+fn adaptive_speech_threshold(baseline_rms: f32) -> f32 {
+    (baseline_rms * 2.4 + 0.004).clamp(0.012, 0.065)
 }
 
 fn samples_to_ms(sample_count: usize, sample_rate: u32) -> u64 {
@@ -2490,9 +3061,106 @@ fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
     Ok(text)
 }
 
+pub fn run() {
+    start_hermes_memory_broker_if_enabled();
+    let result = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
+        .invoke_handler(tauri::generate_handler![
+            add_memory,
+            browser_preview_data_url,
+            dashboard_snapshot,
+            delete_memory,
+            edit_memory,
+            hermes_accept_staged_memory,
+            hermes_agentic_runtime_status,
+            hermes_cancel_agentic_task,
+            hermes_clear_panic_stop,
+            hermes_create_agentic_session,
+            hermes_end_agentic_session,
+            hermes_mode_status,
+            hermes_pending_agentic_approval,
+            hermes_panic_stop,
+            hermes_record_agentic_activity,
+            hermes_reject_staged_memory,
+            hermes_respond_agentic_approval,
+            hermes_safety_audit,
+            hermes_set_mode,
+            hermes_start_sidecar,
+            hermes_staging_list,
+            hermes_status,
+            hermes_submit_agentic_task,
+            hermes_submit_task,
+            kokoro_tts_wav,
+            list_memories,
+            log_voice_diagnostic,
+            log_voice_latency_report,
+            memory_archive_policy,
+            native_asr_listen_interrupt,
+            native_asr_listen_once,
+            submit_image_probe,
+            submit_screen_area_probe,
+            submit_typed_hud,
+            validate_memory_archive_destination,
+            warm_ollama_model,
+            warm_kokoro_tts
+        ])
+        .run(tauri::generate_context!());
+    hermes_acp::stop();
+    let _ = stop_hermes_sidecar();
+    stop_kokoro_worker();
+    result.expect("failed to run Project Iris Tauri shell");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct KokoroTestCleanup;
+
+    impl Drop for KokoroTestCleanup {
+        fn drop(&mut self) {
+            stop_kokoro_worker();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local Kokoro model files and Python dependencies"]
+    fn live_kokoro_warm_worker_reuses_the_loaded_model() {
+        let _cleanup = KokoroTestCleanup;
+        stop_kokoro_worker();
+        let settings = kokoro_settings().expect("load Kokoro settings");
+        let first_started = Instant::now();
+        let first = {
+            let slot = KOKORO_WORKER.get_or_init(|| Mutex::new(None));
+            let mut guard = slot.lock().expect("Kokoro worker slot");
+            let worker =
+                guard.get_or_insert_with(|| start_kokoro_worker(&settings).expect("start Kokoro"));
+            worker.synthesize("Ready.").expect("first synthesis")
+        };
+        let first_elapsed = first_started.elapsed();
+        let second_started = Instant::now();
+        let second = {
+            let slot = KOKORO_WORKER.get_or_init(|| Mutex::new(None));
+            let mut guard = slot.lock().expect("Kokoro worker slot");
+            guard
+                .as_mut()
+                .expect("warm Kokoro worker")
+                .synthesize("Iris is ready.")
+                .expect("warm synthesis")
+        };
+        let second_elapsed = second_started.elapsed();
+
+        assert!(first.starts_with(b"RIFF"));
+        assert!(second.starts_with(b"RIFF"));
+        assert!(
+            second_elapsed < first_elapsed,
+            "warm synthesis should be faster: first={first_elapsed:?}, second={second_elapsed:?}"
+        );
+        eprintln!(
+            "Kokoro live latency: cold={}ms warm={}ms",
+            first_elapsed.as_millis(),
+            second_elapsed.as_millis()
+        );
+    }
 
     #[test]
     fn formats_missing_latency_stages_as_na() {
@@ -2507,6 +3175,7 @@ mod tests {
     #[test]
     fn voice_diagnostic_jsonl_escapes_apostrophes_as_valid_json() {
         let line = voice_diagnostic_jsonl(
+            "test-session",
             123,
             VoiceDiagnosticEvent {
                 event: "recognition_result".to_string(),
@@ -2523,12 +3192,14 @@ mod tests {
         .expect("voice diagnostic jsonl");
 
         let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+        assert_eq!(parsed["session_id"], "test-session");
         assert_eq!(parsed["detail"], "I didn't say Iris couldn't listen");
     }
 
     #[test]
     fn voice_diagnostic_jsonl_caps_detail_length() {
         let line = voice_diagnostic_jsonl(
+            "test-session",
             123,
             VoiceDiagnosticEvent {
                 event: "long".to_string(),
@@ -2549,21 +3220,73 @@ mod tests {
     }
 
     #[test]
+    fn voice_diagnostic_jsonl_does_not_store_transcript_text() {
+        let line = voice_diagnostic_jsonl(
+            "test-session",
+            123,
+            VoiceDiagnosticEvent {
+                event: "native_asr_result".to_string(),
+                detail: "812ms; my private spoken sentence".to_string(),
+                mode: "push".to_string(),
+                listening: false,
+                thinking: false,
+                speaking: false,
+                voice_loop: false,
+                wake_word: true,
+                wake_command_armed: false,
+            },
+        )
+        .expect("voice diagnostic jsonl");
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+
+        assert_eq!(parsed["detail"], "812ms; transcript_chars=26");
+        assert!(!line.contains("private spoken sentence"));
+    }
+
+    #[test]
+    fn diagnostic_rotation_keeps_bounded_archives() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-diagnostic-rotation-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("temp directory");
+        let path = root.join("voice-events.jsonl");
+        for index in 0..=DIAGNOSTIC_ARCHIVE_COUNT {
+            fs::write(&path, format!("run-{index}")).expect("active diagnostic");
+            rotate_diagnostic_file(&path).expect("rotate diagnostic");
+        }
+
+        assert!(!path.exists());
+        assert_eq!(
+            fs::read_to_string(root.join("voice-events.jsonl.1")).expect("newest archive"),
+            format!("run-{DIAGNOSTIC_ARCHIVE_COUNT}")
+        );
+        assert!(root.join("voice-events.jsonl.5").exists());
+        assert!(!root.join("voice-events.jsonl.6").exists());
+        fs::remove_dir_all(root).expect("remove temp directory");
+    }
+
+    #[test]
     fn voice_latency_report_uses_expected_plain_text_shape() {
-        let report = format_voice_latency_report(&VoiceLatencyTrace {
-            speech_capture_ms: Some(100),
-            stt_ms: Some(25),
-            llm_first_token_ms: None,
-            llm_full_response_ms: Some(700),
-            tts_first_audio_ms: None,
-            tts_full_ms: Some(250),
-            time_to_first_spoken_word_ms: None,
-            total_turn_time_ms: Some(1_100),
-        });
+        let report = format_voice_latency_report(
+            "test-session",
+            &VoiceLatencyTrace {
+                speech_capture_ms: Some(100),
+                stt_ms: Some(25),
+                llm_first_token_ms: None,
+                llm_full_response_ms: Some(700),
+                tts_first_audio_ms: None,
+                tts_full_ms: Some(250),
+                time_to_first_spoken_word_ms: None,
+                total_turn_time_ms: Some(1_100),
+            },
+        );
 
         assert_eq!(
             report,
             "Voice latency report\n\
+- session: test-session\n\
 - speech capture: 100ms\n\
 - STT: 25ms\n\
 - LLM first token: n/a\n\
@@ -2583,6 +3306,13 @@ mod tests {
         );
         assert_eq!(sample_rate_hz_from_debug("48000").unwrap(), 48_000);
         assert!(sample_rate_hz_from_debug("SampleRate(?)").is_err());
+    }
+
+    #[test]
+    fn adaptive_speech_threshold_rises_with_ambient_noise() {
+        assert_eq!(adaptive_speech_threshold(0.0), 0.012);
+        assert!(adaptive_speech_threshold(0.02) > 0.04);
+        assert_eq!(adaptive_speech_threshold(1.0), 0.065);
     }
 
     #[test]
@@ -2616,6 +3346,46 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn memory_search_results_carry_user_approved_provenance() {
+        let result = MemorySearchResult {
+            id: 7,
+            text: "Alejandro is 45".to_string(),
+            score: 1.0,
+            source: "iris_active_memory",
+            provenance: MemoryProvenance {
+                authority: "user_approved".to_string(),
+                source: "iris_active_memory".to_string(),
+                memory_id: Some(7),
+                evidence: None,
+            },
+        };
+        let json = serde_json::to_value(result).expect("memory search result JSON");
+
+        assert_eq!(json["source"], "iris_active_memory");
+        assert_eq!(json["provenance"]["authority"], "user_approved");
+        assert_eq!(json["provenance"]["memoryId"], 7);
+    }
+
+    #[test]
+    fn legacy_staged_memory_without_provenance_still_loads() {
+        let proposal: StagedMemoryProposal = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "text": "legacy",
+                "source": "hermes",
+                "status": "pending",
+                "verdict": "staged",
+                "createdMs": 1,
+                "updatedMs": 1
+            }"#,
+        )
+        .expect("legacy staged proposal");
+
+        assert!(proposal.evidence.is_none());
+        assert!(proposal.provenance.is_none());
     }
 
     #[test]
@@ -2684,7 +3454,7 @@ mod tests {
             .expect("valid content length")
             .expect("expected length");
 
-        assert_eq!(expected, request.as_bytes().len());
+        assert_eq!(expected, request.len());
     }
 
     #[test]
@@ -2706,19 +3476,20 @@ mod tests {
 
     #[test]
     fn hermes_status_is_enabled_and_data_only_by_default() {
-        let status = hermes_status_snapshot();
+        let status = hermes_status_snapshot().expect("Hermes status");
 
         assert!(status.enabled);
         assert!(status.sidecar_enabled);
         assert!(status.broker_enabled);
         assert!(status.search_enabled);
+        assert_eq!(status.mode, hermes_policy::HermesMode::Safe);
         assert_eq!(status.profile, "iris_restricted");
         assert_eq!(
             status.tools,
-            [
-                "iris_query_memory",
-                "iris_propose_memory",
-                "iris_web_research"
+            vec![
+                "iris_query_memory".to_string(),
+                "iris_propose_memory".to_string(),
+                "iris_web_research".to_string()
             ]
         );
         assert!(status.acting_tools.is_empty());
@@ -2832,6 +3603,26 @@ mod tests {
     }
 
     #[test]
+    fn browser_preview_loader_is_scoped_and_encodes_images() {
+        let root =
+            std::env::temp_dir().join(format!("iris-browser-preview-test-{}", std::process::id()));
+        let preview_dir = root.join("diagnostics/browser");
+        fs::create_dir_all(&preview_dir).expect("preview test directory");
+        let preview = preview_dir.join("preview.png");
+        fs::write(&preview, b"png").expect("preview test file");
+        let outside = root.join("outside.png");
+        fs::write(&outside, b"outside").expect("outside test file");
+
+        assert_eq!(
+            browser_preview_data_url_for(&root, &preview).expect("preview data URL"),
+            "data:image/png;base64,cG5n"
+        );
+        assert!(browser_preview_data_url_for(&root, &outside).is_err());
+
+        fs::remove_dir_all(root).expect("remove preview test directory");
+    }
+
+    #[test]
     fn memory_archive_policy_is_disabled_encrypted_and_iris_owned() {
         let policy = memory_archive_policy_snapshot();
 
@@ -2884,37 +3675,4 @@ mod tests {
         ));
         assert!(!is_local_model_unavailable_response("ready"));
     }
-}
-
-pub fn run() {
-    start_hermes_memory_broker_if_enabled();
-    tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
-        .invoke_handler(tauri::generate_handler![
-            add_memory,
-            dashboard_snapshot,
-            delete_memory,
-            edit_memory,
-            hermes_accept_staged_memory,
-            hermes_reject_staged_memory,
-            hermes_safety_audit,
-            hermes_start_sidecar,
-            hermes_staging_list,
-            hermes_status,
-            hermes_submit_task,
-            kokoro_tts_wav,
-            list_memories,
-            log_voice_diagnostic,
-            log_voice_latency_report,
-            memory_archive_policy,
-            native_asr_listen_interrupt,
-            native_asr_listen_once,
-            submit_image_probe,
-            submit_screen_area_probe,
-            submit_typed_hud,
-            validate_memory_archive_destination,
-            warm_ollama_model,
-            warm_kokoro_tts
-        ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Project Iris Tauri shell");
 }

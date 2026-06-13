@@ -46,7 +46,7 @@ Mark each item `PASS`, `FAIL`, or `BLOCKED`.
 | Windows | Windows 10 or Windows 11. |  |  |
 | WebView2 | Microsoft Edge WebView2 Runtime is installed. |  |  |
 | Ollama | Ollama is installed and reachable on `127.0.0.1:11434`. |  |  |
-| Model | `huihui_ai/gemma-4-abliterated:e2b` is available in Ollama. |  |  |
+| Model | `qwen3.5:9b` is available in Ollama. |  |  |
 | Kokoro optional speech | Python can import `kokoro_onnx` and `soundfile` when speech is tested. |  |  |
 | Local-only boundary | No cloud API, telemetry, non-loopback binding, or secret is required. |  |  |
 
@@ -82,6 +82,8 @@ Use the manual tester issue template when filing a report. Include:
 - Whether the failure happened from the clean extracted ZIP or a development
   checkout.
 
-Iris v0.1.1 remains local-first and non-agentic. Do not report missing cloud
-login, telemetry, browser automation, shell execution, clipboard control, or
-computer control as release blockers; those are intentionally absent.
+Iris v0.1.1 remains local-first and Safe mode remains non-agentic. Do not report
+missing cloud login, telemetry, clipboard control, mouse/keyboard control, or
+general window control as release blockers. Agentic file, PowerShell, process,
+and isolated browser work is intentionally available only after an explicit
+session approval.

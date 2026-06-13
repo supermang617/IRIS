@@ -90,9 +90,13 @@ mod tests {
     }
 
     #[test]
-    fn safety_status_includes_absence_language() {
+    fn safety_status_describes_safe_and_agentic_boundaries() {
         let lines = safety_status_lines();
-        assert!(lines.contains(&"System Control: Unsupported"));
-        assert!(lines.contains(&"Executor: Not present"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Safe mode unsupported"))
+        );
+        assert!(lines.contains(&"Executor: Agentic Session only"));
     }
 }

@@ -91,6 +91,31 @@ Copy-RequiredDirectory -Source (Join-Path $repoRoot "capabilities") -Destination
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "assets") -Destination (Join-Path $packageRoot "assets")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "plugins") -Destination (Join-Path $packageRoot "plugins")
 
+$hermesRuntime = Join-Path $repoRoot ".iris-runtime\hermes"
+$browserRuntime = Join-Path $repoRoot ".iris-runtime\browser"
+Copy-RequiredDirectory -Source (Join-Path $hermesRuntime ".venv") -Destination (Join-Path $packageRoot ".iris-runtime\hermes\.venv")
+Copy-RequiredDirectory -Source (Join-Path $browserRuntime "node_modules") -Destination (Join-Path $packageRoot ".iris-runtime\browser\node_modules")
+Copy-RequiredDirectory -Source (Join-Path $browserRuntime "browsers") -Destination (Join-Path $packageRoot ".iris-runtime\browser\browsers")
+Copy-RequiredFile -Source (Join-Path $browserRuntime "package.json") -Destination (Join-Path $packageRoot ".iris-runtime\browser\package.json")
+Copy-RequiredFile -Source (Join-Path $browserRuntime "package-lock.json") -Destination (Join-Path $packageRoot ".iris-runtime\browser\package-lock.json")
+
+$runtimeManifest = [ordered]@{
+    hermes_agent = [ordered]@{
+        version = "0.16.0"
+        wheel_sha256 = "accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2"
+    }
+    agent_browser = [ordered]@{
+        version = "0.27.2"
+        binary_sha256 = "013c9bb6084e72d69a8ebb6c3d5669ba117129479b81d9336012b36b91f490e5"
+    }
+    chrome_for_testing = [ordered]@{
+        version = "149.0.7827.115"
+        executable_sha256 = "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56"
+    }
+    volatile_data_packaged = $false
+}
+$runtimeManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packageRoot ".iris-runtime\runtime-manifest.json") -Encoding utf8
+
 $startPs1 = @'
 $ErrorActionPreference = "Stop"
 
@@ -101,6 +126,9 @@ $manifestPath = Join-Path $root "manifest.json"
 $kokoroModel = Join-Path $root "models\kokoro\kokoro-v1.0.onnx"
 $kokoroVoices = Join-Path $root "models\kokoro\voices-v1.0.bin"
 $whisperModel = Join-Path $root "models\whisper\ggml-tiny.en.bin"
+$hermesPython = Join-Path $root ".iris-runtime\hermes\.venv\Scripts\python.exe"
+$agentBrowser = Join-Path $root ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
+$browserExe = Join-Path $root ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -115,6 +143,9 @@ Require-File -Path $manifestPath
 Require-File -Path $kokoroModel
 Require-File -Path $kokoroVoices
 Require-File -Path $whisperModel
+Require-File -Path $hermesPython
+Require-File -Path $agentBrowser
+Require-File -Path $browserExe
 
 Set-Location -LiteralPath $root
 
@@ -141,6 +172,15 @@ function Get-IrisModelId {
     }
 }
 
+function Get-IrisNumCtx {
+    try {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        return [int]$manifest.model_policy.num_ctx_ceiling
+    } catch {
+        return 8192
+    }
+}
+
 function Test-OllamaModelManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ModelsRoot,
@@ -151,10 +191,9 @@ function Test-OllamaModelManifest {
         return $false
     }
     $nameParts = $parts[0].Split("/", 2)
-    if ($nameParts.Count -ne 2) {
-        return $false
-    }
-    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $nameParts[0] (Join-Path $nameParts[1] $parts[1])))
+    $namespace = if ($nameParts.Count -eq 2) { $nameParts[0] } else { "library" }
+    $name = if ($nameParts.Count -eq 2) { $nameParts[1] } else { $nameParts[0] }
+    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $namespace (Join-Path $name $parts[1])))
     return Test-Path -LiteralPath $manifest -PathType Leaf
 }
 
@@ -186,15 +225,36 @@ function Test-OllamaModelAvailable {
     }
 }
 
+function Test-OllamaRuntimeCompatible {
+    $modelId = Get-IrisModelId
+    $requiredContext = Get-IrisNumCtx
+    if (-not $modelId -or $requiredContext -le 0) {
+        return $false
+    }
+    try {
+        $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/ps" -UseBasicParsing -TimeoutSec 2
+        $status = $response.Content | ConvertFrom-Json
+        $model = @($status.models) | Where-Object { $_.name -eq $modelId -or $_.model -eq $modelId } | Select-Object -First 1
+        return $null -ne $model -and [int64]$model.context_length -ge $requiredContext
+    } catch {
+        return $false
+    }
+}
+
+function Use-IrisOllamaRuntimeSettings {
+    $env:OLLAMA_CONTEXT_LENGTH = [string](Get-IrisNumCtx)
+}
+
 function Stop-OllamaForIris {
     Get-Process "ollama", "ollama app", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 function Start-OllamaForIris {
     Use-IrisOllamaModelStore
+    Use-IrisOllamaRuntimeSettings
 
     if (Test-OllamaReady) {
-        if (Test-OllamaModelAvailable) {
+        if ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
             return
         }
         Stop-OllamaForIris

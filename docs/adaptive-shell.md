@@ -4,7 +4,7 @@ Iris is no longer tracking the cross-platform Adaptive Shell plan in this worksp
 
 The current build is a slim Windows prototype with:
 
-- one configured model: `huihui_ai/gemma-4-abliterated:e2b`
+- one configured model: `qwen3.5:9b`
 - one provider boundary: `ollama_local`
 - one context ceiling: `8192`
 - no fallback model selection

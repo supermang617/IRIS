@@ -26,8 +26,13 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
 
       - name: Install LLVM for whisper-rs bindgen
         shell: pwsh
@@ -45,6 +50,13 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Provision pinned Hermes runtimes
+        shell: pwsh
+        run: |
+          python -m pip install uv
+          .\scripts\provision_hermes_acp.ps1
+          .\scripts\provision_iris_browser.ps1
+
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
@@ -55,10 +67,47 @@ jobs:
         run: cargo test --workspace
 
       - name: Run Clippy
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Run voice tests
         run: npm run test:voice
+
+      - name: Run Python tests
+        run: npm run test:python
+
+      - name: Run repository audit
+        run: cargo run -p xtask
+
+      - name: Run deterministic runtime checks
+        shell: pwsh
+        run: |
+          cargo run -p iris-runtime -- --dashboard-json
+          $output = (& cargo run -p iris-runtime -- --self-check 2>&1 | Out-String)
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -eq 0) {
+            throw "Offline CI self-check unexpectedly succeeded without Ollama."
+          }
+          if ($output -notmatch "Ollama/model health check failed") {
+            throw "Offline CI self-check did not report the expected prerequisite failure."
+          }
+
+      - name: Capture dependency inventory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
+          cargo metadata --format-version 1 | Set-Content diagnostics\cargo-metadata.json
+          npm ls --all --json | Set-Content diagnostics\npm-dependencies.json
+          .\.iris-runtime\hermes\.venv\Scripts\python.exe -m pip freeze | Set-Content diagnostics\hermes-python-dependencies.txt
+
+      - name: Upload dependency inventory
+        uses: actions/upload-artifact@v6
+        with:
+          name: iris-dependency-inventory
+          path: |
+            diagnostics/cargo-metadata.json
+            diagnostics/npm-dependencies.json
+            diagnostics/hermes-python-dependencies.txt
 
       - name: Check whitespace
         run: git diff --check

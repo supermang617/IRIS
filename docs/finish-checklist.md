@@ -87,9 +87,10 @@ Exit criteria:
 
 - No new model routing.
 - No fallback models.
-- No cloud calls.
+- No cloud model/API calls.
 - No clipboard access.
-- No browser or window automation.
-- No acting plugins.
+- Browser automation only inside an approved Agentic Session with the dedicated
+  Iris profile and confirmation gates.
+- No arbitrary acting plugins.
 - No autonomous computer use.
 - No new dashboards or settings panels unless a tested manual failure requires one.

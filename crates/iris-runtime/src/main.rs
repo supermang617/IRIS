@@ -1,4 +1,9 @@
-use std::io::{self, BufRead, Write};
+use std::{
+    fs,
+    io::{self, BufRead, Write},
+    path::Path,
+    process::Command,
+};
 
 fn main() {
     if let Err(error) = run() {
@@ -38,8 +43,7 @@ fn run() -> Result<(), String> {
         }
         Some("--self-check") | None => {
             print_startup_banner()?;
-            print_response("Iris startup self-check");
-            Ok(())
+            run_live_self_check()
         }
         Some("--help") | Some("-h") => {
             print_help();
@@ -81,6 +85,207 @@ fn current_dashboard_snapshot() -> Result<iris_status::DashboardSnapshot, String
         .parent()
         .ok_or_else(|| "manifest path has no parent".to_string())?;
     Ok(iris_status::build_dashboard_snapshot(&manifest, &hardware))
+}
+
+fn run_live_self_check() -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+    let manifest_path = iris_config::find_manifest_path(&cwd)?;
+    let workspace_root = manifest_path
+        .parent()
+        .ok_or_else(|| "manifest path has no parent".to_string())?;
+    let manifest = iris_config::load_manifest_from_workspace(&cwd)?;
+
+    validate_runtime_prerequisites(workspace_root, &manifest)?;
+    validate_python_prerequisites(workspace_root)?;
+    validate_agentic_prerequisites(workspace_root)?;
+
+    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+    let client = iris_ollama::OllamaClient::new(settings)?;
+    let health_prompt = iris_ui::gate_typed_text("Reply with exactly: IRIS_SELF_CHECK_OK");
+    client
+        .health_check(&health_prompt)
+        .map_err(|error| format!("Ollama/model health check failed: {error}"))?;
+
+    println!("Iris live self-check passed.");
+    Ok(())
+}
+
+fn validate_runtime_prerequisites(
+    workspace_root: &Path,
+    manifest: &iris_config::ProjectManifest,
+) -> Result<(), String> {
+    for (label, path) in [
+        (
+            "Kokoro model",
+            workspace_root.join(&manifest.tts_policy.model_path),
+        ),
+        (
+            "Kokoro voices",
+            workspace_root.join(&manifest.tts_policy.voices_path),
+        ),
+        (
+            "Kokoro helper",
+            workspace_root.join(&manifest.tts_policy.helper_path),
+        ),
+        (
+            "Whisper ASR model",
+            workspace_root.join("models/whisper/ggml-tiny.en.bin"),
+        ),
+        (
+            "Hermes restricted profile",
+            workspace_root.join("profiles/iris_restricted.json"),
+        ),
+        (
+            "Hermes sidecar",
+            workspace_root.join("plugins/hermes_sidecar/sidecar.py"),
+        ),
+        (
+            "Hermes memory broker provider",
+            workspace_root.join("plugins/memory/iris_broker/provider.py"),
+        ),
+        (
+            "Hermes Agent profile",
+            workspace_root.join("profiles/hermes_agent_0_16_0.json"),
+        ),
+        (
+            "Hermes agentic profile",
+            workspace_root.join("profiles/iris_agentic.json"),
+        ),
+        (
+            "Hermes browser profile",
+            workspace_root.join("profiles/iris_browser.json"),
+        ),
+        (
+            "Hermes ACP bridge",
+            workspace_root.join("plugins/hermes_acp/iris_acp.py"),
+        ),
+        (
+            "Hermes ACP action tools",
+            workspace_root.join("plugins/hermes_acp/iris_action_tools.py"),
+        ),
+        (
+            "Hermes ACP browser tools",
+            workspace_root.join("plugins/hermes_acp/iris_browser_tools.py"),
+        ),
+        (
+            "Hermes ACP memory tools",
+            workspace_root.join("plugins/hermes_acp/iris_memory_tools.py"),
+        ),
+    ] {
+        require_nonempty_file(label, &path)?;
+    }
+
+    let profile_path = workspace_root.join("profiles/iris_restricted.json");
+    let profile_bytes = fs::read(&profile_path)
+        .map_err(|err| format!("failed to read {}: {err}", profile_path.display()))?;
+    let profile: serde_json::Value = serde_json::from_slice(&profile_bytes)
+        .map_err(|err| format!("invalid Hermes restricted profile JSON: {err}"))?;
+    if profile.get("enabled").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("Hermes restricted profile must be enabled".to_string());
+    }
+    let tools = profile
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "Hermes restricted profile tools are missing".to_string())?;
+    for required in [
+        "iris_query_memory",
+        "iris_propose_memory",
+        "iris_web_research",
+    ] {
+        if !tools.iter().any(|tool| tool.as_str() == Some(required)) {
+            return Err(format!(
+                "Hermes restricted profile is missing required tool {required}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_agentic_prerequisites(workspace_root: &Path) -> Result<(), String> {
+    let hermes_python = workspace_root.join(".iris-runtime/hermes/.venv/Scripts/python.exe");
+    let agent_browser = workspace_root
+        .join(".iris-runtime/browser/node_modules/agent-browser/bin/agent-browser-win32-x64.exe");
+    let chrome =
+        workspace_root.join(".iris-runtime/browser/browsers/chrome-149.0.7827.115/chrome.exe");
+    for (label, path) in [
+        ("Hermes Agent Python", hermes_python.as_path()),
+        ("agent-browser", agent_browser.as_path()),
+        ("Chrome for Testing", chrome.as_path()),
+    ] {
+        require_nonempty_file(label, path)?;
+    }
+
+    let hermes = Command::new(&hermes_python)
+        .args([
+            "-c",
+            "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))",
+        ])
+        .output()
+        .map_err(|err| format!("failed to start Hermes Agent version check: {err}"))?;
+    if !hermes.status.success()
+        || String::from_utf8_lossy(&hermes.stdout)
+            .lines()
+            .collect::<Vec<_>>()
+            != ["0.16.0", "0.9.0"]
+    {
+        return Err("Hermes Agent or ACP package version does not match the pinned runtime".into());
+    }
+
+    let browser = Command::new(&agent_browser)
+        .arg("--version")
+        .output()
+        .map_err(|err| format!("failed to start agent-browser version check: {err}"))?;
+    if !browser.status.success()
+        || String::from_utf8_lossy(&browser.stdout).trim() != "agent-browser 0.27.2"
+    {
+        return Err("agent-browser version does not match the pinned runtime".into());
+    }
+    Ok(())
+}
+
+fn require_nonempty_file(label: &str, path: &Path) -> Result<(), String> {
+    let metadata =
+        fs::metadata(path).map_err(|err| format!("missing {label} {}: {err}", path.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!(
+            "{label} is not a non-empty file: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_python_prerequisites(workspace_root: &Path) -> Result<(), String> {
+    let output = Command::new("python")
+        .args(["-c", "import kokoro_onnx, numpy, soundfile"])
+        .output()
+        .map_err(|err| format!("failed to start Python prerequisite check: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Python voice prerequisites are unavailable: {}",
+            stderr.trim()
+        ));
+    }
+
+    for script in [
+        workspace_root.join("tools/kokoro_tts.py"),
+        workspace_root.join("plugins/hermes_sidecar/sidecar.py"),
+        workspace_root.join("plugins/memory/iris_broker/provider.py"),
+    ] {
+        let status = Command::new("python")
+            .args(["-m", "py_compile"])
+            .arg(&script)
+            .status()
+            .map_err(|err| format!("failed to validate {}: {err}", script.display()))?;
+        if !status.success() {
+            return Err(format!(
+                "Python prerequisite is invalid: {}",
+                script.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn print_response(text: &str) {
@@ -189,4 +394,38 @@ fn print_help() {
     println!("  iris-runtime --image-probe \"path-to-image\" \"direct user prompt\"");
     println!("  iris-runtime --interactive");
     println!("  iris-runtime --dashboard-json");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "iris-runtime-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn require_nonempty_file_rejects_missing_and_empty_files() {
+        let root = unique_temp_dir();
+        fs::create_dir_all(&root).expect("temp directory");
+        let missing = root.join("missing.bin");
+        assert!(require_nonempty_file("fixture", &missing).is_err());
+
+        let empty = root.join("empty.bin");
+        fs::write(&empty, []).expect("empty fixture");
+        assert!(require_nonempty_file("fixture", &empty).is_err());
+
+        let full = root.join("full.bin");
+        fs::write(&full, [1_u8]).expect("full fixture");
+        assert!(require_nonempty_file("fixture", &full).is_ok());
+
+        fs::remove_dir_all(root).expect("remove temp directory");
+    }
 }

@@ -15,7 +15,7 @@ Set-Location -LiteralPath $root
 $diagnosticsDir = Join-Path $root "diagnostics"
 $preflightJson = Join-Path $diagnosticsDir "preflight-report.json"
 $setupReport = Join-Path $diagnosticsDir "setup-wizard-report.txt"
-$modelId = "huihui_ai/gemma-4-abliterated:e2b"
+$modelId = "qwen3.5:9b"
 
 function Write-Step {
     param(

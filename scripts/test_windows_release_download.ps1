@@ -76,12 +76,42 @@ try {
         "tools\kokoro_tts.py",
         "plugins\hermes_sidecar\sidecar.py",
         "plugins\memory\iris_broker\provider.py",
+        "plugins\hermes_acp\iris_acp.py",
         "profiles\iris_restricted.json",
+        "profiles\iris_agentic.json",
+        "profiles\iris_browser.json",
+        ".iris-runtime\hermes\.venv\Scripts\python.exe",
+        ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe",
+        ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe",
+        ".iris-runtime\runtime-manifest.json",
         "capabilities\v0_1_capability_ledger.toml"
     )
 
     foreach ($relative in $required) {
         Require-File -Path (Join-Path $extractRoot $relative)
+    }
+    foreach ($volatile in @(
+        ".iris-data",
+        ".iris-runtime\hermes\home",
+        ".iris-runtime\browser\profile",
+        ".iris-runtime\browser\downloads",
+        ".iris-runtime\browser\command-output"
+    )) {
+        if (Test-Path -LiteralPath (Join-Path $extractRoot $volatile)) {
+            throw "Release ZIP contains volatile runtime data: $volatile"
+        }
+    }
+    $runtimeManifest = Get-Content -LiteralPath (Join-Path $extractRoot ".iris-runtime\runtime-manifest.json") -Raw | ConvertFrom-Json
+    $agentBrowserHash = (Get-FileHash -LiteralPath (Join-Path $extractRoot ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+    $chromeHash = (Get-FileHash -LiteralPath (Join-Path $extractRoot ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($runtimeManifest.hermes_agent.version -ne "0.16.0") {
+        throw "Packaged Hermes Agent version is not pinned to 0.16.0."
+    }
+    if ($agentBrowserHash -ne $runtimeManifest.agent_browser.binary_sha256) {
+        throw "Packaged agent-browser binary hash does not match runtime-manifest.json."
+    }
+    if ($chromeHash -ne $runtimeManifest.chrome_for_testing.executable_sha256) {
+        throw "Packaged Chrome for Testing hash does not match runtime-manifest.json."
     }
 
     $before = Get-ListeningLoopbackState

@@ -1,34 +1,35 @@
 import unittest
 import sys
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import provider
 
 
 class ProviderWebResearchTests(unittest.TestCase):
-    def test_parse_bing_html_extracts_results(self):
-        html = '''
-        <li class="b_algo"><h2><a href="https://example.test/a">Example &amp; Result</a></h2>
-        <p>Useful snippet &amp; evidence.</p></li>
-        '''
-
-        results = provider._parse_bing_html(html, 1)
-
-        self.assertEqual(results, [{
-            "title": "Example & Result",
-            "url": "https://example.test/a",
-            "snippet": "Useful snippet & evidence.",
-        }])
-
-    def test_clean_bing_url_decodes_target_url(self):
-        url = "https://www.bing.com/ck/a?!&&u=a1aHR0cHM6Ly9leGFtcGxlLnRlc3QvcGF0aA&ntb=1"
-
-        self.assertEqual(provider._clean_bing_url(url), "https://example.test/path")
-
     def test_release_queries_route_to_authoritative_repo(self):
         self.assertEqual(provider._release_repo_for_query("latest Ollama release"), "ollama/ollama")
         self.assertEqual(provider._release_repo_for_query("latest news"), "")
+
+    def test_unrecognized_safe_research_requires_agentic_browser(self):
+        with self.assertRaisesRegex(
+            provider.IrisBrokerUnavailable,
+            "Start an Agentic Session",
+        ):
+            provider.iris_web_research("latest general technology news")
+
+    def test_authoritative_lookup_reports_network_failure_truthfully(self):
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ):
+            with self.assertRaisesRegex(
+                provider.IrisBrokerUnavailable,
+                "Primary-source release lookup unavailable",
+            ):
+                provider.iris_web_research("latest Ollama release")
 
 
 if __name__ == "__main__":

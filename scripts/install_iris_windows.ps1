@@ -70,6 +70,10 @@ function Test-ReleaseRoot {
         "models\kokoro\kokoro-v1.0.onnx",
         "models\kokoro\voices-v1.0.bin",
         "models\whisper\ggml-tiny.en.bin"
+        ".iris-runtime\hermes\.venv\Scripts\python.exe"
+        ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
+        ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe"
+        ".iris-runtime\runtime-manifest.json"
     )) {
         Require-File -Path (Join-Path $Root $relative)
     }
@@ -90,6 +94,7 @@ function Copy-ReleaseFiles {
         "plugins",
         "profiles",
         "tools"
+        ".iris-runtime"
     )) {
         $source = Join-Path $SourceRoot $relative
         if (Test-Path -LiteralPath $source -PathType Container) {
@@ -155,7 +160,7 @@ foreach (`$shortcut in @(
 )) {
     Remove-Item -LiteralPath `$shortcut -Force -ErrorAction SilentlyContinue
 }
-foreach (`$relative in @("assets","bin","capabilities","docs","models","plugins","profiles","tools")) {
+foreach (`$relative in @("assets","bin","capabilities","docs","models","plugins","profiles","tools",".iris-runtime")) {
     Remove-Item -LiteralPath (Join-Path `$root `$relative) -Recurse -Force -ErrorAction SilentlyContinue
 }
 foreach (`$relative in @(

@@ -71,6 +71,26 @@
           </div>
           <div id="memory-list" class="memory-list"></div>
         </section>
+        <section id="approval-panel" class="approval-panel" aria-label="Hermes approval request" hidden>
+          <div>
+            <strong id="approval-risk">Confirmation required</strong>
+            <div id="approval-summary" class="approval-summary"></div>
+          </div>
+          <button id="approval-deny" class="approval-action" type="button">Deny</button>
+          <button id="approval-allow" class="approval-action approval-allow" type="button">Allow once</button>
+        </section>
+        <section id="browser-panel" class="browser-panel" aria-label="Hermes browser preview" hidden>
+          <div class="browser-preview-header">
+            <span id="browser-url" class="browser-url"></span>
+            <button id="browser-preview-close" class="icon-button browser-preview-close" type="button" title="Close browser preview" aria-label="Close browser preview">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m7 7 10 10" />
+                <path d="M17 7 7 17" />
+              </svg>
+            </button>
+          </div>
+          <img id="browser-preview-image" class="browser-preview-image" alt="Hermes browser viewport" hidden />
+        </section>
         <output id="hud-output" class="hud-output">Waiting for input.</output>
         <p id="voice-status" class="voice-status">Wake word armed. Say Iris.</p>
         <p id="voice-capability" class="voice-capability">Checking voice capability...</p>

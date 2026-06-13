@@ -10,21 +10,37 @@ import {
   validateVideoSize
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
+import { latestBrowserPreview } from "./browser-preview.js";
+import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
 import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./panic-state.js";
+import { splitSpeechChunks } from "./speech-chunks.js";
 import { formatStagedMemories } from "./staging-state.js";
-import { classifyAsrError, classifyVoiceTranscript } from "./voice-state.js";
+import {
+  classifyAsrError,
+  classifyVoiceTranscript,
+  wakeRestartDelayMs
+} from "./voice-state.js";
 
 const invoke = window.__TAURI__?.core?.invoke;
 const currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
 
 const elements = {
+  approvalAllow: document.querySelector("#approval-allow"),
+  approvalDeny: document.querySelector("#approval-deny"),
+  approvalPanel: document.querySelector("#approval-panel"),
+  approvalRisk: document.querySelector("#approval-risk"),
+  approvalSummary: document.querySelector("#approval-summary"),
   attachmentLabel: document.querySelector("#attachment-label"),
   attachmentPreview: document.querySelector("#attachment-preview"),
   attachmentRemove: document.querySelector("#attachment-remove"),
   attachmentStrip: document.querySelector("#attachment-strip"),
   attachButton: document.querySelector("#attach-button"),
+  browserPanel: document.querySelector("#browser-panel"),
+  browserPreviewClose: document.querySelector("#browser-preview-close"),
+  browserPreviewImage: document.querySelector("#browser-preview-image"),
+  browserUrl: document.querySelector("#browser-url"),
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
@@ -64,6 +80,8 @@ let selectedVisionImage = null;
 let selectedDocument = null;
 let memoryPanelOpen = false;
 let cameraCaptureInProgress = false;
+let activeApprovalResolver = null;
+let browserPreviewRestoreHeight = null;
 const conversationHistory = [];
 const maxHistoryTurns = 12;
 const cameraSnapshotWidth = 640;
@@ -422,12 +440,42 @@ async function handleMemoryCommand(text) {
     return true;
   }
   const clean = String(text || "").trim();
+  const hermesControl = parseHermesControlCommand(clean);
   const hermesRoute = classifyHermesRoute(clean);
 
-  if (/^hermes\s+status$/i.test(clean)) {
+  if (hermesControl.action === "status") {
     const status = await call("hermes_status");
-    const audit = await call("hermes_safety_audit");
+    const mode = await call("hermes_mode_status");
+    const audit = status.mode === "safe" ? await call("hermes_safety_audit") : null;
     elements.hudOutput.textContent = formatHermesStatus(status, audit);
+    elements.hudOutput.textContent += `\n${formatHermesMode(mode)}`;
+    return true;
+  }
+
+  if (hermesControl.action === "set_mode") {
+    const mode = await call("hermes_set_mode", { mode: hermesControl.mode });
+    elements.hudOutput.textContent = formatHermesMode(mode);
+    return true;
+  }
+
+  if (hermesControl.action === "agentic_workspace_required") {
+    elements.hudOutput.textContent =
+      "Agentic mode requires a workspace. Use: hermes agentic C:\\path\\to\\workspace";
+    return true;
+  }
+
+  if (hermesControl.action === "create_agentic_session") {
+    const mode = await call("hermes_create_agentic_session", {
+      workspacePath: hermesControl.workspacePath
+    });
+    elements.hudOutput.textContent =
+      `${formatHermesMode(mode)}\nAgentic Hermes is ready for approved file and PowerShell tasks through Iris. High-risk actions still require one-action confirmation.`;
+    return true;
+  }
+
+  if (hermesControl.action === "end_agentic_session") {
+    const mode = await call("hermes_end_agentic_session");
+    elements.hudOutput.textContent = formatHermesMode(mode);
     return true;
   }
 
@@ -494,7 +542,7 @@ async function handleMemoryCommand(text) {
 
   if (/^memory\s+help$/i.test(clean)) {
     elements.hudOutput.textContent =
-      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Online and research requests are routed through Iris to Hermes.";
+      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Online and research requests are routed through Iris to Safe Hermes.";
     return true;
   }
 
@@ -514,6 +562,32 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
     elements.hudOutput.textContent = "Type a Hermes task first.";
     return;
   }
+  const policy = await call("hermes_mode_status");
+  if (policy.mode === "off") {
+    elements.hudOutput.textContent = "Hermes is Off. Use `hermes mode safe` or start an Agentic session.";
+    return;
+  }
+  if (policy.mode === "agentic") {
+    if (!elements.browserPanel.hidden) {
+      await hideBrowserPreview();
+    }
+    thinking = true;
+    setInputsDisabled(true);
+    elements.hudOutput.textContent = "Iris is working through Agentic Hermes.";
+    try {
+      const response = await runAgenticTaskWithApprovals(clean);
+      elements.hudOutput.textContent = formatAgenticTaskResult(response);
+      const preview = latestBrowserPreview(response?.events);
+      if (preview) {
+        await showBrowserPreview(preview);
+      }
+    } finally {
+      hideAgenticApproval(false);
+      thinking = false;
+      setInputsDisabled(false);
+    }
+    return;
+  }
   elements.hudOutput.textContent = route === "implicit" ? "Iris is researching through Hermes." : "Hermes thinking locally.";
   const response = await call("hermes_submit_task", {
     request: {
@@ -528,8 +602,145 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
   elements.hudOutput.textContent = route === "implicit" ? `Iris found this through Hermes:\n\n${response.text}${staged}` : `${response.text}${staged}`;
 }
 
+async function runAgenticTaskWithApprovals(text) {
+  let settled = false;
+  let taskResult;
+  let taskError;
+  const task = call("hermes_submit_agentic_task", { text })
+    .then(
+      (result) => {
+        taskResult = result;
+      },
+      (error) => {
+        taskError = error;
+      }
+    )
+    .finally(() => {
+      settled = true;
+    });
+  while (!settled) {
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    if (settled || panicStopActive) {
+      continue;
+    }
+    const approval = await call("hermes_pending_agentic_approval");
+    if (!approval || elements.approvalPanel.dataset.requestId === approval.requestId) {
+      continue;
+    }
+    const approved = await showAgenticApproval(approval);
+    await call("hermes_respond_agentic_approval", {
+      requestId: approval.requestId,
+      approved
+    });
+  }
+  await task;
+  if (taskError) {
+    throw taskError;
+  }
+  return taskResult;
+}
+
+function showAgenticApproval(approval) {
+  hideAgenticApproval(false);
+  elements.approvalPanel.dataset.requestId = approval.requestId;
+  elements.approvalRisk.textContent = formatRiskClass(approval.riskClass);
+  elements.approvalSummary.textContent = approval.summary;
+  elements.approvalPanel.hidden = false;
+  elements.hudOutput.textContent = "Hermes is waiting for your confirmation.";
+  return new Promise((resolve) => {
+    activeApprovalResolver = resolve;
+  });
+}
+
+function hideAgenticApproval(decision = false) {
+  elements.approvalPanel.hidden = true;
+  delete elements.approvalPanel.dataset.requestId;
+  if (activeApprovalResolver) {
+    const resolve = activeApprovalResolver;
+    activeApprovalResolver = null;
+    resolve(decision);
+  }
+}
+
+function formatRiskClass(value) {
+  const labels = {
+    destructive_git: "Destructive Git action",
+    install_or_admin: "Install or administrator action",
+    credentials: "Credential or secret access",
+    consequential_browser_submission: "Consequential browser submission",
+    executable_download: "Executable download",
+    payment: "Payment action",
+    sensitive_files: "Sensitive file access",
+    scope_expansion: "Outside selected workspace",
+    ordinary: "Confirmation required"
+  };
+  return labels[String(value || "")] || "Confirmation required";
+}
+
+function formatAgenticTaskResult(response) {
+  const activity = (response?.events || [])
+    .filter((event) => event?.type === "tool_activity")
+    .map((event) => String(event.payload || "").trim())
+    .filter(Boolean);
+  if (activity.length === 0) {
+    return String(response?.text || "");
+  }
+  return `Tool activity:\n${activity.join("\n\n")}\n\nResult:\n${response.text}`;
+}
+
+async function showBrowserPreview(preview) {
+  elements.browserUrl.textContent = preview.url || "Hermes browser";
+  elements.browserPreviewImage.hidden = true;
+  elements.browserPreviewImage.removeAttribute("src");
+  if (preview.screenshotPath) {
+    try {
+      elements.browserPreviewImage.src = await call("browser_preview_data_url", {
+        screenshotPath: preview.screenshotPath
+      });
+      elements.browserPreviewImage.hidden = false;
+    } catch (error) {
+      logVoice("browser_preview_image_error", error);
+    }
+  }
+  elements.browserPanel.hidden = false;
+  await resizeForBrowserPreview(true);
+}
+
+async function hideBrowserPreview() {
+  elements.browserPanel.hidden = true;
+  elements.browserPreviewImage.removeAttribute("src");
+  elements.browserPreviewImage.hidden = true;
+  elements.browserUrl.textContent = "";
+  await resizeForBrowserPreview(false);
+}
+
+async function resizeForBrowserPreview(show) {
+  const LogicalSize = window.__TAURI__?.dpi?.LogicalSize;
+  if (!currentWindow || !LogicalSize) {
+    return;
+  }
+  try {
+    const scaleFactor = await currentWindow.scaleFactor();
+    const size = await currentWindow.innerSize();
+    const width = Math.round(size.width / scaleFactor);
+    const height = Math.round(size.height / scaleFactor);
+    if (show) {
+      if (browserPreviewRestoreHeight === null) {
+        browserPreviewRestoreHeight = height;
+      }
+      await currentWindow.setSize(new LogicalSize(width, Math.max(height, 430)));
+    } else if (browserPreviewRestoreHeight !== null) {
+      await currentWindow.setSize(new LogicalSize(width, browserPreviewRestoreHeight));
+      browserPreviewRestoreHeight = null;
+    }
+  } catch (error) {
+    logVoice("browser_preview_resize_error", error);
+  }
+}
+
 function formatHermesStatus(status, audit) {
   return [
+    `Mode: ${status.mode}`,
     `Hermes enabled: ${Boolean(status.enabled)}`,
     `Sidecar enabled: ${Boolean(status.sidecarEnabled)}`,
     `Broker enabled: ${Boolean(status.brokerEnabled)}`,
@@ -537,8 +748,8 @@ function formatHermesStatus(status, audit) {
     `Search enabled: ${Boolean(status.searchEnabled)}`,
     `Tools: ${(status.tools || []).join(", ")}`,
     `Acting tools: ${(status.actingTools || []).length}`,
-    `Safety audit: ${Boolean(audit.ok)}`,
-    `External network: ${Boolean(audit.externalNetwork)}`
+    `Agentic runtime available: ${Boolean(status.agenticRuntimeAvailable)}`,
+    `Safety audit: ${audit ? Boolean(audit.ok) : "not applicable"}`
   ].join("\n");
 }
 
@@ -659,31 +870,49 @@ function cancelSpeech() {
 
 async function speak(text, latencyTrace = null) {
   if (!speakReplies) {
-    return Promise.resolve();
+    return;
   }
 
+  const chunks = splitSpeechChunks(text);
+  if (chunks.length === 0) {
+    return;
+  }
+  const runId = ++speechRunId;
+  speaking = true;
+  let totalTtsMs = 0;
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (speechRunId !== runId || panicStopActive) {
+      break;
+    }
+    totalTtsMs += await playSpeechChunk(chunks[index], runId, latencyTrace, index === 0);
+    if (latencyTrace) {
+      latencyTrace.ttsFullMs = totalTtsMs;
+    }
+  }
+  if (speechRunId === runId) {
+    speaking = false;
+  }
+  activeSpeechResolve = null;
+  logVoice("speech_finished", `run=${runId}; chunks=${chunks.length}`);
+}
+
+function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
   return new Promise((resolve) => {
-    const runId = ++speechRunId;
-    speaking = true;
-    activeSpeechResolve = resolve;
     let resolved = false;
-    const resolveOnce = () => {
+    const resolveOnce = (elapsedMs = 0) => {
       if (resolved) {
         return;
       }
       resolved = true;
-      if (speechRunId === runId) {
-        speaking = false;
-      }
-      if (activeSpeechResolve === resolve) {
+      if (activeSpeechResolve === cancelChunk) {
         activeSpeechResolve = null;
       }
-      logVoice("speech_finished", `run=${runId}`);
-      resolve();
+      resolve(optionalTiming(elapsedMs) || 0);
     };
-
+    const cancelChunk = () => resolveOnce();
+    activeSpeechResolve = cancelChunk;
     const ttsStartedAt = performance.now();
-    logVoice("kokoro_tts_start", `run=${runId}`);
+    logVoice("kokoro_tts_start", `run=${runId}; first=${firstChunk}`);
     call("kokoro_tts_wav", { text })
       .then((response) => {
         if (speechRunId !== runId) {
@@ -695,11 +924,10 @@ async function speak(text, latencyTrace = null) {
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
         activeAudio = audio;
-        if (latencyTrace) {
-          latencyTrace.ttsFullMs = optionalTiming(response.elapsedMs);
-        }
         logVoice("speech_started", `run=${runId}; voice=${response.voice}; tts_ms=${response.elapsedMs}`);
-        monitorSpeechInterruption(runId);
+        if (firstChunk) {
+          monitorSpeechInterruption(runId);
+        }
         audio.onplaying = () => {
           if (latencyTrace && latencyTrace.ttsFirstAudioMs === null) {
             latencyTrace.ttsFirstAudioMs = Math.round(performance.now() - ttsStartedAt);
@@ -713,14 +941,14 @@ async function speak(text, latencyTrace = null) {
           if (activeAudio === audio) {
             activeAudio = null;
           }
-          resolveOnce();
+          resolveOnce(response.elapsedMs);
         };
         audio.onerror = () => {
           URL.revokeObjectURL(url);
           if (activeAudio === audio) {
             activeAudio = null;
           }
-          resolveOnce();
+          resolveOnce(response.elapsedMs);
         };
         audio.play().catch((error) => {
           logVoice("speech_playback_error", String(error));
@@ -728,7 +956,7 @@ async function speak(text, latencyTrace = null) {
           if (activeAudio === audio) {
             activeAudio = null;
           }
-          resolveOnce();
+          resolveOnce(response.elapsedMs);
         });
       })
       .catch((error) => {
@@ -800,9 +1028,15 @@ function renderPanicStop() {
   setInputsDisabled(thinking || speaking || listening);
 }
 
-function togglePanicStop() {
-  panicStopActive = nextPanicState(panicStopActive);
+async function togglePanicStop() {
+  const nextActive = nextPanicState(panicStopActive);
+  const policy = await call(
+    nextActive ? "hermes_panic_stop" : "hermes_clear_panic_stop"
+  );
+  panicStopActive = Boolean(policy.panicStopActive);
   if (panicStopActive) {
+    hideAgenticApproval(false);
+    await hideBrowserPreview();
     stopListeningRequested = true;
     voiceLoop = false;
     wakeCommandArmed = false;
@@ -828,6 +1062,12 @@ function togglePanicStop() {
   logVoice(panicStopActive ? "panic_stop_active" : "panic_stop_cleared");
   renderPanicStop();
 }
+
+elements.approvalAllow.addEventListener("click", () => hideAgenticApproval(true));
+elements.approvalDeny.addEventListener("click", () => hideAgenticApproval(false));
+elements.browserPreviewClose.addEventListener("click", () => {
+  void hideBrowserPreview();
+});
 
 function setListening(nextListening) {
   listening = nextListening;
@@ -875,11 +1115,12 @@ async function listenOnce(mode) {
   }
 
   activeListenMode = mode;
+  let restartDelayMs = 650;
   setListening(true);
   logVoice("native_asr_start_requested");
   elements.voiceStatus.textContent = mode === "push" ? "Listening..." : "Listening for Iris.";
   try {
-    const result = await call("native_asr_listen_once");
+    const result = await call("native_asr_listen_once", { mode });
     if (panicStopActive) {
       pendingVoiceLatency = null;
       return;
@@ -893,10 +1134,12 @@ async function listenOnce(mode) {
     if (!isUsableTranscript(transcript)) {
       pendingVoiceLatency = null;
       elements.voiceStatus.textContent = "No speech transcript captured.";
+      restartDelayMs = wakeRestartDelayMs(mode, transcript, "ignore");
       return;
     }
     elements.hudOutput.textContent = transcript;
-    handleVoiceTranscript(transcript);
+    const decision = handleVoiceTranscript(transcript);
+    restartDelayMs = wakeRestartDelayMs(mode, transcript, decision?.action);
   } catch (error) {
     if (panicStopActive) {
       return;
@@ -910,7 +1153,7 @@ async function listenOnce(mode) {
   } finally {
     setListening(false);
     if (mode !== "push") {
-      restartListeningIfReady(650);
+      restartListeningIfReady(restartDelayMs);
     }
   }
 }
@@ -932,14 +1175,14 @@ function handleVoiceTranscript(transcript) {
     voiceLoop = false;
     elements.hudOutput.textContent = "Stopped.";
     restartListeningIfReady(250);
-    return;
+    return decision;
   }
 
   if (decision.action === "submit") {
     wakeCommandArmed = false;
     voiceLoop = false;
     submitMessage(decision.prompt, decision.source);
-    return;
+    return decision;
   }
 
   if (decision.action === "arm-wake-followup") {
@@ -949,17 +1192,18 @@ function handleVoiceTranscript(transcript) {
     elements.hudOutput.textContent = "Listening.";
     elements.voiceStatus.textContent = "Listening.";
     restartListeningIfReady(100);
-    return;
+    return decision;
   }
 
   if (decision.action === "wait-for-wake") {
     if (voiceLoop) {
       submitMessage(transcript, "voice-session");
-      return;
+      return decision;
     }
     pendingVoiceLatency = null;
     wakeCommandArmed = false;
   }
+  return decision;
 }
 
 elements.hudForm.addEventListener("submit", async (event) => {
@@ -1019,7 +1263,9 @@ elements.attachmentRemove.addEventListener("click", () => {
 });
 
 elements.panicButton.addEventListener("click", () => {
-  togglePanicStop();
+  togglePanicStop().catch((error) => {
+    elements.hudOutput.textContent = String(error);
+  });
 });
 
 elements.windowDragStrip.addEventListener("pointerdown", () => {

@@ -40,7 +40,7 @@ Expected local prerequisites:
 
 - Windows 10 or Windows 11.
 - Microsoft Edge WebView2 Runtime.
-- Ollama running on `127.0.0.1:11434` with `huihui_ai/gemma-4-abliterated:e2b`.
+- Ollama running on `127.0.0.1:11434` with `qwen3.5:9b`.
 - Python plus `kokoro-onnx` and `soundfile` only when testing the Kokoro helper.
 
 Iris must not require cloud APIs, telemetry, non-loopback service binding, or

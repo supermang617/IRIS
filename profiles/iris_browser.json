@@ -1,0 +1,33 @@
+{
+  "name": "iris_hermes_browser",
+  "provider": "agent-browser",
+  "version": "0.27.2",
+  "package_integrity": "sha512-RZNxZFvnspSxSmpjkZjM0Lv69ArwYr8t+Ndavko/NGrfkdUkp5lVGJAs4f88tJNNcBVFcn92hhS+3pulVF9oSw==",
+  "native_binary_sha256": "013c9bb6084e72d69a8ebb6c3d5669ba117129479b81d9336012b36b91f490e5",
+  "chrome_for_testing_version": "149.0.7827.115",
+  "chrome_archive_url": "https://storage.googleapis.com/chrome-for-testing-public/149.0.7827.115/win64/chrome-win64.zip",
+  "chrome_archive_sha256": "1553389900824037aec828effab3051337df57a571e2f8800ee71cf8ed6fa76d",
+  "chrome_executable_sha256": "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56",
+  "runtime_root": ".iris-runtime/browser",
+  "dedicated_profile": ".iris-data/hermes-browser/profile",
+  "downloads": ".iris-data/hermes-browser/downloads",
+  "screenshots": "diagnostics/browser",
+  "headless_default": true,
+  "manual_auth_headed_allowed": true,
+  "content_boundaries": true,
+  "private_network_navigation": false,
+  "normal_browser_profile_reuse": false,
+  "idle_timeout_ms": 120000,
+  "tools": [
+    "browser_open",
+    "browser_snapshot",
+    "browser_click",
+    "browser_fill",
+    "browser_press",
+    "browser_screenshot",
+    "browser_get_url",
+    "browser_upload",
+    "browser_download",
+    "browser_close"
+  ]
+}

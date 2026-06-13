@@ -97,7 +97,6 @@
     "allowed_hosts": [
       "127.0.0.1",
       "localhost",
-      "www.bing.com",
       "api.github.com"
     ]
   }

@@ -15,7 +15,7 @@ Out of scope for this workspace:
 ## Active Model
 
 ```text
-huihui_ai/gemma-4-abliterated:e2b
+qwen3.5:9b
 ```
 
 The active model is vision-capable. Iris must use this same model for future image/vision work; do not add a separate vision model.

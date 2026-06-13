@@ -36,11 +36,24 @@ try {
         "models\whisper\ggml-tiny.en.bin",
         "plugins\hermes_sidecar\sidecar.py",
         "plugins\memory\iris_broker\provider.py"
+        "plugins\hermes_acp\iris_acp.py"
+        ".iris-runtime\hermes\.venv\Scripts\python.exe"
+        ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
+        ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe"
+        ".iris-runtime\runtime-manifest.json"
     )) {
         $path = Join-Path $installRoot $relative
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Installed file missing: $path"
         }
+    }
+    $runtimeManifest = Get-Content -LiteralPath (Join-Path $installRoot ".iris-runtime\runtime-manifest.json") -Raw | ConvertFrom-Json
+    $agentBrowserHash = (Get-FileHash -LiteralPath (Join-Path $installRoot ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+    $chromeHash = (Get-FileHash -LiteralPath (Join-Path $installRoot ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($runtimeManifest.hermes_agent.version -ne "0.16.0" -or
+        $agentBrowserHash -ne $runtimeManifest.agent_browser.binary_sha256 -or
+        $chromeHash -ne $runtimeManifest.chrome_for_testing.executable_sha256) {
+        throw "Installed Agentic runtime version/hash verification failed."
     }
 
     foreach ($shortcut in @(

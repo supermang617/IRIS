@@ -84,11 +84,12 @@ The MSIX script is guarded:
 
 The signed installer path must not change Iris runtime permissions:
 
-- no runtime external network;
+- no cloud model/API runtime;
 - no clipboard control;
-- no browser/window automation;
-- no shell/process execution tools exposed to Iris;
-- no model-output-driven command execution;
+- no general window automation;
+- Agentic browser, shell, and process tools only through the reviewed,
+  approval-gated Hermes session;
+- no model-output-driven high-risk action without separate confirmation;
 - no local memory exposure outside Iris-owned boundaries.
 
 Installer tooling may run during packaging or explicit user installation only.

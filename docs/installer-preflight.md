@@ -10,9 +10,10 @@ Iris includes two Windows setup tools for beginners:
   repair actions.
 - `Iris Preflight.ps1`: read-only setup check that never installs or downloads.
 
-Both tools keep Iris local-first. They do not add cloud APIs, external runtime
-network access, clipboard access, browser/window automation, or computer-control
-permissions.
+Both tools keep model inference local and do not add cloud model APIs,
+clipboard access, mouse/keyboard control, or general window automation. The
+installed package includes approval-gated Agentic file, PowerShell, process, and
+isolated browser capabilities; setup does not activate an Agentic Session.
 
 ## Recommended Beginner Flow
 
@@ -62,7 +63,7 @@ Run it from the portable release folder:
 - Installed RAM and free disk space.
 - Microsoft Edge WebView2 Runtime.
 - Ollama executable and local service model list.
-- Required model: `huihui_ai/gemma-4-abliterated:e2b`.
+- Required model: `qwen3.5:9b`.
 - Local Tesseract OCR for document-image text extraction.
 - Bundled Kokoro and Whisper assets.
 - Python availability and optional Kokoro TTS packages.
@@ -88,7 +89,7 @@ The interactive setup wizard can offer these repairs only:
   page.
 - Start the local Ollama service.
 - Download the configured local model with
-  `ollama pull huihui_ai/gemma-4-abliterated:e2b`.
+  `ollama pull qwen3.5:9b`.
 - Install Python through `winget`, or show Python's official Windows page.
 - Install local Kokoro voice helper packages with
   `python -m pip install kokoro-onnx soundfile`.

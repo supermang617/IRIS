@@ -85,6 +85,14 @@ impl OllamaClient {
         }
     }
 
+    pub fn health_check(&self, bundle: &GatedContextBundle) -> Result<(), String> {
+        let response = self.try_respond(bundle)?;
+        if response.trim().is_empty() {
+            return Err("Ollama model returned an empty health-check response".to_string());
+        }
+        Ok(())
+    }
+
     pub fn respond_with_history(
         &self,
         bundle: &GatedContextBundle,
@@ -480,7 +488,7 @@ mod tests {
         let manifest = iris_config::ProjectManifest::from_json_str(MANIFEST).unwrap();
         let settings = OllamaSettings::from_manifest(&manifest).unwrap();
 
-        assert_eq!(settings.model_id, "huihui_ai/gemma-4-abliterated:e2b");
+        assert_eq!(settings.model_id, "qwen3.5:9b");
         assert_eq!(settings.num_ctx, 8192);
         settings.validate_loopback().unwrap();
     }
@@ -489,7 +497,7 @@ mod tests {
     fn rejects_non_loopback_endpoint() {
         let settings = OllamaSettings {
             generate_url: "https://example.com/api/generate".to_string(),
-            model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            model_id: "qwen3.5:9b".to_string(),
             num_ctx: 8192,
         };
 
@@ -511,7 +519,7 @@ mod tests {
     #[test]
     fn generate_request_disables_thinking() {
         let request = GenerateRequest {
-            model: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            model: "qwen3.5:9b".to_string(),
             prompt: "hello".to_string(),
             images: Vec::new(),
             stream: false,
@@ -540,7 +548,7 @@ mod tests {
     #[test]
     fn visual_generate_request_uses_deterministic_sampling() {
         let request = GenerateRequest {
-            model: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            model: "qwen3.5:9b".to_string(),
             prompt: prompt_for_visual_probe("what shape?", VisualEvidenceSource::UserSelectedImage),
             images: vec![base64_encode(b"not a real image")],
             stream: false,

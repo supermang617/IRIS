@@ -1,5 +1,9 @@
 # Contributing
 
+Produced by Alejandro Pinto.
+
+Contact: super.mangmail@gmail.com
+
 IRIS is currently open for bug fixes, diagnostics fixes, documentation fixes, compatibility fixes, and safety-preserving test coverage.
 
 ## Allowed Contributions
@@ -8,13 +12,15 @@ IRIS is currently open for bug fixes, diagnostics fixes, documentation fixes, co
 - Failing-test fixes.
 - Local Windows compatibility fixes.
 - Documentation corrections.
-- Security hardening that preserves the no-action runtime invariant.
+- Security hardening that preserves Safe mode and Agentic approval boundaries.
 - Test coverage for existing behavior.
 
 ## Avoid Without Explicit Approval
 
-- New action tools.
-- Mouse, keyboard, browser, clipboard, window, shell, process, or automation control.
+- New action tools outside the reviewed Agentic profile.
+- Mouse, keyboard, clipboard, accessibility, or general window control.
+- Browser, shell, or process capabilities that bypass Agentic session approval,
+  per-action high-risk confirmation, audit logging, or Panic Stop.
 - Model switching, model pulling, fallback models, or multi-model debate.
 - External/cloud network behavior.
 - New dependencies.
@@ -34,6 +40,7 @@ cargo test --workspace
 cargo clippy --workspace
 cargo run -p xtask
 npm run test:voice
+npm run test:python
 git diff --check
 ```
 

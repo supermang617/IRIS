@@ -71,12 +71,12 @@ installed setup wizard reports diagnostics without prompting.
 
 The installer does not change Iris runtime permissions. Iris remains local-only:
 
-- no cloud/API dependency;
-- no external runtime network;
+- no cloud model/API dependency;
 - no clipboard access;
-- no browser/window automation;
-- no model-output-driven command execution;
-- no runtime computer automation.
+- no general window, mouse, or keyboard automation;
+- Agentic browser, file, PowerShell, and process tools only through explicit
+  Iris session approval and high-risk confirmation;
+- no unapproved model-output-driven execution.
 
 The setup wizard can offer allowlisted prerequisite installs or downloads only
 when the user chooses to run those repair actions.

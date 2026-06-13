@@ -54,6 +54,9 @@ pub struct SafetyStatus {
 pub struct HermesStatus {
     pub enabled_by_default: bool,
     pub sidecar_enabled_by_default: bool,
+    pub startup_mode: &'static str,
+    pub agentic_available: bool,
+    pub agentic_approval: &'static str,
     pub lifecycle_owner: &'static str,
     pub transport: &'static str,
     pub broker_url: &'static str,
@@ -110,6 +113,9 @@ fn snapshot_from_parts(
         hermes: HermesStatus {
             enabled_by_default: true,
             sidecar_enabled_by_default: true,
+            startup_mode: "safe",
+            agentic_available: true,
+            agentic_approval: "explicit_expiring_session",
             lifecycle_owner: "iris",
             transport: "stdin_stdout_json",
             broker_url: "http://127.0.0.1:48731",
@@ -119,9 +125,26 @@ fn snapshot_from_parts(
                 "iris_propose_memory",
                 "iris_web_research",
             ],
-            acting_tools: Vec::new(),
+            acting_tools: vec![
+                "read_file",
+                "write_file",
+                "patch",
+                "search_files",
+                "terminal",
+                "process",
+                "browser_open",
+                "browser_snapshot",
+                "browser_click",
+                "browser_fill",
+                "browser_press",
+                "browser_screenshot",
+                "browser_get_url",
+                "browser_upload",
+                "browser_download",
+                "browser_close",
+            ],
             parallel_inference_streams: 1,
-            status: "enabled_sandboxed_research_rag_helper_no_computer_control",
+            status: "safe_default_agentic_session_approval_gated",
         },
     }
 }
@@ -175,6 +198,12 @@ mod tests {
         assert_eq!(snapshot.safety.runtime_network, "Runtime Network: Disabled");
         assert!(snapshot.hermes.enabled_by_default);
         assert!(snapshot.hermes.sidecar_enabled_by_default);
+        assert_eq!(snapshot.hermes.startup_mode, "safe");
+        assert!(snapshot.hermes.agentic_available);
+        assert_eq!(
+            snapshot.hermes.agentic_approval,
+            "explicit_expiring_session"
+        );
         assert_eq!(snapshot.hermes.lifecycle_owner, "iris");
         assert_eq!(snapshot.hermes.broker_url, "http://127.0.0.1:48731");
         assert_eq!(
@@ -185,11 +214,31 @@ mod tests {
                 "iris_web_research"
             ]
         );
-        assert!(snapshot.hermes.acting_tools.is_empty());
+        assert_eq!(
+            snapshot.hermes.acting_tools,
+            vec![
+                "read_file",
+                "write_file",
+                "patch",
+                "search_files",
+                "terminal",
+                "process",
+                "browser_open",
+                "browser_snapshot",
+                "browser_click",
+                "browser_fill",
+                "browser_press",
+                "browser_screenshot",
+                "browser_get_url",
+                "browser_upload",
+                "browser_download",
+                "browser_close"
+            ]
+        );
         assert_eq!(snapshot.hermes.parallel_inference_streams, 1);
         assert_eq!(
             snapshot.hermes.status,
-            "enabled_sandboxed_research_rag_helper_no_computer_control"
+            "safe_default_agentic_session_approval_gated"
         );
     }
 }
