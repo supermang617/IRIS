@@ -82,8 +82,13 @@ jobs:
         shell: pwsh
         run: |
           cargo run -p iris-runtime -- --dashboard-json
-          $output = (& cargo run -p iris-runtime -- --self-check 2>&1 | Out-String)
-          $exitCode = $LASTEXITCODE
+          $stdoutPath = Join-Path $env:RUNNER_TEMP "iris-self-check-stdout.txt"
+          $stderrPath = Join-Path $env:RUNNER_TEMP "iris-self-check-stderr.txt"
+          $process = Start-Process -FilePath ".\target\debug\iris-runtime.exe" `
+            -ArgumentList "--self-check" -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+          $output = (Get-Content $stdoutPath, $stderrPath -Raw | Out-String)
+          $exitCode = $process.ExitCode
           Write-Host $output
           if ($exitCode -eq 0) {
             throw "Offline CI self-check unexpectedly succeeded without bundled models or Ollama."
