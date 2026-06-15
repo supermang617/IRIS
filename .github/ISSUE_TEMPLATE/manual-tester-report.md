@@ -1,16 +1,17 @@
 ---
-name: Iris v0.1.1 manual tester report
-about: Report a manual test result from the Iris v0.1.1 portable Windows release
-title: "[v0.1.1 manual test] "
+name: Iris Windows release manual tester report
+about: Report a manual test result from the latest Iris Windows release
+title: "[Windows release manual test] "
 labels: bug, manual-test
 assignees: ""
 ---
 
 ## Release
 
-- Release URL: https://github.com/supermang617/IRIS/releases/tag/v0.1.1
-- ZIP SHA256: `15a9e17aa89deadd3561b1a41068295288034851de06124e9cb4880a1d0fcfad`
-- Did the downloaded ZIP match `iris-windows.zip.sha256`? PASS / FAIL / BLOCKED
+- Release URL: https://github.com/supermang617/IRIS/releases/latest
+- Release tag:
+- Download used: beginner installer / portable ZIP
+- Did the downloaded asset match its `.sha256` file? PASS / FAIL / BLOCKED
 
 ## Environment
 
@@ -32,6 +33,7 @@ assignees: ""
 | Check | Result | Notes |
 | --- | --- | --- |
 | SHA verification | PASS / FAIL / BLOCKED |  |
+| `Install Iris.bat` beginner flow | PASS / FAIL / BLOCKED |  |
 | Extracted files present | PASS / FAIL / BLOCKED |  |
 | `.\Check Iris Preflight.bat` | PASS / FAIL / BLOCKED |  |
 | `.\Iris Setup Wizard.bat` | PASS / FAIL / BLOCKED |  |
@@ -54,10 +56,13 @@ paste error text here
 ```
 
 - Screenshot or short description:
-- Did Iris require a cloud API, telemetry, non-loopback service, secret, browser automation, shell execution, clipboard control, or computer control? YES / NO
+- Did Iris require a cloud model API, telemetry, non-loopback service, or
+  clipboard control? YES / NO
+- Did Agentic file, browser, or PowerShell behavior occur without an approved
+  Agentic Session? YES / NO
 
 ## Notes
 
-Iris v0.1.1 is local-first and non-agentic. Missing cloud login, telemetry,
-browser automation, shell execution, clipboard control, and computer control are
-intentional absences, not release blockers.
+Iris is local-first. Safe mode remains non-agentic. Agentic file, browser,
+PowerShell, and process work is available only in an explicitly approved,
+expiring session with additional confirmation for high-risk actions.

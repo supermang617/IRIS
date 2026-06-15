@@ -61,6 +61,7 @@ try {
         "Install Iris.bat",
         "Install Iris.ps1",
         "README_RELEASE.md",
+        "docs\finish-checklist.md",
         "docs\installer-preflight.md",
         "docs\iris-architecture.md",
         "docs\windows-installer.md",
@@ -100,6 +101,15 @@ try {
         if (Test-Path -LiteralPath (Join-Path $extractRoot $volatile)) {
             throw "Release ZIP contains volatile runtime data: $volatile"
         }
+    }
+    $pythonCaches = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -Force -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue)
+    if ($pythonCaches.Count -gt 0) {
+        throw "Release ZIP contains Python cache directories."
+    }
+    $pythonBytecode = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in @(".pyc", ".pyo") })
+    if ($pythonBytecode.Count -gt 0) {
+        throw "Release ZIP contains Python bytecode files."
     }
     $runtimeManifest = Get-Content -LiteralPath (Join-Path $extractRoot ".iris-runtime\runtime-manifest.json") -Raw | ConvertFrom-Json
     $agentBrowserHash = (Get-FileHash -LiteralPath (Join-Path $extractRoot ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe") -Algorithm SHA256).Hash.ToLowerInvariant()

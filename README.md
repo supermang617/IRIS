@@ -105,6 +105,7 @@ scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
 scripts\iris_preflight_wizard.ps1
 scripts\iris_setup_wizard.ps1 -NonInteractive
+scripts\test_windows_beginner_installer.ps1
 scripts\test_windows_installer.ps1
 scripts\test_windows_signed_installer_readiness.ps1
 scripts\test_windows_msix_signature.ps1
@@ -118,14 +119,17 @@ Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice dec
 ## Run
 
 Download and setup guide: `docs/download-and-run.md`.
+Production readiness checklist: `docs/finish-checklist.md`.
 Architecture notes: `docs/iris-architecture.md`.
 Beginner preflight guide: `docs/installer-preflight.md`.
 Windows installer plan: `docs/windows-installer.md`.
 Signed installer decision: `docs/signed-installer-decision.md`.
 Runtime orchestration: `docs/runtime-orchestration.md`.
 Manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
-The portable release includes `Iris Setup Wizard.bat` for beginner setup and
-`Check Iris Preflight.bat` for read-only diagnostics.
+The recommended beginner download is `iris-windows-installer.zip`: extract it
+and double-click `Install Iris.bat`. The portable release remains available for
+advanced/manual use and includes `Iris Setup Wizard.bat` plus read-only
+`Check Iris Preflight.bat`.
 
 Console:
 

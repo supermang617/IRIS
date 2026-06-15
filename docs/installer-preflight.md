@@ -17,7 +17,17 @@ isolated browser capabilities; setup does not activate an Agentic Session.
 
 ## Recommended Beginner Flow
 
-Run the setup wizard from the portable release folder:
+Download `iris-windows-installer.zip` from the latest GitHub release, extract
+it, and double-click:
+
+```text
+Install Iris.bat
+```
+
+That launcher verifies the bundled payload, installs Iris for the current
+Windows user, and opens the setup wizard before the final live self-check.
+
+For portable/manual use, run the setup wizard from the portable release folder:
 
 ```powershell
 .\Iris Setup Wizard.bat

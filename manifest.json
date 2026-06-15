@@ -1,7 +1,7 @@
 {
   "project": {
     "name": "Project Iris",
-    "version": "v0.1",
+    "version": "v0.1.2",
     "runtime_posture": "local_first_windows_safe_default_agentic_opt_in",
     "target_platform": "windows"
   },

@@ -11,15 +11,41 @@ downloads.
 
 ## What Ships
 
+- `iris-windows-installer.zip`: recommended single-download beginner bundle.
+- `iris-windows-installer.zip.sha256`: SHA256 for the beginner bundle.
 - `iris-windows.zip`: portable Iris release.
 - `iris-windows.zip.sha256`: SHA256 for the portable release.
 
-The portable release also contains:
+The beginner bundle contains:
+
+- `Install Iris.bat`
+- `install-iris-windows.ps1`
+- `iris-windows.zip`
+- `iris-windows.zip.sha256`
+- `README.txt`
+
+The portable release contains:
 
 - `Install Iris.bat`
 - `Install Iris.ps1`
 - `Iris Setup Wizard.bat`
 - `Check Iris Preflight.bat`
+
+## Beginner Install Behavior
+
+The beginner downloads one ZIP, extracts it, and double-clicks
+`Install Iris.bat`. The launcher passes the bundled payload and checksum to the
+PowerShell installer. The installer:
+
+- verifies the payload SHA256;
+- installs to `%LOCALAPPDATA%\Programs\Iris`;
+- creates Desktop and Start Menu shortcuts;
+- runs the setup wizard before the final self-check, so missing prerequisites
+  can be repaired first;
+- launches Iris after a successful install.
+
+The current installer is not signed, so Windows may show a publisher warning.
+A production-trusted signed MSIX remains the preferred public-beta path.
 
 ## Portable Install Behavior
 

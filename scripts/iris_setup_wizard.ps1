@@ -127,7 +127,7 @@ function Get-RepairPlan {
             return [pscustomobject]@{
                 Title = "Restore bundled Iris model assets"
                 Description = "The portable Iris ZIP should include these local assets. Re-extract the complete release if they are missing."
-                Link = "https://github.com/supermang617/IRIS/releases/tag/v0.1.1"
+                Link = "https://github.com/supermang617/IRIS/releases/latest"
                 Commands = @(
                     "Expand-Archive -LiteralPath .\iris-windows.zip -DestinationPath .\iris-windows -Force"
                 )
@@ -138,7 +138,7 @@ function Get-RepairPlan {
             return [pscustomobject]@{
                 Title = "Verify or redownload the release ZIP"
                 Description = "The ZIP and SHA256 must match before a beginner installs from it."
-                Link = "https://github.com/supermang617/IRIS/releases/tag/v0.1.1"
+                Link = "https://github.com/supermang617/IRIS/releases/latest"
                 Commands = @(
                     "Get-FileHash .\iris-windows.zip -Algorithm SHA256"
                 )

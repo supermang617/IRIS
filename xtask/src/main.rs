@@ -90,7 +90,9 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/provision_hermes_acp.ps1",
         "scripts/provision_iris_browser.ps1",
         "scripts/test_python.ps1",
+        "scripts/test_vision_text_diagnostics.ps1",
         "scripts/benchmark_hermes_model.py",
+        "scripts/test_windows_beginner_installer.ps1",
         "scripts/test_windows_release_download.ps1",
         "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
@@ -462,6 +464,11 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "v[0-9]+.[0-9]+.[0-9]+",
         "scripts\\package_windows_release.ps1",
         "scripts\\test_windows_release_download.ps1",
+        "scripts\\test_windows_beginner_installer.ps1",
+        "release/dist/iris-windows-installer.zip",
+        "release/dist/iris-windows-installer.zip.sha256",
+        "Download `iris-windows-installer.zip`",
+        "Double-click `Install Iris.bat`",
         "release/dist/iris-windows.zip",
         "release/dist/iris-windows.zip.sha256",
         "contents: write",
@@ -490,11 +497,11 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         );
     }
     for required in [
-        "Phase 1: Manual Desktop Readiness",
-        "Start Iris.ps1 -SelfCheck",
-        "docs/manual-test.md",
-        "No fallback models",
-        "No autonomous computer use",
+        "Iris Production Readiness Checklist",
+        "Beginner Installer Acceptance",
+        "Installed-App Manual Acceptance",
+        "Publish `v0.1.2`",
+        "Production-Trusted Installer",
     ] {
         if !finish_checklist.contains(required) {
             return Err(format!("finish checklist missing `{required}`"));
@@ -517,7 +524,9 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !windows_installer.contains("iris-windows.zip")
         || !windows_installer.contains("iris-windows.zip.sha256")
+        || !windows_installer.contains("iris-windows-installer.zip")
         || !windows_installer.contains("%LOCALAPPDATA%\\Programs\\Iris")
+        || !windows_installer.contains("setup wizard before the final self-check")
         || !windows_installer.contains("Agentic browser, file, PowerShell, and process tools")
     {
         return Err(
@@ -1065,6 +1074,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     let package = read(root.join("scripts/package_windows_release.ps1"))?;
     let installer = read(root.join("scripts/install_iris_windows.ps1"))?;
     let release_smoke = read(root.join("scripts/test_windows_release_download.ps1"))?;
+    let beginner_smoke = read(root.join("scripts/test_windows_beginner_installer.ps1"))?;
     for required in [
         ".iris-runtime\\hermes\\.venv",
         ".iris-runtime\\browser\\node_modules",
@@ -1081,6 +1091,38 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
                 "installer missing packaged runtime rule `{required}`"
             ));
         }
+    }
+    for required in [
+        "iris-windows-installer.zip",
+        "Install Iris.bat",
+        "-RunSetup",
+        "-LaunchAfterInstall",
+    ] {
+        if !package.contains(required) {
+            return Err(format!(
+                "release package script missing beginner installer rule `{required}`"
+            ));
+        }
+    }
+    for required in [
+        "Beginner installer bundle SHA256 mismatch",
+        "payload ZIP with an invalid SHA256",
+        "setup wizard before the final live self-check",
+    ] {
+        if !beginner_smoke.contains(required) {
+            return Err(format!(
+                "beginner installer smoke test missing `{required}`"
+            ));
+        }
+    }
+    let setup_position = installer
+        .find("if ($RunSetup)")
+        .ok_or_else(|| "installer missing setup execution".to_string())?;
+    let self_check_position = installer
+        .find("\"Start Iris.ps1\") --self-check")
+        .ok_or_else(|| "installer missing final self-check".to_string())?;
+    if setup_position > self_check_position {
+        return Err("installer must run setup before final self-check".to_string());
     }
     for forbidden_runtime in [
         ".iris-runtime\\hermes\\home",
@@ -1111,6 +1153,43 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         if !ci.contains(required) {
             return Err(format!("CI release hardening missing `{required}`"));
         }
+    }
+
+    for path in [
+        "crates/iris-cognition/Cargo.toml",
+        "crates/iris-config/Cargo.toml",
+        "crates/iris-context-gate/Cargo.toml",
+        "crates/iris-core-types/Cargo.toml",
+        "crates/iris-dynamic-context/Cargo.toml",
+        "crates/iris-hardware/Cargo.toml",
+        "crates/iris-ollama/Cargo.toml",
+        "crates/iris-paths/Cargo.toml",
+        "crates/iris-policy/Cargo.toml",
+        "crates/iris-redaction/Cargo.toml",
+        "crates/iris-runtime/Cargo.toml",
+        "crates/iris-status/Cargo.toml",
+        "crates/iris-ui/Cargo.toml",
+        "src-tauri/Cargo.toml",
+        "xtask/Cargo.toml",
+    ] {
+        if !read(root.join(path))?.contains("version = \"0.1.2\"") {
+            return Err(format!("{path} must use release version 0.1.2"));
+        }
+    }
+    if !read(root.join("package.json"))?.contains("\"version\": \"0.1.2\"")
+        || !tauri.contains("\"version\": \"0.1.2\"")
+        || !read(root.join("manifest.json"))?.contains("\"version\": \"v0.1.2\"")
+        || !read(root.join("crates/iris-core-types/src/lib.rs"))?
+            .contains("PROJECT_VERSION: &str = \"v0.1.2\"")
+        || read(root.join("crates/iris-runtime/src/main.rs"))?
+            .contains("Project Iris v0.1 initialized")
+        || !read(root.join("scripts/test_vision_text_diagnostics.ps1"))?
+            .contains("Project Iris v0.1.2 initialized")
+    {
+        return Err(
+            "npm, Tauri, Iris manifest, shared constant, and runtime banner versions must be 0.1.2"
+                .to_string(),
+        );
     }
     Ok(())
 }

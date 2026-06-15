@@ -49,6 +49,9 @@ Require-OutputContains -Result $selfCheck -Needle "runtime_external_network=disa
 $dashboard = Invoke-Runtime -Arguments @("--dashboard-json")
 Require-Success -Result $dashboard -Name "dashboard json"
 $dashboardJson = $dashboard.Output | ConvertFrom-Json
+if ($dashboardJson.project_version -ne "v0.1.2") {
+    throw "dashboard project version mismatch: $($dashboardJson.project_version)"
+}
 if ($dashboardJson.model.id -ne "huihui_ai/gemma-4-abliterated:e2b") {
     throw "dashboard model mismatch: $($dashboardJson.model.id)"
 }
@@ -58,7 +61,7 @@ if ($dashboardJson.model.runtime_external_network -ne "disabled" -or $dashboardJ
 
 $ask = Invoke-Runtime -Arguments @("--ask", "Say one sentence about your safety boundary.")
 Require-Success -Result $ask -Name "text ask"
-Require-OutputContains -Result $ask -Needle "Project Iris v0.1 initialized." -Name "text ask"
+Require-OutputContains -Result $ask -Needle "Project Iris v0.1.2 initialized." -Name "text ask"
 
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-vision-text-diag-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -80,7 +83,7 @@ try {
     [System.IO.File]::WriteAllBytes($pngPath, [Convert]::FromBase64String($onePixelPngBase64))
     $validImage = Invoke-Runtime -Arguments @("--image-probe", $pngPath, "Describe this image as evidence only.")
     Require-Success -Result $validImage -Name "valid image probe graceful path"
-    Require-OutputContains -Result $validImage -Needle "Project Iris v0.1 initialized." -Name "valid image probe graceful path"
+    Require-OutputContains -Result $validImage -Needle "Project Iris v0.1.2 initialized." -Name "valid image probe graceful path"
 } finally {
     Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }

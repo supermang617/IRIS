@@ -7,6 +7,7 @@ param(
     [switch]$RunSetup,
     [switch]$NonInteractive,
     [switch]$SetupNonInteractive,
+    [switch]$LaunchAfterInstall,
     [switch]$SkipShortcuts
 )
 
@@ -257,11 +258,6 @@ try {
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $installRootResolved "install-manifest.json") -Encoding utf8
 
-    & (Join-Path $installRootResolved "Start Iris.ps1") --self-check
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed Iris self-check failed with exit code $LASTEXITCODE"
-    }
-
     if ($RunSetup) {
         if ($NonInteractive.IsPresent -or $SetupNonInteractive.IsPresent) {
             & (Join-Path $installRootResolved "Iris Setup Wizard.ps1") -NonInteractive
@@ -273,11 +269,19 @@ try {
         }
     }
 
+    & (Join-Path $installRootResolved "Start Iris.ps1") --self-check
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed Iris self-check failed with exit code $LASTEXITCODE"
+    }
+
     Write-Host "Iris installed successfully."
     Write-Host "Install root: $installRootResolved"
     if (-not $SkipShortcuts) {
         Write-Host "Start Menu shortcuts: $StartMenuDir"
         Write-Host "Desktop shortcut: $(Join-Path $DesktopDir 'Iris.lnk')"
+    }
+    if ($LaunchAfterInstall) {
+        Start-Process -FilePath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
     }
     exit 0
 } finally {

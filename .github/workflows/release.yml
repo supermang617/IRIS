@@ -89,11 +89,27 @@ jobs:
         shell: pwsh
         run: .\scripts\test_windows_release_download.ps1
 
+      - name: Smoke test beginner installer bundle
+        shell: pwsh
+        run: .\scripts\test_windows_beginner_installer.ps1
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
+          body: |
+            ## Windows install
+
+            1. Download `iris-windows-installer.zip`.
+            2. Extract the ZIP.
+            3. Double-click `Install Iris.bat`.
+            4. Follow the setup wizard.
+
+            The installer verifies the packaged payload before installation.
+            Advanced users can use `iris-windows.zip` as the portable package.
           files: |
             release/dist/iris-windows.zip
             release/dist/iris-windows.zip.sha256
+            release/dist/iris-windows-installer.zip
+            release/dist/iris-windows-installer.zip.sha256
             release/dist/install-iris-windows.ps1
             release/dist/install-iris-windows.ps1.sha256

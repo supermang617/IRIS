@@ -1,96 +1,187 @@
-# Iris Finish Checklist
+# Iris Production Readiness Checklist
 
-This is the practical order for finishing the current Windows Iris prototype without drifting into extra systems.
+This is the release order for Iris. Complete it top to bottom. A later phase
+does not compensate for a failure in an earlier phase.
 
-## Phase 1: Manual Desktop Readiness
+## Current Baseline
 
-Goal: make Iris easy to verify from Alejandro's desktop with the current runtime.
+Implemented:
 
-- Keep `Start Iris.vbs` and `Start Iris.ps1` as the manual launch path.
-- Run `Start Iris.ps1 -SelfCheck` before manual testing.
-- Confirm preflight reports local prerequisites clearly: WebView2, Ollama, configured model, Kokoro assets, Whisper asset, Python TTS packages, and local-only manifest policy.
-- Confirm `cargo run -p xtask` and `cargo run -p iris-runtime -- --self-check` pass from the launcher self-check.
-- Open Iris from the desktop shortcut or `C:\Projects\IRIS\Start Iris.vbs`.
-- Complete `docs/manual-test.md` using typed text, push-to-talk, wake word, interruption, image, camera, screen-area, video-frame, and document attachment checks.
-- Record only real failures found during manual testing; do not add new features during this phase.
+- Windows Tauri desktop app with direct Desktop and Start Menu shortcuts.
+- Local Gemma 4 inference through Ollama.
+- Native Whisper ASR and Kokoro `af_heart` TTS.
+- Typed, wake-word, push-to-talk, image, screen, camera, video-frame, document,
+  memory, Dynamic System Context, Panic Stop, Safe Hermes, and approved Agentic
+  Hermes flows.
+- Iris-owned RAG and staged memory accept/reject.
+- Isolated Agentic browser profile and approval-gated file/PowerShell/process
+  tools.
+- Portable ZIP, per-user installer, setup wizard, preflight, uninstall,
+  upgrade-data preservation, CI, CodeQL, and release packaging.
+- Single-download beginner bundle generated as
+  `iris-windows-installer.zip`.
 
-Exit criteria:
+Current public gap:
 
-- Self-check passes or reports a specific local prerequisite that must be installed.
-- Desktop shell opens without the old dashboard or dev-server connection-refused page.
-- Text, voice, TTS, wake word, interruption, and one-shot evidence probes are manually tested.
+- GitHub's latest published release is `v0.1.1` from June 5, 2026. It predates
+  the current verified code and does not contain the beginner installer bundle.
+- The current source is prepared as `v0.1.2`, but it is not public until the
+  validated commit is pushed and a `v0.1.2` tag triggers the release workflow.
 
-## Phase 2: Voice Loop Stabilization
+## 1. Source And Policy Freeze
 
-Goal: make the core hands-free loop reliable before adding behavior.
-
-- Fix only failures observed in Phase 1 voice diagnostics.
-- Prioritize native ASR start/stop reliability, wake-word detection, interruption while speaking, and transcript quality.
-- Keep WebView speech recognition out of the runtime path.
-- Keep Kokoro `af_heart` as the production voice.
-- Retest with `docs/manual-test.md` after each targeted fix.
-
-Exit criteria:
-
-- Wake word arms by default.
-- `Iris`, `stop`, and `Iris stop` interrupt speech reliably enough for daily manual use.
-- Typed text and push-to-talk still work after voice fixes.
-
-## Phase 3: Evidence Probe Tightening
-
-Goal: keep vision useful but bounded.
-
-- Verify image, camera, screen-area, video-frame, and document attachments stay one-shot and user initiated.
-- Confirm all observed content remains untrusted evidence.
-- Improve failure messages for missing camera, unsupported files, missing OCR, or model vision issues.
-- Do not add continuous screen capture, background monitoring, clipboard reads, or automation.
+- Confirm `main` is clean and synchronized with `origin/main`.
+- Confirm all Cargo, npm, Tauri, manifest, docs, and release versions are
+  `0.1.2`/`v0.1.2`.
+- Confirm Gemma 4 is the only configured model and fallback models are disabled.
+- Confirm Safe is the startup Hermes mode and Agentic requires an expiring
+  approval session.
+- Confirm public documentation matches actual Safe and Agentic behavior.
+- Review the final dependency and license inventory.
 
 Exit criteria:
 
-- Each evidence input has a clear manual test and a clear failure path.
-- No evidence path can become an instruction or an acting permission.
+- No contradictory capability claims.
+- No uncommitted release changes.
+- No stale version references in current release instructions.
 
-## Phase 4: Local Memory and Hermes RAG
+## 2. Automated Validation
 
-Goal: make Hermes useful as a research, local RAG, and memory-transfer helper while keeping computer-control surfaces out.
+Run:
 
-- Keep Hermes enabled by default for Iris-owned local memory query and staged memory proposal.
-- Keep exposed Hermes tools limited to `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
-- Route natural Iris online/research requests through Hermes.
-- Confirm proposals stay staged until Iris/user approval.
-- Confirm OneDrive remains cold archive policy only.
-- Support manual desktop commands for Hermes status, local reasoning, local research, code suggestion text, staging, accept, and reject.
-
-Exit criteria:
-
-- `cargo run -p iris-runtime -- --dashboard-json` reports Hermes as enabled sandboxed research/RAG with no acting tools.
-- Manual testing shows Hermes can query approved memory and propose staged memory.
-- Manual testing shows Iris can route online/research requests through Hermes web research.
-- Manual testing shows Hermes cannot write active memory without explicit accept and cannot access OneDrive.
-
-## Phase 5: Release Hardening
-
-Goal: make the source-first Windows release boring to validate.
-
-- Run the full public validation sequence from `AGENTS.md`.
-- Keep installer and ZIP flows aligned with `docs/download-and-run.md`.
-- Keep CI limited to source, diagnostics, docs, compatibility, and safety-preserving tests.
-- Update public docs only for behavior that is actually implemented and tested.
+```powershell
+npm run test:voice
+npm run test:python
+cargo fmt --all -- --check
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p xtask
+cargo run -p iris-runtime -- --self-check
+cargo run -p iris-runtime -- --dashboard-json
+scripts\test_release_model_e2e.ps1
+scripts\test_windows_release_download.ps1
+scripts\test_windows_beginner_installer.ps1
+scripts\test_windows_installer.ps1
+git diff --check
+```
 
 Exit criteria:
 
-- Full validation passes.
-- Manual desktop test results are current.
-- Public docs do not claim future behavior as active behavior.
+- Every command passes.
+- Live Hermes ACP tests pass serially or through their singleton test lock.
+- No test-started Iris, Hermes, browser, Python, Cargo, or model process remains.
 
-## Explicit Non-Goals Until Later
+## 3. Beginner Installer Acceptance
 
-- No new model routing.
-- No fallback models.
-- No cloud model/API calls.
-- No clipboard access.
-- Browser automation only inside an approved Agentic Session with the dedicated
-  Iris profile and confirmation gates.
-- No arbitrary acting plugins.
-- No autonomous computer use.
-- No new dashboards or settings panels unless a tested manual failure requires one.
+- Build `iris-windows-installer.zip` and its SHA256.
+- Extract it into a clean folder.
+- Double-click `Install Iris.bat` without opening PowerShell manually.
+- Confirm the payload hash is verified before installation.
+- Test one machine with prerequisites present.
+- Test one clean Windows user or VM with at least one missing prerequisite.
+- Confirm the setup wizard runs before final self-check.
+- Confirm declined repairs remain declined and produce clear next steps.
+- Confirm successful installation creates working Desktop and Start Menu
+  shortcuts and opens Iris.
+- Upgrade over an existing install and verify `.iris-data` is preserved.
+- Uninstall and verify managed files/shortcuts are removed while user data is
+  not silently deleted.
+
+Exit criteria:
+
+- A nontechnical user needs only: download, extract, double-click, follow the
+  wizard.
+- Every failure names the missing prerequisite and recovery action.
+
+## 4. Installed-App Manual Acceptance
+
+Run two consecutive passes from the installed Desktop shortcut:
+
+- typed conversation;
+- wake word and push-to-talk;
+- speech interruption and Panic Stop;
+- image and text attachment;
+- camera, screen-area, video-frame, and document OCR;
+- Dynamic System Context status/on/off/reset;
+- Safe Hermes status, memory query, research, staging, accept, and reject;
+- Agentic session creation, ordinary file task, isolated browser research,
+  denied high-risk action, expiry, and cleanup;
+- close/relaunch and duplicate-launch handling.
+
+Record:
+
+- exact visible mismatches;
+- response and voice latency;
+- fresh diagnostics;
+- process cleanup after exit.
+
+Exit criteria:
+
+- Two passes with no unauthorized action, crash, stuck listening state, clipped
+  speech start, unexplained error, or orphaned Iris-owned process.
+
+## 5. Security And Privacy Gate
+
+- CI and all CodeQL language jobs pass on the release commit.
+- Dependency Review passes for the release PR if a PR is used.
+- Dependabot, secret scanning, and code scanning alerts are reviewed.
+- Tauri CSP remains restrictive.
+- Release ZIP contains no `.iris-data`, browser profile, downloads, credentials,
+  diagnostics, memory, or Hermes home state.
+- Logs remain bounded and redact sensitive values.
+- Installer uses only official prerequisite links and fixed allowlisted repair
+  commands.
+- Browser login, consequential submissions, executable downloads, credentials,
+  payments, destructive Git, installs/admin, and scope expansion retain
+  separate approval.
+
+Exit criteria:
+
+- No unresolved high/critical security finding.
+- No secret or user data in repository history or release assets.
+
+## 6. Publish `v0.1.2`
+
+- Commit the release candidate atomically.
+- Push the verified commit.
+- Wait for CI and CodeQL success on that exact SHA.
+- Create and push annotated tag `v0.1.2`.
+- Confirm the release workflow uploads:
+  - `iris-windows-installer.zip`
+  - `iris-windows-installer.zip.sha256`
+  - `iris-windows.zip`
+  - `iris-windows.zip.sha256`
+  - `install-iris-windows.ps1`
+  - `install-iris-windows.ps1.sha256`
+- Download the assets back from GitHub and verify all published hashes.
+- Run the beginner install once from the downloaded GitHub asset, not a local
+  build.
+- Update release notes with prerequisites, safety boundaries, known
+  limitations, and uninstall instructions.
+
+Exit criteria:
+
+- GitHub's Latest release points to `v0.1.2`.
+- Published assets match the validated commit and documented behavior.
+
+## 7. Production-Trusted Installer
+
+Required before broad public distribution, but not before Alejandro's
+single-user release:
+
+- Obtain a production-trusted code-signing path.
+- Build and sign MSIX/App Installer assets.
+- Verify install, upgrade, uninstall, publisher identity, SmartScreen behavior,
+  and update rollback on a clean Windows VM.
+- Publish signed assets only after signature and package checks pass.
+
+Do not present a self-signed package as a normal beginner installer.
+
+## Final Production Standard
+
+Iris is production-ready when repository, CI, documented behavior, GitHub
+assets, installed behavior, and diagnostics agree; the GitHub-downloaded
+beginner bundle passes clean-machine installation; two consecutive installed
+gauntlets pass; and no unauthorized action, secret exposure, unexplained crash,
+or orphaned process remains.

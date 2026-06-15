@@ -11,6 +11,9 @@ $zipPath = Join-Path $distRoot "iris-windows.zip"
 $shaPath = "$zipPath.sha256"
 $installerPath = Join-Path $distRoot "install-iris-windows.ps1"
 $installerShaPath = "$installerPath.sha256"
+$beginnerBundleRoot = Join-Path $stagingRoot "iris-windows-installer"
+$beginnerZipPath = Join-Path $distRoot "iris-windows-installer.zip"
+$beginnerShaPath = "$beginnerZipPath.sha256"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -74,6 +77,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "SECURITY.md") -Destination (Join
 Copy-RequiredFile -Source (Join-Path $repoRoot "known-limitations.md") -Destination (Join-Path $packageRoot "known-limitations.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\download-and-run.md") -Destination (Join-Path $packageRoot "README_RELEASE.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\dynamic-system-context.md") -Destination (Join-Path $packageRoot "docs\dynamic-system-context.md")
+Copy-RequiredFile -Source (Join-Path $repoRoot "docs\finish-checklist.md") -Destination (Join-Path $packageRoot "docs\finish-checklist.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\installer-preflight.md") -Destination (Join-Path $packageRoot "docs\installer-preflight.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Destination (Join-Path $packageRoot "docs\iris-architecture.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\windows-installer.md") -Destination (Join-Path $packageRoot "docs\windows-installer.md")
@@ -99,6 +103,23 @@ Copy-RequiredDirectory -Source (Join-Path $browserRuntime "node_modules") -Desti
 Copy-RequiredDirectory -Source (Join-Path $browserRuntime "browsers") -Destination (Join-Path $packageRoot ".iris-runtime\browser\browsers")
 Copy-RequiredFile -Source (Join-Path $browserRuntime "package.json") -Destination (Join-Path $packageRoot ".iris-runtime\browser\package.json")
 Copy-RequiredFile -Source (Join-Path $browserRuntime "package-lock.json") -Destination (Join-Path $packageRoot ".iris-runtime\browser\package-lock.json")
+
+$packageRootResolved = [System.IO.Path]::GetFullPath($packageRoot).TrimEnd("\")
+foreach ($cacheDirectory in @(Get-ChildItem -LiteralPath $packageRootResolved -Recurse -Force -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue)) {
+    $cachePath = [System.IO.Path]::GetFullPath($cacheDirectory.FullName)
+    if (-not $cachePath.StartsWith($packageRootResolved + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove packaged cache outside staging root: $cachePath"
+    }
+    Remove-Item -LiteralPath $cachePath -Recurse -Force
+}
+foreach ($bytecodeFile in @(Get-ChildItem -LiteralPath $packageRootResolved -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in @(".pyc", ".pyo") })) {
+    $bytecodePath = [System.IO.Path]::GetFullPath($bytecodeFile.FullName)
+    if (-not $bytecodePath.StartsWith($packageRootResolved + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove packaged bytecode outside staging root: $bytecodePath"
+    }
+    Remove-Item -LiteralPath $bytecodePath -Force
+}
 
 $runtimeManifest = [ordered]@{
     hermes_agent = [ordered]@{
@@ -349,9 +370,54 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1
 $installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $installerShaPath -Value "$installerHash  install-iris-windows.ps1" -Encoding ascii
 
+$beginnerBat = @'
+@echo off
+setlocal
+title Install Iris
+set "IRIS_INSTALLER_ROOT=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_INSTALLER_ROOT%install-iris-windows.ps1" -SourceZip "%IRIS_INSTALLER_ROOT%iris-windows.zip" -Sha256Path "%IRIS_INSTALLER_ROOT%iris-windows.zip.sha256" -RunSetup -LaunchAfterInstall %*
+if errorlevel 1 (
+  echo.
+  echo Iris installation did not complete. Review the error above, then run Install Iris.bat again.
+  pause
+  exit /b 1
+)
+exit /b 0
+'@
+
+$beginnerReadme = @'
+IRIS WINDOWS INSTALLER
+
+1. Keep all files in this folder together.
+2. Double-click "Install Iris.bat".
+3. Approve only the setup repairs you want Iris to perform.
+4. The installer verifies the packaged SHA256 before copying files.
+5. When installation succeeds, Iris opens and Desktop/Start Menu shortcuts are available.
+
+Iris installs for the current Windows user under:
+%LOCALAPPDATA%\Programs\Iris
+
+The setup wizard may offer approved local prerequisites such as WebView2,
+Ollama, the configured Gemma model, Python voice packages, or Tesseract OCR.
+It does not add a cloud model API or silently enable Agentic mode.
+'@
+
+New-Item -ItemType Directory -Force -Path $beginnerBundleRoot | Out-Null
+Copy-RequiredFile -Source $zipPath -Destination (Join-Path $beginnerBundleRoot "iris-windows.zip")
+Copy-RequiredFile -Source $shaPath -Destination (Join-Path $beginnerBundleRoot "iris-windows.zip.sha256")
+Copy-RequiredFile -Source $installerPath -Destination (Join-Path $beginnerBundleRoot "install-iris-windows.ps1")
+Set-Content -LiteralPath (Join-Path $beginnerBundleRoot "Install Iris.bat") -Value $beginnerBat -Encoding ascii
+Set-Content -LiteralPath (Join-Path $beginnerBundleRoot "README.txt") -Value $beginnerReadme -Encoding ascii
+Compress-Archive -Path (Join-Path $beginnerBundleRoot "*") -DestinationPath $beginnerZipPath -Force
+$beginnerHash = (Get-FileHash -LiteralPath $beginnerZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+Set-Content -LiteralPath $beginnerShaPath -Value "$beginnerHash  iris-windows-installer.zip" -Encoding ascii
+
 Write-Host "Iris Windows ZIP: $zipPath"
 Write-Host "Iris Windows SHA256: $shaPath"
 Write-Host "SHA256: $hash"
 Write-Host "Iris Windows installer wrapper: $installerPath"
 Write-Host "Iris Windows installer wrapper SHA256: $installerShaPath"
 Write-Host "Installer SHA256: $installerHash"
+Write-Host "Iris beginner installer bundle: $beginnerZipPath"
+Write-Host "Iris beginner installer SHA256: $beginnerShaPath"
+Write-Host "Beginner installer SHA256: $beginnerHash"

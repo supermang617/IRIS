@@ -56,7 +56,10 @@ fn run() -> Result<(), String> {
 fn print_startup_banner() -> Result<(), String> {
     let snapshot = current_dashboard_snapshot()?;
 
-    println!("Project Iris v0.1 initialized.");
+    println!(
+        "{} {} initialized.",
+        snapshot.project_name, snapshot.project_version
+    );
     println!("{}", snapshot.core_invariant);
     println!("Safety status:");
     for line in iris_ui::safety_status_lines() {

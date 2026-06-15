@@ -4,9 +4,10 @@ Produced by Alejandro Pinto.
 
 Contact: super.mangmail@gmail.com
 
-Project Iris is available as a portable Windows ZIP when a release asset named
-`iris-windows.zip` is attached to a GitHub Release. The repository license covers
-the source code, not third-party model files or downloaded assets.
+Project Iris is distributed through GitHub Releases. The recommended beginner
+download is `iris-windows-installer.zip`. The portable `iris-windows.zip`
+remains available for advanced/manual use. The repository license covers the
+source code, not third-party model files or downloaded assets.
 
 ## Prerequisites
 
@@ -33,7 +34,27 @@ for status, or use `dynamic context off`, `dynamic context on`, and
 `dynamic context reset` for control. The profile stores aggregate metrics only,
 not prompt or attachment text.
 
-## Download the Portable ZIP
+## Beginner Install
+
+1. Open the [latest Iris release](https://github.com/supermang617/IRIS/releases/latest).
+2. Download `iris-windows-installer.zip`.
+3. Extract the ZIP.
+4. Double-click `Install Iris.bat`.
+5. Follow the setup wizard. Approve only the prerequisite repairs you want it
+   to perform.
+
+The beginner bundle contains the Iris payload ZIP, its SHA256 file, the
+installer, and a double-click launcher. The installer verifies the payload
+before copying anything, installs Iris for the current user under
+`%LOCALAPPDATA%\Programs\Iris`, creates Desktop and Start Menu shortcuts, runs
+the setup wizard, performs a live self-check, and opens Iris after success.
+
+Windows may display a SmartScreen warning because the current PowerShell/Batch
+installer is not code-signed. Do not bypass a publisher warning unless the
+files came from the official `supermang617/IRIS` GitHub release and the release
+checks have passed.
+
+## Portable/Advanced Download
 
 1. Open the GitHub Release for `supermang617/IRIS`.
 2. Download `iris-windows.zip` and `iris-windows.zip.sha256`.
@@ -51,7 +72,7 @@ $actual = (Get-FileHash .\iris-windows.zip -Algorithm SHA256).Hash.ToLowerInvari
 if ($expected -ne $actual) { throw "SHA256 mismatch" }
 ```
 
-## Run Iris
+## Portable Setup And Run
 
 First run the setup wizard:
 
@@ -175,9 +196,8 @@ Manual Windows launcher from the repository root:
 
 Then follow `docs/manual-test.md`.
 
-For public v0.1.1 release testing, use
-`docs/public-launch-checklist-v0.1.1.md` and the GitHub manual tester issue
-template.
+For release testing, use `docs/finish-checklist.md` and the GitHub manual tester
+issue template.
 
 ## Contribution Boundary
 

@@ -1,5 +1,8 @@
 # Iris v0.1.1 Public Launch Checklist
 
+Historical checklist for the published `v0.1.1` package. Use
+`docs/finish-checklist.md` for the current `v0.1.2` release candidate.
+
 Use this checklist before sending Iris to a manual tester.
 
 ## Release
