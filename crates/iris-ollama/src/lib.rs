@@ -30,6 +30,7 @@ pub struct OllamaSettings {
     pub generate_url: String,
     pub model_id: String,
     pub num_ctx: u32,
+    pub num_gpu_layers: u32,
 }
 
 impl OllamaSettings {
@@ -39,6 +40,7 @@ impl OllamaSettings {
             generate_url: DEFAULT_OLLAMA_GENERATE_URL.to_string(),
             model_id: manifest.model_policy.model_id.clone(),
             num_ctx: manifest.model_policy.num_ctx_ceiling,
+            num_gpu_layers: manifest.model_policy.num_gpu_layers,
         })
     }
 
@@ -149,6 +151,7 @@ impl OllamaClient {
                 top_k: None,
                 top_p: None,
                 seed: None,
+                num_gpu: Some(self.settings.num_gpu_layers),
             },
         };
 
@@ -298,6 +301,7 @@ impl OllamaClient {
                 top_k: Some(1),
                 top_p: Some(0.1),
                 seed: Some(7),
+                num_gpu: Some(self.settings.num_gpu_layers),
             },
         };
 
@@ -384,6 +388,8 @@ struct GenerateOptions {
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     seed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_gpu: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -532,6 +538,7 @@ mod tests {
 
         assert_eq!(settings.model_id, "huihui_ai/gemma-4-abliterated:e2b");
         assert_eq!(settings.num_ctx, 8192);
+        assert_eq!(settings.num_gpu_layers, 1);
         settings.validate_loopback().unwrap();
     }
 
@@ -541,6 +548,7 @@ mod tests {
             generate_url: "https://example.com/api/generate".to_string(),
             model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
             num_ctx: 8192,
+            num_gpu_layers: 1,
         };
 
         assert!(settings.validate_loopback().is_err());
@@ -575,6 +583,7 @@ mod tests {
                 top_k: None,
                 top_p: None,
                 seed: None,
+                num_gpu: Some(1),
             },
         };
 
@@ -586,6 +595,7 @@ mod tests {
         assert!(json["options"].get("top_k").is_none());
         assert!(json["options"].get("top_p").is_none());
         assert!(json["options"].get("seed").is_none());
+        assert_eq!(json["options"]["num_gpu"], 1);
     }
 
     #[test]
@@ -608,6 +618,7 @@ mod tests {
                 top_k: Some(1),
                 top_p: Some(0.1),
                 seed: Some(7),
+                num_gpu: Some(1),
             },
         };
 
@@ -618,6 +629,7 @@ mod tests {
         assert_eq!(json["options"]["top_k"], 1);
         assert!((json["options"]["top_p"].as_f64().unwrap() - 0.1).abs() < 0.000_001);
         assert_eq!(json["options"]["seed"], 7);
+        assert_eq!(json["options"]["num_gpu"], 1);
     }
 
     #[test]

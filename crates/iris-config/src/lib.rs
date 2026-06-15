@@ -31,6 +31,7 @@ pub struct ModelPolicy {
     pub model_display_name: String,
     pub parameter_size: String,
     pub num_ctx_ceiling: u32,
+    pub num_gpu_layers: u32,
     pub architecture: String,
     pub single_model_only: bool,
     pub fallback_models_allowed: bool,
@@ -161,6 +162,10 @@ impl ProjectManifest {
         require(
             self.model_policy.num_ctx_ceiling == 8192,
             "manifest num_ctx ceiling must be exactly 8192",
+        )?;
+        require(
+            self.model_policy.num_gpu_layers == 1,
+            "Gemma 4 must limit Ollama GPU offload to one layer on this Windows target",
         )?;
         require(
             self.model_policy.architecture == "gemma4",
@@ -314,6 +319,7 @@ mod tests {
         assert_eq!(selection.provider, "ollama_local");
         assert_eq!(selection.parameter_size, "5.1B");
         assert_eq!(selection.effective_num_ctx_ceiling, 8192);
+        assert_eq!(manifest.model_policy.num_gpu_layers, 1);
         assert!(manifest.model_policy.vision_capable);
         assert!(manifest.model_policy.image_input_capable);
         assert!(

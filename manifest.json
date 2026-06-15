@@ -12,6 +12,7 @@
     "model_display_name": "Huihui Gemma 4 Abliterated E2B",
     "parameter_size": "5.1B",
     "num_ctx_ceiling": 8192,
+    "num_gpu_layers": 1,
     "architecture": "gemma4",
     "single_model_only": true,
     "fallback_models_allowed": false,
