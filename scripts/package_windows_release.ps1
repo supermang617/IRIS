@@ -171,6 +171,96 @@ Require-File -Path $browserExe
 
 Set-Location -LiteralPath $root
 
+function Find-Python311Home {
+    $candidateExecutables = New-Object System.Collections.Generic.List[string]
+
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uv) {
+        try {
+            $uvPython = (& $uv.Source python find 3.11 2>$null | Select-Object -First 1)
+            if ($uvPython) {
+                $candidateExecutables.Add([string]$uvPython) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    try {
+        $pyPython = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+        if ($pyPython) {
+            $candidateExecutables.Add([string]$pyPython) | Out-Null
+        }
+    } catch {
+    }
+
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) {
+        try {
+            $pathPython = (& $python.Source -c "import sys; print(sys.executable if sys.version_info[:2] == (3, 11) else '')" 2>$null | Select-Object -First 1)
+            if ($pathPython) {
+                $candidateExecutables.Add([string]$pathPython) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    foreach ($globRoot in @(
+        (Join-Path $env:APPDATA "uv\python"),
+        (Join-Path $env:LOCALAPPDATA "uv\python")
+    )) {
+        if (Test-Path -LiteralPath $globRoot -PathType Container) {
+            foreach ($candidate in @(Get-ChildItem -LiteralPath $globRoot -Directory -Filter "cpython-3.11*" -ErrorAction SilentlyContinue)) {
+                $candidateExecutables.Add((Join-Path $candidate.FullName "python.exe")) | Out-Null
+            }
+        }
+    }
+    $candidateExecutables.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")) | Out-Null
+
+    foreach ($candidate in @($candidateExecutables)) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+        try {
+            $version = (& $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Select-Object -First 1)
+            if ($version -eq "3.11") {
+                return (Split-Path -Parent ([System.IO.Path]::GetFullPath($candidate)))
+            }
+        } catch {
+            continue
+        }
+    }
+
+    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run `uv python install 3.11`, then start Iris again."
+}
+
+function Test-HermesVenv {
+    $python = Join-Path $root ".iris-runtime\hermes\.venv\Scripts\python.exe"
+    try {
+        $output = & $python -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>$null
+        return ($LASTEXITCODE -eq 0 -and (@($output) -join "`n").Trim() -eq "0.16.0`n0.9.0")
+    } catch {
+        return $false
+    }
+}
+
+function Repair-HermesVenv {
+    if (Test-HermesVenv) {
+        return
+    }
+    $cfg = Join-Path $root ".iris-runtime\hermes\.venv\pyvenv.cfg"
+    Require-File -Path $cfg
+    $pythonHome = Find-Python311Home
+    @(
+        "home = $pythonHome",
+        "implementation = CPython",
+        "version_info = 3.11",
+        "include-system-site-packages = false"
+    ) | Set-Content -LiteralPath $cfg -Encoding ascii
+    if (-not (Test-HermesVenv)) {
+        throw "Bundled Hermes Agent runtime could not be repaired against local Python 3.11."
+    }
+}
+
 function Test-CommandAvailable {
     param([Parameter(Mandatory = $true)][string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -310,12 +400,28 @@ function Test-IrisAlreadyRunning {
     return $false
 }
 
-if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
+function Invoke-IrisSelfCheck {
+    & $runtimeExe --self-check
+    if ($LASTEXITCODE -eq 0) {
+        return
+    }
+
+    $firstExitCode = $LASTEXITCODE
+    Write-Host "Iris self-check failed with exit code $firstExitCode. Restarting Ollama once and retrying."
+    Stop-OllamaForIris
+    Start-Sleep -Seconds 2
     Start-OllamaForIris
     & $runtimeExe --self-check
+}
+
+if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
+    Repair-HermesVenv
+    Start-OllamaForIris
+    Invoke-IrisSelfCheck
     exit $LASTEXITCODE
 }
 
+Repair-HermesVenv
 Start-OllamaForIris
 if (Test-IrisAlreadyRunning -ExecutablePath $desktopExe) {
     exit 0

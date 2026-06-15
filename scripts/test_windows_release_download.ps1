@@ -70,7 +70,8 @@ function Invoke-CapturedCommand {
 
 function Test-ExpectedCiPrerequisiteFailure {
     param([Parameter(Mandatory = $true)][string]$Output)
-    return $Output.Contains("Ollama is not available on PATH") -or
+    return $Output.Contains("Python 3.11 is required to repair the bundled Hermes Agent runtime") -or
+        $Output.Contains("Ollama is not available on PATH") -or
         $Output.Contains("Ollama/model health check failed") -or
         $Output.Contains("[FAIL] Ollama executable") -or
         $Output.Contains("[FAIL] Configured Ollama model")
@@ -167,6 +168,13 @@ try {
         }
     } elseif ($selfCheck.ExitCode -ne 0) {
         throw "Release launcher self-check failed with exit code $($selfCheck.ExitCode): $($selfCheck.Output)"
+    }
+    if (-not $selfCheck.Output.Contains("Python 3.11 is required to repair the bundled Hermes Agent runtime")) {
+        $hermesPython = Join-Path $extractRoot ".iris-runtime\hermes\.venv\Scripts\python.exe"
+        $hermesVersions = & $hermesPython -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>&1
+        if ($LASTEXITCODE -ne 0 -or ((@($hermesVersions) -join "`n").Trim() -ne "0.16.0`n0.9.0")) {
+            throw "Packaged Hermes Python failed after launcher repair: $(@($hermesVersions) -join "`n")"
+        }
     }
 
     $setupScript = Join-Path $extractRoot "Iris Setup Wizard.ps1"

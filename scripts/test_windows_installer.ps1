@@ -56,6 +56,11 @@ try {
         $chromeHash -ne $runtimeManifest.chrome_for_testing.executable_sha256) {
         throw "Installed Agentic runtime version/hash verification failed."
     }
+    $hermesPython = Join-Path $installRoot ".iris-runtime\hermes\.venv\Scripts\python.exe"
+    $hermesVersions = & $hermesPython -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>&1
+    if ($LASTEXITCODE -ne 0 -or ((@($hermesVersions) -join "`n").Trim() -ne "0.16.0`n0.9.0")) {
+        throw "Installed Hermes Python is not locally runnable with the pinned packages: $(@($hermesVersions) -join "`n")"
+    }
 
     foreach ($shortcut in @(
         (Join-Path $startMenuDir "Iris.lnk"),

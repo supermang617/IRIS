@@ -126,6 +126,105 @@ function Copy-ReleaseFiles {
     }
 }
 
+function Find-Python311Home {
+    $candidateExecutables = New-Object System.Collections.Generic.List[string]
+
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uv) {
+        try {
+            $uvPython = (& $uv.Source python find 3.11 2>$null | Select-Object -First 1)
+            if ($uvPython) {
+                $candidateExecutables.Add([string]$uvPython) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    try {
+        $pyPython = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+        if ($pyPython) {
+            $candidateExecutables.Add([string]$pyPython) | Out-Null
+        }
+    } catch {
+    }
+
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) {
+        try {
+            $pathPython = (& $python.Source -c "import sys; print(sys.executable if sys.version_info[:2] == (3, 11) else '')" 2>$null | Select-Object -First 1)
+            if ($pathPython) {
+                $candidateExecutables.Add([string]$pathPython) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    foreach ($globRoot in @(
+        (Join-Path $env:APPDATA "uv\python"),
+        (Join-Path $env:LOCALAPPDATA "uv\python")
+    )) {
+        if (Test-Path -LiteralPath $globRoot -PathType Container) {
+            foreach ($candidate in @(Get-ChildItem -LiteralPath $globRoot -Directory -Filter "cpython-3.11*" -ErrorAction SilentlyContinue)) {
+                $candidateExecutables.Add((Join-Path $candidate.FullName "python.exe")) | Out-Null
+            }
+        }
+    }
+    $candidateExecutables.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")) | Out-Null
+
+    foreach ($candidate in @($candidateExecutables)) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+        try {
+            $version = (& $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Select-Object -First 1)
+            if ($version -eq "3.11") {
+                return (Split-Path -Parent ([System.IO.Path]::GetFullPath($candidate)))
+            }
+        } catch {
+            continue
+        }
+    }
+
+    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run `uv python install 3.11`, then run the Iris installer again."
+}
+
+function Test-HermesVenv {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $python = Join-Path $Root ".iris-runtime\hermes\.venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        return $false
+    }
+    try {
+        $output = & $python -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>$null
+        return ($LASTEXITCODE -eq 0 -and (@($output) -join "`n").Trim() -eq "0.16.0`n0.9.0")
+    } catch {
+        return $false
+    }
+}
+
+function Repair-HermesVenv {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    if (Test-HermesVenv -Root $Root) {
+        return
+    }
+
+    $cfg = Join-Path $Root ".iris-runtime\hermes\.venv\pyvenv.cfg"
+    Require-File -Path (Join-Path $Root ".iris-runtime\hermes\.venv\Scripts\python.exe")
+    Require-File -Path $cfg
+
+    $pythonHome = Find-Python311Home
+    @(
+        "home = $pythonHome",
+        "implementation = CPython",
+        "version_info = 3.11",
+        "include-system-site-packages = false"
+    ) | Set-Content -LiteralPath $cfg -Encoding ascii
+
+    if (-not (Test-HermesVenv -Root $Root)) {
+        throw "Bundled Hermes Agent runtime could not be repaired against local Python 3.11."
+    }
+}
+
 function New-Shortcut {
     param(
         [Parameter(Mandatory = $true)][string]$ShortcutPath,
@@ -226,6 +325,7 @@ try {
     Write-Host "Target: $installRootResolved"
 
     Copy-ReleaseFiles -SourceRoot $sourceRoot -DestinationRoot $installRootResolved
+    Repair-HermesVenv -Root $installRootResolved
 
     if (-not $StartMenuDir) {
         $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Iris"
