@@ -46,6 +46,27 @@ if ($actualInstallerHash -ne $expectedInstallerHash.ToLowerInvariant()) {
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-smoke-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+$ciMode = $env:GITHUB_ACTIONS -eq "true"
+
+function Invoke-CapturedCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    $output = & $FilePath @Arguments 2>&1
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = ($output -join "`n")
+    }
+}
+
+function Test-ExpectedCiPrerequisiteFailure {
+    param([Parameter(Mandatory = $true)][string]$Output)
+    return $Output.Contains("Ollama is not available on PATH") -or
+        $Output.Contains("Ollama/model health check failed") -or
+        $Output.Contains("[FAIL] Ollama executable") -or
+        $Output.Contains("[FAIL] Configured Ollama model")
+}
 
 try {
     Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
@@ -127,21 +148,34 @@ try {
     $before = Get-ListeningLoopbackState
     $startScript = Join-Path $extractRoot "Start Iris.ps1"
     $env:IRIS_SELF_CHECK = "1"
-    & $startScript --self-check
-    $exitCode = $LASTEXITCODE
+    $selfCheck = Invoke-CapturedCommand -FilePath $startScript -Arguments @("--self-check")
     Remove-Item Env:\IRIS_SELF_CHECK -ErrorAction SilentlyContinue
-    if ($exitCode -ne 0) {
-        throw "Release launcher self-check failed with exit code $exitCode"
+    if ($ciMode) {
+        if ($selfCheck.ExitCode -eq 0) {
+            throw "CI release launcher self-check unexpectedly succeeded without runner prerequisites."
+        }
+        if (-not (Test-ExpectedCiPrerequisiteFailure -Output $selfCheck.Output)) {
+            throw "CI release launcher self-check did not report a clear prerequisite failure: $($selfCheck.Output)"
+        }
+    } elseif ($selfCheck.ExitCode -ne 0) {
+        throw "Release launcher self-check failed with exit code $($selfCheck.ExitCode): $($selfCheck.Output)"
     }
 
     $setupScript = Join-Path $extractRoot "Iris Setup Wizard.ps1"
     $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY = "1"
-    & $setupScript -NonInteractive
-    $setupExitCode = $LASTEXITCODE
+    $setupOutput = & $setupScript -NonInteractive 2>&1
+    $setup = [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output = ($setupOutput -join "`n")
+    }
     Remove-Item Env:\IRIS_PREFLIGHT_FAST_LOCAL_ONLY -ErrorAction SilentlyContinue
     Set-Location -LiteralPath $originalLocation
-    if ($setupExitCode -ne 0) {
-        throw "Packaged setup wizard failed with exit code $setupExitCode"
+    if ($ciMode) {
+        if ($setup.ExitCode -ne 0 -and -not (Test-ExpectedCiPrerequisiteFailure -Output $setup.Output)) {
+            throw "Packaged setup wizard failed for an unexpected reason in CI: $($setup.Output)"
+        }
+    } elseif ($setup.ExitCode -ne 0) {
+        throw "Packaged setup wizard failed with exit code $($setup.ExitCode): $($setup.Output)"
     }
 
     $after = Get-ListeningLoopbackState

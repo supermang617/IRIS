@@ -1115,6 +1115,14 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
             ));
         }
     }
+    for required in [
+        "CI release launcher self-check unexpectedly succeeded without runner prerequisites",
+        "Test-ExpectedCiPrerequisiteFailure",
+    ] {
+        if !release_smoke.contains(required) {
+            return Err(format!("release ZIP smoke test missing `{required}`"));
+        }
+    }
     let setup_position = installer
         .find("if ($RunSetup)")
         .ok_or_else(|| "installer missing setup execution".to_string())?;
