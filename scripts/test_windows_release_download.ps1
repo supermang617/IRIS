@@ -53,9 +53,17 @@ function Invoke-CapturedCommand {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
-    $output = & $FilePath @Arguments 2>&1
+    $output = @()
+    $exitCode = 0
+    try {
+        $output = & $FilePath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } catch {
+        $output = @($output; ($_ | Out-String))
+        $exitCode = 1
+    }
     [pscustomobject]@{
-        ExitCode = $LASTEXITCODE
+        ExitCode = $exitCode
         Output = ($output -join "`n")
     }
 }
