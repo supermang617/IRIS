@@ -13,7 +13,7 @@ the source code, not third-party model files or downloaded assets.
 - Windows 10 or Windows 11.
 - Microsoft Edge WebView2 Runtime.
 - Ollama running locally on `127.0.0.1:11434` with
-  `qwen3.5:9b` available.
+  `huihui_ai/gemma-4-abliterated:e2b` available.
 - Python is required only for Kokoro TTS helper use. The portable ZIP includes
   the Kokoro model and voice files, but Python packages such as `kokoro-onnx`
   and `soundfile` must be installed by the user if TTS helper execution is used.
@@ -78,6 +78,10 @@ To install from the extracted folder instead of staying portable:
 ```powershell
 .\Install Iris.bat
 ```
+
+After installation, use the `Iris` Desktop or Start Menu shortcut. It launches
+the GUI directly without opening a command prompt; Ollama and voice warm-up run
+behind the visible Iris window.
 
 For a non-destructive startup check:
 

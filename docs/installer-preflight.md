@@ -63,7 +63,7 @@ Run it from the portable release folder:
 - Installed RAM and free disk space.
 - Microsoft Edge WebView2 Runtime.
 - Ollama executable and local service model list.
-- Required model: `qwen3.5:9b`.
+- Required model: `huihui_ai/gemma-4-abliterated:e2b`.
 - Local Tesseract OCR for document-image text extraction.
 - Bundled Kokoro and Whisper assets.
 - Python availability and optional Kokoro TTS packages.
@@ -89,7 +89,7 @@ The interactive setup wizard can offer these repairs only:
   page.
 - Start the local Ollama service.
 - Download the configured local model with
-  `ollama pull qwen3.5:9b`.
+  `ollama pull huihui_ai/gemma-4-abliterated:e2b`.
 - Install Python through `winget`, or show Python's official Windows page.
 - Install local Kokoro voice helper packages with
   `python -m pip install kokoro-onnx soundfile`.

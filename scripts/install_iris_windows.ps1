@@ -239,10 +239,10 @@ try {
 
     if (-not $SkipShortcuts) {
         $powershell = (Get-Command powershell.exe).Source
-        New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "Start Iris.bat") -WorkingDirectory $installRootResolved
+        New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris Setup Wizard.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Iris Setup Wizard.ps1`"" -WorkingDirectory $installRootResolved
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Uninstall Iris.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Uninstall Iris.ps1`"" -WorkingDirectory $installRootResolved
-        New-Shortcut -ShortcutPath (Join-Path $DesktopDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "Start Iris.bat") -WorkingDirectory $installRootResolved
+        New-Shortcut -ShortcutPath (Join-Path $DesktopDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
     }
 
     $manifest = [ordered]@{

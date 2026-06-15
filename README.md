@@ -13,7 +13,7 @@ This repository is public and source-first so people can inspect, test, and subm
 - Platform: Windows.
 - UI shell: Tauri.
 - Text and vision model provider: local Ollama loopback.
-- Configured model: `qwen3.5:9b`.
+- Configured model: `huihui_ai/gemma-4-abliterated:e2b`.
 - TTS: Kokoro ONNX through the local Python helper, voice `af_heart`.
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.
 - Document-image OCR: local Tesseract OCR.

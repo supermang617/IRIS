@@ -8,61 +8,37 @@
   </head>
   <body>
     <main class="shell">
-      <section class="iris-console" aria-label="Iris text and voice">
-        <section id="attachment-strip" class="attachment-strip" aria-label="Attached prompt evidence" hidden>
-          <div id="attachment-preview" class="attachment-preview" aria-hidden="true"></div>
-          <div id="attachment-label" class="attachment-label"></div>
-          <button id="attachment-remove" class="memory-action" type="button" title="Remove attachment" aria-label="Remove attachment">-</button>
+      <section class="iris-console" aria-label="Iris assistant">
+        <header id="window-drag-strip" class="titlebar" data-tauri-drag-region>
+          <div class="brand" data-tauri-drag-region>
+            <span class="brand-mark" aria-hidden="true"></span>
+            <span class="brand-name">Iris</span>
+          </div>
+          <p id="voice-status" class="voice-status" data-tauri-drag-region>
+            Wake word armed. Say Iris.
+          </p>
+          <span class="status-light" aria-hidden="true"></span>
+        </header>
+
+        <section id="response-pane" class="response-pane" aria-label="Iris response">
+          <output id="hud-output" class="hud-output" aria-live="polite">Waiting for input.</output>
         </section>
-        <div id="window-drag-strip" class="window-drag-strip" data-tauri-drag-region title="Move Iris" aria-label="Move Iris"></div>
-        <form id="hud-form" class="hud-form">
-          <div class="drag-handle" data-tauri-drag-region title="Move Iris" aria-label="Move Iris">::::</div>
-          <input id="hud-input" name="hud-input" autocomplete="off" placeholder="Message Iris" />
-          <button id="voice-button" class="icon-button" type="button" title="Push to talk" aria-label="Push to talk">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
-              <path d="M19 11a7 7 0 0 1-14 0" />
-              <path d="M12 18v3" />
-              <path d="M8 21h8" />
-            </svg>
-          </button>
-          <button id="attach-button" class="icon-button" type="button" title="Attach evidence" aria-label="Attach evidence">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M10 13.5 15.5 8a2.5 2.5 0 0 1 3.5 3.5l-7.25 7.25a4 4 0 0 1-5.65-5.65L13 6.2" />
-            </svg>
-          </button>
-          <button id="vision-button" class="icon-button" type="button" title="Camera snapshot" aria-label="Camera snapshot" aria-pressed="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 7h2l1.5-2h3L15 7h2a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3Z" />
-              <circle cx="12" cy="13" r="3.25" />
-            </svg>
-          </button>
-          <button id="screen-button" class="icon-button" type="button" title="Look under Iris" aria-label="Look under Iris">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 5h14v10H5Z" />
-              <path d="M9 19h6" />
-              <path d="M12 15v4" />
-              <path d="M8 9h8" />
-            </svg>
-          </button>
-          <input id="vision-file-input" class="hidden-file-input" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,text/plain,text/markdown,text/csv,application/json,.txt,.md,.csv,.json,.log,.rtf" />
-          <button id="memory-button" class="icon-button" type="button" title="Memory commands" aria-label="Memory commands">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 4h12v16l-6-3-6 3Z" />
-            </svg>
-          </button>
-          <button id="panic-button" class="icon-button panic-button" type="button" title="Panic Stop" aria-label="Panic Stop" aria-pressed="false">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M7 7h10v10H7Z" />
-            </svg>
-          </button>
-          <button id="send-button" class="icon-button" type="submit" title="Send" aria-label="Send">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 12h14" />
-              <path d="m13 6 6 6-6 6" />
-            </svg>
-          </button>
-        </form>
+
+        <div
+          id="response-resize-handle"
+          class="response-resize-handle"
+          role="separator"
+          aria-label="Resize response area"
+          aria-orientation="horizontal"
+          aria-valuemin="96"
+          aria-valuemax="520"
+          aria-valuenow="168"
+          tabindex="0"
+          title="Resize response area"
+        >
+          <span aria-hidden="true"></span>
+        </div>
+
         <section id="memory-panel" class="memory-panel" aria-label="Iris memories" hidden>
           <div class="memory-help">Memories are short notes Iris can use later. Limit: 240 characters each.</div>
           <div class="memory-add-row">
@@ -71,6 +47,7 @@
           </div>
           <div id="memory-list" class="memory-list"></div>
         </section>
+
         <section id="approval-panel" class="approval-panel" aria-label="Hermes approval request" hidden>
           <div>
             <strong id="approval-risk">Confirmation required</strong>
@@ -79,6 +56,7 @@
           <button id="approval-deny" class="approval-action" type="button">Deny</button>
           <button id="approval-allow" class="approval-action approval-allow" type="button">Allow once</button>
         </section>
+
         <section id="browser-panel" class="browser-panel" aria-label="Hermes browser preview" hidden>
           <div class="browser-preview-header">
             <span id="browser-url" class="browser-url"></span>
@@ -91,8 +69,81 @@
           </div>
           <img id="browser-preview-image" class="browser-preview-image" alt="Hermes browser viewport" hidden />
         </section>
-        <output id="hud-output" class="hud-output">Waiting for input.</output>
-        <p id="voice-status" class="voice-status">Wake word armed. Say Iris.</p>
+
+        <form id="hud-form" class="hud-form">
+          <section id="attachment-strip" class="attachment-strip" aria-label="Attached prompt evidence" hidden>
+            <div id="attachment-preview" class="attachment-preview" aria-hidden="true"></div>
+            <div id="attachment-label" class="attachment-label"></div>
+            <button id="attachment-remove" class="icon-button attachment-remove" type="button" title="Remove attachment" aria-label="Remove attachment">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m7 7 10 10" />
+                <path d="M17 7 7 17" />
+              </svg>
+            </button>
+          </section>
+
+          <textarea
+            id="hud-input"
+            name="hud-input"
+            rows="1"
+            autocomplete="off"
+            placeholder="Message Iris"
+            aria-label="Message Iris"
+          ></textarea>
+
+          <div class="composer-footer">
+            <div class="tool-group" aria-label="Prompt tools">
+              <button id="attach-button" class="icon-button" type="button" title="Attach evidence" aria-label="Attach evidence">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M10 13.5 15.5 8a2.5 2.5 0 0 1 3.5 3.5l-7.25 7.25a4 4 0 0 1-5.65-5.65L13 6.2" />
+                </svg>
+              </button>
+              <button id="vision-button" class="icon-button" type="button" title="Camera snapshot" aria-label="Camera snapshot" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 7h2l1.5-2h3L15 7h2a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-6a3 3 0 0 1 3-3Z" />
+                  <circle cx="12" cy="13" r="3.25" />
+                </svg>
+              </button>
+              <button id="screen-button" class="icon-button" type="button" title="Look under Iris" aria-label="Look under Iris">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 5h14v10H5Z" />
+                  <path d="M9 19h6" />
+                  <path d="M12 15v4" />
+                </svg>
+              </button>
+              <button id="memory-button" class="icon-button" type="button" title="Memory" aria-label="Memory">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <ellipse cx="12" cy="6" rx="6" ry="3" />
+                  <path d="M6 6v6c0 1.7 2.7 3 6 3s6-1.3 6-3V6" />
+                  <path d="M6 12v6c0 1.7 2.7 3 6 3s6-1.3 6-3v-6" />
+                </svg>
+              </button>
+              <button id="voice-button" class="icon-button" type="button" title="Push to talk" aria-label="Push to talk">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Z" />
+                  <path d="M19 11a7 7 0 0 1-14 0" />
+                  <path d="M12 18v3" />
+                </svg>
+              </button>
+              <button id="panic-button" class="icon-button panic-button" type="button" title="Panic Stop" aria-label="Panic Stop" aria-pressed="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7 3h10l4 4v10l-4 4H7l-4-4V7Z" />
+                  <path d="M9 9h6v6H9Z" />
+                </svg>
+              </button>
+            </div>
+
+            <button id="send-button" class="send-button" type="submit" title="Send" aria-label="Send">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 12h14" />
+                <path d="m13 6 6 6-6 6" />
+              </svg>
+            </button>
+          </div>
+
+          <input id="vision-file-input" class="hidden-file-input" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,text/plain,text/markdown,text/csv,application/json,.txt,.md,.csv,.json,.log,.rtf" />
+        </form>
+
         <p id="voice-capability" class="voice-capability">Checking voice capability...</p>
       </section>
     </main>

@@ -39,8 +39,8 @@ what should work before filing a bug.
 - PASS: Local self-signed MSIX signature validation passed on the test machine.
 - PASS: Tesseract document OCR read a known document-image fixture.
 
-Capability note: Ollama `/api/tags` may omit `vision` for `qwen3.5:9b`, but
-`ollama show` and `/api/show` report `completion`, `vision`, `tools`, and
+Capability note: Ollama `/api/tags` may omit capabilities for `huihui_ai/gemma-4-abliterated:e2b`, but
+`ollama show` and `/api/show` report `completion`, `vision`, `audio`, `tools`, and
 `thinking`. Iris preflight uses `/api/show` for this check. Audio input remains
 an Iris ASR responsibility.
 
@@ -103,7 +103,7 @@ evidence, not instruction.
     are described correctly. For the red-circle fixture, use this prompt:
 
     ```powershell
-    & "$env:LOCALAPPDATA\Programs\Iris\bin\iris-runtime.exe" --image-probe "C:\path\to\red-circle.png" "What is the color and shape of the single red object? Answer exactly: red circle, red triangle, or red square."
+    & "$env:LOCALAPPDATA\Programs\Iris\bin\iris-runtime.exe" --image-probe "C:\path\to\red-circle.png" "Classify the single object. Allowed answers: red circle; red triangle; red square. Return only one allowed answer."
     ```
 
     The answer must include `red circle`.

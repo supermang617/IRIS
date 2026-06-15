@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   classifyAsrError,
   classifyVoiceTranscript,
+  nextVoiceListenMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -215,11 +216,26 @@ test("unexpected ASR failures remain errors", () => {
 });
 
 test("wake listener backs off after empty or ambient captures", () => {
-  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 1200);
+  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 150);
   assert.equal(
     wakeRestartDelayMs("wake", "background television", "wait-for-wake"),
-    4000
+    600
   );
   assert.equal(wakeRestartDelayMs("wake", "Iris hello", "submit"), 650);
   assert.equal(wakeRestartDelayMs("push", "", "ignore"), 650);
+});
+
+test("armed wake follow-up uses command endpointing instead of wake endpointing", () => {
+  assert.equal(
+    nextVoiceListenMode({ wakeCommandArmed: true, wakeWord: true, voiceLoop: false }),
+    "command"
+  );
+  assert.equal(
+    nextVoiceListenMode({ wakeCommandArmed: false, wakeWord: true, voiceLoop: false }),
+    "wake"
+  );
+  assert.equal(
+    nextVoiceListenMode({ wakeCommandArmed: false, wakeWord: false, voiceLoop: true }),
+    "loop"
+  );
 });

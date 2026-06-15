@@ -24,6 +24,8 @@ fn run_audit() -> Result<(), String> {
     assert_hermes_agentic_profile(&root)?;
     assert_hermes_acp_runtime(&root)?;
     assert_hermes_browser_runtime(&root)?;
+    assert_desktop_ui(&root)?;
+    assert_conversational_voice_guards(&root)?;
     assert_release_hardening(&root)?;
     assert_forbidden_api_absence(&root)?;
     Ok(())
@@ -57,7 +59,11 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "src-tauri/Cargo.toml",
         "src-tauri/tauri.conf.json",
         "src-tauri/icons/icon.ico",
+        "app/composer-state.js",
+        "app/composer-state.test.mjs",
         "app/index.html",
+        "app/main.js",
+        "app/styles.css",
         "docs/adaptive-shell.md",
         "docs/download-and-run.md",
         "docs/finish-checklist.md",
@@ -103,6 +109,110 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         if !path.exists() {
             return Err(format!("required file missing: {relative}"));
         }
+    }
+    Ok(())
+}
+
+fn assert_desktop_ui(root: &Path) -> Result<(), String> {
+    let index = read(root.join("app/index.html"))?;
+    let styles = read(root.join("app/styles.css"))?;
+    let main = read(root.join("app/main.js"))?;
+    let package = read(root.join("package.json"))?;
+    let tauri = read(root.join("src-tauri/tauri.conf.json"))?;
+
+    for required in [
+        "<textarea",
+        "id=\"response-resize-handle\"",
+        "role=\"separator\"",
+        "class=\"composer-footer\"",
+        "class=\"tool-group\"",
+        "id=\"panic-button\"",
+        "id=\"send-button\"",
+    ] {
+        if !index.contains(required) {
+            return Err(format!("desktop UI shell missing `{required}`"));
+        }
+    }
+    for required in [
+        "--response-height",
+        ".response-resize-handle",
+        ".composer-footer",
+        "backdrop-filter: blur(28px)",
+        "@media (prefers-reduced-motion: reduce)",
+    ] {
+        if !styles.contains(required) {
+            return Err(format!("desktop UI styling missing `{required}`"));
+        }
+    }
+    for required in [
+        "shouldSubmitComposer",
+        "startResponseResize",
+        "resizeResponseWithKeyboard",
+        "iris.responseHeight",
+    ] {
+        if !main.contains(required) {
+            return Err(format!("desktop UI behavior missing `{required}`"));
+        }
+    }
+    if !package.contains("app/composer-state.test.mjs")
+        || !tauri.contains("\"height\": 410")
+        || !tauri.contains("\"minHeight\": 280")
+    {
+        return Err(
+            "desktop UI tests and production window dimensions must stay enabled".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn assert_conversational_voice_guards(root: &Path) -> Result<(), String> {
+    let policy = read(root.join("crates/iris-policy/src/lib.rs"))?;
+    let ollama = read(root.join("crates/iris-ollama/src/lib.rs"))?;
+    let tauri = read(root.join("src-tauri/src/lib.rs"))?;
+    let main = read(root.join("app/main.js"))?;
+    let speech = read(root.join("app/speech-chunks.js"))?;
+    let kokoro = read(root.join("tools/kokoro_tts.py"))?;
+
+    for (name, content, required) in [
+        (
+            "runtime response policy",
+            policy.as_str(),
+            "Do not censor ordinary profanity",
+        ),
+        (
+            "native ASR cancellation",
+            tauri.as_str(),
+            "cancel_native_asr",
+        ),
+        (
+            "wake-word transcription bias",
+            tauri.as_str(),
+            "Iris. Hey Iris. Iris wake up.",
+        ),
+        (
+            "stale listener cancellation",
+            main.as_str(),
+            "cancelActiveAsr",
+        ),
+        (
+            "speech markup normalization",
+            speech.as_str(),
+            "normalizeSpeechText",
+        ),
+        (
+            "Kokoro leading silence",
+            kokoro.as_str(),
+            "LEAD_SILENCE_SECONDS = 0.22",
+        ),
+    ] {
+        if !content.contains(required) {
+            return Err(format!("{name} missing `{required}`"));
+        }
+    }
+    if ollama.contains("evaluate_output(") {
+        return Err(
+            "normal Ollama responses must not be censored by the legacy output scanner".to_string(),
+        );
     }
     Ok(())
 }
@@ -188,6 +298,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let manual_end_user_test = read(root.join("docs/manual-end-user-test-v0.1.0.md"))?;
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
+    let windows_installer_script = read(root.join("scripts/install_iris_windows.ps1"))?;
 
     for (name, content) in [
         ("README.md", &readme),
@@ -311,7 +422,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         return Err("architecture doc must distinguish current Iris/Hermes/OneDrive capability from future memory roaming".to_string());
     }
     if !installer.contains("Iris Setup Wizard.bat")
-        || !installer.contains("ollama pull qwen3.5:9b")
+        || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
         || !installer.contains("never installs or downloads")
         || !installer.contains("Tesseract")
     {
@@ -340,7 +451,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         );
     }
     if !runtime_orchestration
-        .contains("The Iris launcher starts Ollama hidden/minimized when needed")
+        .contains("The Iris desktop window opens first, then starts Ollama hidden")
         || !runtime_orchestration.contains("Ollama runs as the local model service")
         || !runtime_orchestration.contains("Safe Hermes remains a restricted Iris-owned sidecar")
         || !runtime_orchestration.contains("pinned Hermes Agent 0.16.0")
@@ -352,6 +463,17 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     {
         return Err(
             "runtime orchestration doc must describe Iris/Ollama/Hermes process model and settings"
+                .to_string(),
+        );
+    }
+    if !windows_installer_script
+        .contains("\"bin\\iris-tauri.exe\") -WorkingDirectory $installRootResolved")
+        || windows_installer_script.contains(
+            "New-Shortcut -ShortcutPath (Join-Path $DesktopDir \"Iris.lnk\") -TargetPath (Join-Path $installRootResolved \"Start Iris.bat\")",
+        )
+    {
+        return Err(
+            "installed Iris shortcuts must launch the GUI executable directly without a console launcher"
                 .to_string(),
         );
     }
@@ -424,7 +546,7 @@ fn assert_manifest_policy(root: &Path) -> Result<(), String> {
     for required in [
         "\"target_platform\": \"windows\"",
         "\"provider\": \"ollama_local\"",
-        "\"model_id\": \"qwen3.5:9b\"",
+        "\"model_id\": \"huihui_ai/gemma-4-abliterated:e2b\"",
         "\"single_model_only\": true",
         "\"fallback_models_allowed\": false",
         "\"num_ctx_ceiling\": 8192",

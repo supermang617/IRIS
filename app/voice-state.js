@@ -67,12 +67,22 @@ export function wakeRestartDelayMs(mode, transcript, action) {
     return 650;
   }
   if (!String(transcript || "").trim()) {
-    return 1200;
+    return 150;
   }
   if (action === "wait-for-wake" || action === "ignore") {
-    return 4000;
+    return 600;
   }
   return 650;
+}
+
+export function nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop }) {
+  if (wakeCommandArmed) {
+    return "command";
+  }
+  if (wakeWord) {
+    return "wake";
+  }
+  return voiceLoop ? "loop" : null;
 }
 
 function isInterruption(text) {

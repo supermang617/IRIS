@@ -39,8 +39,10 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 ## Current Manual Milestone
 
 1. Confirm the app opens as a compact bottom Iris console, not the old dashboard.
-2. Confirm only two visible boxes are present: the text input bar and the output box underneath it.
-3. Type a short message and press the arrow button.
+2. Confirm the response pane is above the multiline composer and the compact
+   tool icons sit along the bottom of the composer.
+3. Type a short message and press Enter or the circular arrow button. Confirm
+   Shift+Enter adds a new line without submitting.
 4. Confirm Iris shows `Thinking locally...`, then returns a local model response and speaks it with Kokoro `af_heart`.
 5. Click the mic icon, say a short prompt, and confirm it submits through the same local model path.
 6. Without pressing the mic icon, say `Iris`.
@@ -52,8 +54,11 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 12. Confirm Iris stops speaking and returns to listening.
 13. Click the attachment icon, paste, or drag a small png, jpg, jpeg, or webp image into the text bar.
 14. Confirm a small attachment preview appears above the text bar, then ask Iris what is in the image.
-15. Click and drag the narrow strip above the text bar or the small handle at the left of the text bar.
-16. Confirm the Iris window moves without disrupting typing or buttons.
+15. Drag the divider between the response pane and composer. Confirm the
+    response pane grows and shrinks, then relaunch Iris and confirm the chosen
+    height is retained.
+16. Drag the top Iris titlebar and confirm the window moves without disrupting
+    typing, resizing, or tool buttons.
 17. Click the camera icon with an empty text bar.
 18. Confirm Iris takes a capped camera snapshot, answers what it can see, and speaks the answer.
 19. Type a camera-specific question, then click the camera icon.
@@ -126,7 +131,7 @@ If Iris stops listening, the last few lines of this file should show whether nat
 - No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
 - No continuous screen capture should occur. The screen icon performs one explicit capped capture of the area under Iris.
 - File attachments are user selected through the attachment icon, paste, or drag/drop, and are consumed by the next prompt only.
-- The configured model remains `qwen3.5:9b`.
+- The configured model remains `huihui_ai/gemma-4-abliterated:e2b`.
 - The configured TTS voice remains Kokoro `af_heart`.
 - Wake-word mode is armed by default.
 - Push-to-talk and typed text must keep working.

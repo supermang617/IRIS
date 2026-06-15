@@ -11,7 +11,7 @@ if ((Split-Path -Leaf $root) -ieq "scripts") {
 }
 Set-Location -LiteralPath $root
 
-$modelId = "qwen3.5:9b"
+$modelId = "huihui_ai/gemma-4-abliterated:e2b"
 $minimumRamGb = 16
 $recommendedFreeDiskGb = 12
 $reportDir = Join-Path $root "diagnostics"

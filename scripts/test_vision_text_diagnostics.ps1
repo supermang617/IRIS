@@ -43,13 +43,13 @@ function Require-OutputContains {
 
 $selfCheck = Invoke-Runtime -Arguments @("--self-check")
 Require-Success -Result $selfCheck -Name "runtime self-check"
-Require-OutputContains -Result $selfCheck -Needle "Iris may see, listen, think, remember with permission, and respond. Iris may not act on the computer." -Name "runtime self-check"
+Require-OutputContains -Result $selfCheck -Needle "Safe-mode Iris may see, listen, think, remember with permission, and respond without acting. An explicitly approved Agentic Session may perform supervised local work." -Name "runtime self-check"
 Require-OutputContains -Result $selfCheck -Needle "runtime_external_network=disabled, loopback_only=true" -Name "runtime self-check"
 
 $dashboard = Invoke-Runtime -Arguments @("--dashboard-json")
 Require-Success -Result $dashboard -Name "dashboard json"
 $dashboardJson = $dashboard.Output | ConvertFrom-Json
-if ($dashboardJson.model.id -ne "qwen3.5:9b") {
+if ($dashboardJson.model.id -ne "huihui_ai/gemma-4-abliterated:e2b") {
     throw "dashboard model mismatch: $($dashboardJson.model.id)"
 }
 if ($dashboardJson.model.runtime_external_network -ne "disabled" -or $dashboardJson.model.loopback_only -ne $true) {

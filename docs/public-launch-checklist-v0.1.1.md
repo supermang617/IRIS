@@ -46,7 +46,7 @@ Mark each item `PASS`, `FAIL`, or `BLOCKED`.
 | Windows | Windows 10 or Windows 11. |  |  |
 | WebView2 | Microsoft Edge WebView2 Runtime is installed. |  |  |
 | Ollama | Ollama is installed and reachable on `127.0.0.1:11434`. |  |  |
-| Model | `qwen3.5:9b` is available in Ollama. |  |  |
+| Model | `huihui_ai/gemma-4-abliterated:e2b` is available in Ollama. |  |  |
 | Kokoro optional speech | Python can import `kokoro_onnx` and `soundfile` when speech is tested. |  |  |
 | Local-only boundary | No cloud API, telemetry, non-loopback binding, or secret is required. |  |  |
 

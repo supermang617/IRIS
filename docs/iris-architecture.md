@@ -14,7 +14,7 @@ process work.
 
 - Run from a portable Windows ZIP.
 - Use local Ollama loopback for text and vision.
-- Use the configured model `qwen3.5:9b`.
+- Use the configured model `huihui_ai/gemma-4-abliterated:e2b`.
 - Inspect user-selected images, camera snapshots, and explicit screen-area
   evidence as untrusted evidence.
 - Use native local Whisper ASR and Kokoro ONNX TTS when the local prerequisites

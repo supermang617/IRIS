@@ -6,8 +6,13 @@ use std::{
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Arc, Mutex, OnceLock, mpsc},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -23,6 +28,8 @@ static HERMES_BROKER_STARTED: OnceLock<()> = OnceLock::new();
 static HERMES_SIDECAR: OnceLock<Mutex<Option<HermesSidecar>>> = OnceLock::new();
 static HERMES_TASK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DIAGNOSTIC_SESSION: OnceLock<Mutex<Option<DiagnosticSessionSummary>>> = OnceLock::new();
+static INSTANCE_LOCK: OnceLock<TcpListener> = OnceLock::new();
+static ASR_CAPTURE_EPOCH: AtomicU64 = AtomicU64::new(1);
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_STAGING_ITEMS: usize = 80;
 const MAX_HERMES_MEMORY_QUERY_CHARS: usize = 120;
@@ -294,6 +301,15 @@ struct AsrCommandResponse {
     elapsed_ms: u128,
     capture_elapsed_ms: Option<u128>,
     stt_elapsed_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRuntimePreparation {
+    ready: bool,
+    started_ollama: bool,
+    elapsed_ms: u128,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -785,19 +801,23 @@ fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> Imag
 
 #[tauri::command]
 async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandResponse, String> {
+    let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let (duration_ms, start_timeout_ms) = match mode.as_deref() {
-            Some("push") => (6_500, 4_500),
-            Some("loop") => (5_000, 2_500),
-            _ => (5_000, 1_800),
+        let transcription_hint = whisper_initial_prompt(mode.as_deref());
+        let (duration_ms, start_timeout_ms, trailing_silence_ms) = match mode.as_deref() {
+            Some("push" | "command") => (15_000, 6_000, 700),
+            Some("loop") => (12_000, 4_000, 650),
+            _ => (4_000, 1_600, 600),
         };
         native_asr_listen_for(
             duration_ms,
             CaptureEndpoint::Speech {
-                min_ms: 650,
-                trailing_silence_ms: 550,
+                min_ms: 350,
+                trailing_silence_ms,
                 start_timeout_ms,
             },
+            capture_epoch,
+            transcription_hint,
         )
     })
     .await
@@ -806,18 +826,33 @@ async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandRespon
 
 #[tauri::command]
 async fn native_asr_listen_interrupt() -> Result<AsrCommandResponse, String> {
-    tauri::async_runtime::spawn_blocking(|| native_asr_listen_for(1_500, CaptureEndpoint::Fixed))
-        .await
-        .map_err(|err| err.to_string())?
+    let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
+    tauri::async_runtime::spawn_blocking(move || {
+        native_asr_listen_for(
+            1_500,
+            CaptureEndpoint::Fixed,
+            capture_epoch,
+            whisper_initial_prompt(Some("interrupt")),
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+fn cancel_native_asr() {
+    ASR_CAPTURE_EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
 fn native_asr_listen_for(
     duration_ms: u64,
     endpoint: CaptureEndpoint,
+    capture_epoch: u64,
+    transcription_hint: Option<&'static str>,
 ) -> Result<AsrCommandResponse, String> {
     let started = Instant::now();
     let capture_started = Instant::now();
-    let audio = record_microphone_mono_16khz(duration_ms, endpoint)?;
+    let audio = record_microphone_mono_16khz(duration_ms, endpoint, capture_epoch)?;
     let capture_elapsed_ms = capture_started.elapsed().as_millis();
     if !audio.speech_detected {
         return Ok(AsrCommandResponse {
@@ -828,7 +863,7 @@ fn native_asr_listen_for(
         });
     }
     let stt_started = Instant::now();
-    let text = transcribe_local_whisper(&audio.samples)?;
+    let text = transcribe_local_whisper(&audio.samples, transcription_hint)?;
     let stt_elapsed_ms = stt_started.elapsed().as_millis();
     Ok(AsrCommandResponse {
         text,
@@ -880,6 +915,108 @@ async fn warm_ollama_model() -> Result<(), String> {
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn prepare_local_runtime() -> Result<LocalRuntimePreparation, String> {
+    tauri::async_runtime::spawn_blocking(prepare_local_runtime_blocking)
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
+    let started = Instant::now();
+    if ollama_loopback_ready() {
+        return Ok(LocalRuntimePreparation {
+            ready: true,
+            started_ollama: false,
+            elapsed_ms: started.elapsed().as_millis(),
+            message: "Local model service is ready.".to_string(),
+        });
+    }
+
+    let root = workspace_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&root)?;
+    let executable = find_ollama_executable()?;
+    let mut command = Command::new(executable);
+    command
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env(
+            "OLLAMA_CONTEXT_LENGTH",
+            manifest.model_policy.num_ctx_ceiling.to_string(),
+        );
+    if let Some(models_root) = find_ollama_models_root(&manifest.model_policy.model_id) {
+        command.env("OLLAMA_MODELS", models_root);
+    }
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+        .spawn()
+        .map_err(|err| format!("failed to start Ollama in the background: {err}"))?;
+
+    for _ in 0..40 {
+        thread::sleep(std::time::Duration::from_millis(250));
+        if ollama_loopback_ready() {
+            return Ok(LocalRuntimePreparation {
+                ready: true,
+                started_ollama: true,
+                elapsed_ms: started.elapsed().as_millis(),
+                message: "Local model service started.".to_string(),
+            });
+        }
+    }
+    Err("Ollama did not become ready within 10 seconds".to_string())
+}
+
+fn ollama_loopback_ready() -> bool {
+    TcpStream::connect_timeout(
+        &"127.0.0.1:11434"
+            .parse()
+            .expect("literal Ollama loopback address"),
+        std::time::Duration::from_millis(200),
+    )
+    .is_ok()
+}
+
+fn find_ollama_executable() -> Result<PathBuf, String> {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let installed = PathBuf::from(local_app_data)
+            .join("Programs")
+            .join("Ollama")
+            .join("ollama.exe");
+        if installed.is_file() {
+            return Ok(installed);
+        }
+    }
+    Ok(PathBuf::from("ollama"))
+}
+
+fn find_ollama_models_root(model_id: &str) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(configured) = std::env::var("OLLAMA_MODELS") {
+        candidates.push(PathBuf::from(configured));
+    }
+    candidates.push(PathBuf::from(r"C:\.ollama"));
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        candidates.push(PathBuf::from(profile).join(".ollama").join("models"));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| ollama_model_manifest(candidate, model_id).is_file())
+}
+
+fn ollama_model_manifest(models_root: &Path, model_id: &str) -> PathBuf {
+    let (name, tag) = model_id.split_once(':').unwrap_or((model_id, "latest"));
+    let (namespace, model) = name.split_once('/').unwrap_or(("library", name));
+    models_root
+        .join("manifests")
+        .join("registry.ollama.ai")
+        .join(namespace)
+        .join(model)
+        .join(tag)
 }
 
 fn is_local_model_unavailable_response(text: &str) -> bool {
@@ -2768,9 +2905,17 @@ struct CapturedMicrophoneAudio {
     speech_detected: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpeechEndpointResult {
+    speech_detected: bool,
+    start_sample: usize,
+    end_sample: usize,
+}
+
 fn record_microphone_mono_16khz(
     duration_ms: u64,
     endpoint: CaptureEndpoint,
+    capture_epoch: u64,
 ) -> Result<CapturedMicrophoneAudio, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -2832,7 +2977,8 @@ fn record_microphone_mono_16khz(
     stream
         .play()
         .map_err(|err| format!("failed to start microphone stream: {err}"))?;
-    let speech_detected = wait_for_capture_endpoint(&captured, sample_rate, duration_ms, endpoint);
+    let endpoint_result =
+        wait_for_capture_endpoint(&captured, sample_rate, duration_ms, endpoint, capture_epoch);
     drop(stream);
 
     if let Some(error) = error_state.lock().map_err(|err| err.to_string())?.clone() {
@@ -2843,10 +2989,13 @@ fn record_microphone_mono_16khz(
     if source.is_empty() {
         return Err("microphone produced no audio samples".to_string());
     }
-    let resampled = resample_linear(&source, sample_rate, 16_000);
+    let start_sample = endpoint_result.start_sample.min(source.len());
+    let end_sample = endpoint_result.end_sample.clamp(start_sample, source.len());
+    let utterance = &source[start_sample..end_sample];
+    let resampled = resample_linear(utterance, sample_rate, 16_000);
     Ok(CapturedMicrophoneAudio {
-        samples: pad_audio_with_silence(&resampled, 16_000, 250),
-        speech_detected,
+        samples: pad_audio_with_silence(&resampled, 16_000, 120),
+        speech_detected: endpoint_result.speech_detected,
     })
 }
 
@@ -2865,11 +3014,22 @@ fn wait_for_capture_endpoint(
     sample_rate: u32,
     max_ms: u64,
     endpoint: CaptureEndpoint,
-) -> bool {
+    capture_epoch: u64,
+) -> SpeechEndpointResult {
     match endpoint {
         CaptureEndpoint::Fixed => {
-            thread::sleep(std::time::Duration::from_millis(max_ms));
-            true
+            let started = Instant::now();
+            while started.elapsed().as_millis() < u128::from(max_ms)
+                && ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) == capture_epoch
+            {
+                thread::sleep(std::time::Duration::from_millis(30));
+            }
+            let end_sample = captured.lock().map(|samples| samples.len()).unwrap_or(0);
+            SpeechEndpointResult {
+                speech_detected: ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) == capture_epoch,
+                start_sample: 0,
+                end_sample,
+            }
         }
         CaptureEndpoint::Speech {
             min_ms,
@@ -2882,6 +3042,7 @@ fn wait_for_capture_endpoint(
             min_ms,
             trailing_silence_ms,
             start_timeout_ms,
+            capture_epoch,
         ),
     }
 }
@@ -2893,58 +3054,156 @@ fn wait_for_speech_endpoint(
     min_ms: u64,
     trailing_silence_ms: u64,
     start_timeout_ms: u64,
-) -> bool {
+    capture_epoch: u64,
+) -> SpeechEndpointResult {
     let started = Instant::now();
-    let mut speech_started = false;
-    let mut quiet_since: Option<Instant> = None;
-    let mut baseline_rms = 0.0_f32;
-    let mut consecutive_speech_windows = 0_u8;
+    let frame_samples = ((u128::from(sample_rate) * 30) / 1_000).max(1) as usize;
+    let pre_roll_samples = ((u128::from(sample_rate) * 420) / 1_000) as usize;
+    let mut tracker =
+        SpeechEndpointTracker::new(sample_rate, min_ms, trailing_silence_ms, start_timeout_ms);
+    let mut processed_samples = 0_usize;
 
     while started.elapsed().as_millis() < u128::from(max_ms) {
-        thread::sleep(std::time::Duration::from_millis(80));
+        if ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) != capture_epoch {
+            return SpeechEndpointResult {
+                speech_detected: false,
+                start_sample: 0,
+                end_sample: processed_samples,
+            };
+        }
+        thread::sleep(std::time::Duration::from_millis(30));
 
         let snapshot = match captured.lock() {
             Ok(samples) => samples.clone(),
             Err(_) => break,
         };
-        let captured_ms = samples_to_ms(snapshot.len(), sample_rate);
-        let recent_rms = recent_rms(&snapshot, sample_rate, 180);
-        if captured_ms <= 450 {
-            baseline_rms = baseline_rms.max(recent_rms);
-            continue;
-        }
-        let speech_threshold = adaptive_speech_threshold(baseline_rms);
-
-        if recent_rms >= speech_threshold {
-            consecutive_speech_windows = consecutive_speech_windows.saturating_add(1);
-            if consecutive_speech_windows >= 2 {
-                speech_started = true;
+        while processed_samples + frame_samples <= snapshot.len() {
+            let frame_end = processed_samples + frame_samples;
+            let frame = &snapshot[processed_samples..frame_end];
+            processed_samples = frame_end;
+            if let Some(end_sample) = tracker.observe(frame, frame_end) {
+                return SpeechEndpointResult {
+                    speech_detected: true,
+                    start_sample: tracker
+                        .speech_start_sample
+                        .unwrap_or(0)
+                        .saturating_sub(pre_roll_samples),
+                    end_sample,
+                };
             }
-            quiet_since = None;
-            continue;
         }
-        consecutive_speech_windows = 0;
-
-        if !speech_started {
-            if captured_ms >= start_timeout_ms {
-                return false;
-            }
-            continue;
-        }
-        if captured_ms < min_ms {
-            continue;
-        }
-
-        let quiet_start = quiet_since.get_or_insert_with(Instant::now);
-        if quiet_start.elapsed().as_millis() >= u128::from(trailing_silence_ms) {
-            return true;
+        if tracker.start_timed_out(processed_samples) {
+            return SpeechEndpointResult {
+                speech_detected: false,
+                start_sample: 0,
+                end_sample: processed_samples,
+            };
         }
     }
-    speech_started
+    SpeechEndpointResult {
+        speech_detected: tracker.speech_start_sample.is_some(),
+        start_sample: tracker
+            .speech_start_sample
+            .unwrap_or(0)
+            .saturating_sub(pre_roll_samples),
+        end_sample: tracker.last_voice_sample.unwrap_or(processed_samples),
+    }
 }
 
-fn adaptive_speech_threshold(baseline_rms: f32) -> f32 {
-    (baseline_rms * 2.4 + 0.004).clamp(0.012, 0.065)
+struct SpeechEndpointTracker {
+    sample_rate: u32,
+    min_ms: u64,
+    base_trailing_silence_ms: u64,
+    start_timeout_ms: u64,
+    noise_floor: f32,
+    onset_frames: u8,
+    onset_start_sample: Option<usize>,
+    speech_start_sample: Option<usize>,
+    last_voice_sample: Option<usize>,
+}
+
+impl SpeechEndpointTracker {
+    fn new(
+        sample_rate: u32,
+        min_ms: u64,
+        base_trailing_silence_ms: u64,
+        start_timeout_ms: u64,
+    ) -> Self {
+        Self {
+            sample_rate,
+            min_ms,
+            base_trailing_silence_ms,
+            start_timeout_ms,
+            noise_floor: 0.003,
+            onset_frames: 0,
+            onset_start_sample: None,
+            speech_start_sample: None,
+            last_voice_sample: None,
+        }
+    }
+
+    fn observe(&mut self, frame: &[f32], frame_end_sample: usize) -> Option<usize> {
+        let energy = rms(frame);
+        let onset_threshold = adaptive_speech_threshold(self.noise_floor);
+        let release_threshold = (self.noise_floor * 1.8 + 0.003).clamp(0.007, 0.04);
+        let active = if self.speech_start_sample.is_some() {
+            energy >= release_threshold
+        } else {
+            energy >= onset_threshold
+        };
+
+        if active {
+            let frame_start = frame_end_sample.saturating_sub(frame.len());
+            if self.onset_frames == 0 {
+                self.onset_start_sample = Some(frame_start);
+            }
+            self.onset_frames = self.onset_frames.saturating_add(1);
+            if self.onset_frames >= 2 {
+                self.speech_start_sample
+                    .get_or_insert(self.onset_start_sample.unwrap_or(frame_start));
+                self.last_voice_sample = Some(frame_end_sample);
+            }
+        } else {
+            self.onset_frames = 0;
+            self.onset_start_sample = None;
+            if self.speech_start_sample.is_none() {
+                self.noise_floor = (self.noise_floor * 0.92 + energy * 0.08).clamp(0.001, 0.03);
+            }
+        }
+
+        let (Some(speech_start), Some(last_voice)) =
+            (self.speech_start_sample, self.last_voice_sample)
+        else {
+            return None;
+        };
+        let utterance_ms = samples_to_ms(last_voice.saturating_sub(speech_start), self.sample_rate);
+        let silence_ms = samples_to_ms(
+            frame_end_sample.saturating_sub(last_voice),
+            self.sample_rate,
+        );
+        let required_silence =
+            conversational_trailing_silence_ms(self.base_trailing_silence_ms, utterance_ms);
+        (utterance_ms >= self.min_ms && silence_ms >= required_silence).then_some(last_voice)
+    }
+
+    fn start_timed_out(&self, processed_samples: usize) -> bool {
+        self.speech_start_sample.is_none()
+            && samples_to_ms(processed_samples, self.sample_rate) >= self.start_timeout_ms
+    }
+}
+
+fn adaptive_speech_threshold(noise_floor_rms: f32) -> f32 {
+    (noise_floor_rms * 3.0 + 0.003).clamp(0.010, 0.055)
+}
+
+fn conversational_trailing_silence_ms(base_ms: u64, utterance_ms: u64) -> u64 {
+    if utterance_ms < 900 {
+        base_ms.saturating_add(150)
+    } else if utterance_ms > 6_000 {
+        base_ms.saturating_sub(100).max(450)
+    } else {
+        base_ms
+    }
 }
 
 fn samples_to_ms(sample_count: usize, sample_rate: u32) -> u64 {
@@ -2952,15 +3211,6 @@ fn samples_to_ms(sample_count: usize, sample_rate: u32) -> u64 {
         return 0;
     }
     ((sample_count as u128 * 1_000) / u128::from(sample_rate)) as u64
-}
-
-fn recent_rms(samples: &[f32], sample_rate: u32, window_ms: u64) -> f32 {
-    if samples.is_empty() || sample_rate == 0 {
-        return 0.0;
-    }
-    let window_len = ((u128::from(sample_rate) * u128::from(window_ms)) / 1_000) as usize;
-    let start = samples.len().saturating_sub(window_len.max(1));
-    rms(&samples[start..])
 }
 
 fn rms(samples: &[f32]) -> f32 {
@@ -3020,7 +3270,15 @@ fn resample_linear(input: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32
     output
 }
 
-fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
+fn whisper_initial_prompt(mode: Option<&str>) -> Option<&'static str> {
+    match mode {
+        Some("wake") => Some("Iris. Hey Iris. Iris wake up."),
+        Some("interrupt") => Some("Iris stop. Stop. Pause. Cancel."),
+        _ => None,
+    }
+}
+
+fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Result<String, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     let model_path = workspace_root()?.join("models/whisper/ggml-tiny.en.bin");
@@ -3047,6 +3305,9 @@ fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
+    if let Some(initial_prompt) = initial_prompt {
+        params.set_initial_prompt(initial_prompt);
+    }
 
     state
         .full(params, audio)
@@ -3062,6 +3323,15 @@ fn transcribe_local_whisper(audio: &[f32]) -> Result<String, String> {
 }
 
 pub fn run() {
+    if INSTANCE_LOCK
+        .set(match TcpListener::bind("127.0.0.1:48729") {
+            Ok(listener) => listener,
+            Err(_) => return,
+        })
+        .is_err()
+    {
+        return;
+    }
     start_hermes_memory_broker_if_enabled();
     let result = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
         .invoke_handler(tauri::generate_handler![
@@ -3096,6 +3366,8 @@ pub fn run() {
             memory_archive_policy,
             native_asr_listen_interrupt,
             native_asr_listen_once,
+            cancel_native_asr,
+            prepare_local_runtime,
             submit_image_probe,
             submit_screen_area_probe,
             submit_typed_hud,
@@ -3309,10 +3581,24 @@ mod tests {
     }
 
     #[test]
+    fn whisper_prompts_bias_only_wake_and_interruption_captures() {
+        assert_eq!(
+            whisper_initial_prompt(Some("wake")),
+            Some("Iris. Hey Iris. Iris wake up.")
+        );
+        assert_eq!(
+            whisper_initial_prompt(Some("interrupt")),
+            Some("Iris stop. Stop. Pause. Cancel.")
+        );
+        assert_eq!(whisper_initial_prompt(Some("command")), None);
+        assert_eq!(whisper_initial_prompt(Some("push")), None);
+    }
+
+    #[test]
     fn adaptive_speech_threshold_rises_with_ambient_noise() {
-        assert_eq!(adaptive_speech_threshold(0.0), 0.012);
+        assert_eq!(adaptive_speech_threshold(0.0), 0.010);
         assert!(adaptive_speech_threshold(0.02) > 0.04);
-        assert_eq!(adaptive_speech_threshold(1.0), 0.065);
+        assert_eq!(adaptive_speech_threshold(1.0), 0.055);
     }
 
     #[test]
@@ -3674,5 +3960,79 @@ mod tests {
             "Local model unavailable: HTTP status client error (404 Not Found)"
         ));
         assert!(!is_local_model_unavailable_response("ready"));
+    }
+
+    fn observe_level(
+        tracker: &mut SpeechEndpointTracker,
+        level: f32,
+        frame_count: usize,
+        frame_samples: usize,
+        sample_cursor: &mut usize,
+    ) -> Option<usize> {
+        let frame = vec![level; frame_samples];
+        for _ in 0..frame_count {
+            *sample_cursor += frame_samples;
+            if let Some(endpoint) = tracker.observe(&frame, *sample_cursor) {
+                return Some(endpoint);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn speech_endpoint_detects_immediate_speech_without_learning_it_as_noise() {
+        let mut tracker = SpeechEndpointTracker::new(1_000, 350, 650, 4_000);
+        let mut cursor = 0;
+
+        assert_eq!(
+            observe_level(&mut tracker, 0.035, 20, 30, &mut cursor),
+            None
+        );
+        let endpoint =
+            observe_level(&mut tracker, 0.001, 27, 30, &mut cursor).expect("speech endpoint");
+
+        assert!(tracker.speech_start_sample.is_some());
+        assert_eq!(endpoint, 600);
+        assert!(cursor < 1_450);
+    }
+
+    #[test]
+    fn speech_endpoint_adapts_to_steady_ambient_noise_without_false_trigger() {
+        let mut tracker = SpeechEndpointTracker::new(1_000, 350, 650, 1_600);
+        let mut cursor = 0;
+
+        assert_eq!(
+            observe_level(&mut tracker, 0.004, 54, 30, &mut cursor),
+            None
+        );
+        assert!(tracker.speech_start_sample.is_none());
+        assert!(tracker.start_timed_out(cursor));
+    }
+
+    #[test]
+    fn speech_endpoint_keeps_a_natural_mid_sentence_pause_open() {
+        let mut tracker = SpeechEndpointTracker::new(1_000, 350, 650, 4_000);
+        let mut cursor = 0;
+
+        assert_eq!(
+            observe_level(&mut tracker, 0.030, 20, 30, &mut cursor),
+            None
+        );
+        assert_eq!(
+            observe_level(&mut tracker, 0.001, 12, 30, &mut cursor),
+            None
+        );
+        assert_eq!(
+            observe_level(&mut tracker, 0.030, 15, 30, &mut cursor),
+            None
+        );
+        assert!(observe_level(&mut tracker, 0.001, 24, 30, &mut cursor).is_some());
+    }
+
+    #[test]
+    fn short_utterances_receive_extra_trailing_silence() {
+        assert_eq!(conversational_trailing_silence_ms(650, 700), 800);
+        assert_eq!(conversational_trailing_silence_ms(650, 2_000), 650);
+        assert_eq!(conversational_trailing_silence_ms(650, 7_000), 550);
     }
 }

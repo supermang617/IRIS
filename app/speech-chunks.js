@@ -1,5 +1,5 @@
 export function splitSpeechChunks(text, maxChars = 260) {
-  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  const clean = normalizeSpeechText(text);
   if (!clean) {
     return [];
   }
@@ -39,4 +39,26 @@ export function splitSpeechChunks(text, maxChars = 260) {
     chunks.push(current);
   }
   return chunks;
+}
+
+export function normalizeSpeechText(text) {
+  return expandMaskedProfanity(String(text || ""))
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[^\n]*\n?/g, " "))
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*{1,3}([^*\n]+)\*{1,3}/g, "$1")
+    .replace(/_{1,3}([^_\n]+)_{1,3}/g, "$1")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\s+[-–—]\s+/g, ", ")
+    .replace(/[*_#>|~]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function expandMaskedProfanity(text) {
+  return text
+    .replace(/\bf\*{2,}ing\b/gi, "fucking")
+    .replace(/\bf\*{2,}k\b/gi, "fuck")
+    .replace(/\bsh\*+t\b/gi, "shit")
+    .replace(/\bb\*+ch\b/gi, "bitch")
+    .replace(/\ba\*+hole\b/gi, "asshole");
 }

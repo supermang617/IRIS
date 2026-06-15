@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { splitSpeechChunks } from "./speech-chunks.js";
+import { normalizeSpeechText, splitSpeechChunks } from "./speech-chunks.js";
 
 test("splits long speech at sentence or word boundaries", () => {
   const text =
@@ -15,4 +15,26 @@ test("splits long speech at sentence or word boundaries", () => {
 
 test("returns no chunks for blank speech", () => {
   assert.deepEqual(splitSpeechChunks("   "), []);
+});
+
+test("speech normalization removes markdown symbols without naming them", () => {
+  assert.equal(
+    normalizeSpeechText("**Important** - use `Iris` *now*."),
+    "Important, use Iris now."
+  );
+  assert.equal(
+    normalizeSpeechText("- First item\n- Second item"),
+    "First item Second item"
+  );
+});
+
+test("speech normalization preserves ordinary profanity", () => {
+  assert.equal(
+    normalizeSpeechText("Here is the fucking joke you requested."),
+    "Here is the fucking joke you requested."
+  );
+  assert.equal(
+    normalizeSpeechText("That was f***ing funny, not sh*t."),
+    "That was fucking funny, not shit."
+  );
 });

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:voice": "node --test app/voice-state.test.mjs app/attachment-state.test.mjs app/attachment-url.test.mjs app/browser-preview.test.mjs app/hermes-routing.test.mjs app/hermes-mode.test.mjs app/panic-state.test.mjs app/speech-chunks.test.mjs app/staging-state.test.mjs app/input-state.test.mjs",
+    "test:voice": "node --test app/voice-state.test.mjs app/attachment-state.test.mjs app/attachment-url.test.mjs app/browser-preview.test.mjs app/composer-state.test.mjs app/hermes-routing.test.mjs app/hermes-mode.test.mjs app/panic-state.test.mjs app/speech-chunks.test.mjs app/staging-state.test.mjs app/input-state.test.mjs",
     "test:python": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_python.ps1",
     "tauri": "tauri",
     "dev": "tauri dev",

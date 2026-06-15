@@ -4,7 +4,7 @@ Iris is no longer tracking the cross-platform Adaptive Shell plan in this worksp
 
 The current build is a slim Windows prototype with:
 
-- one configured model: `qwen3.5:9b`
+- one configured model: `huihui_ai/gemma-4-abliterated:e2b`
 - one provider boundary: `ollama_local`
 - one context ceiling: `8192`
 - no fallback model selection
@@ -21,4 +21,16 @@ The dashboard contract is available through:
 cargo run -p iris-runtime -- --dashboard-json
 ```
 
-The Tauri shell consumes the same contract and shows the compact Iris input/output console. Typed input and native ASR transcripts are gated before they are sent to the configured local model.
+The Tauri shell consumes the same contract and presents a compact desktop
+assistant surface:
+
+- response content above the prompt composer;
+- a multiline composer with Enter to send and Shift+Enter for a new line;
+- compact attachment, camera, screen, memory, microphone, and Panic Stop icons
+  along the bottom edge of the composer;
+- a pointer- and keyboard-accessible divider for resizing the response pane;
+- one translucent window backdrop with low-opacity content layers for stable
+  Windows performance.
+
+Typed input and native ASR transcripts are gated before they are sent to the
+configured local model.

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 pub const MANIFEST_FILE_NAME: &str = "manifest.json";
-pub const IRIS_MODEL_ID: &str = "qwen3.5:9b";
+pub const IRIS_MODEL_ID: &str = "huihui_ai/gemma-4-abliterated:e2b";
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ProjectManifest {
@@ -108,7 +108,7 @@ impl ProjectManifest {
         )?;
         require(
             self.model_policy.model_id == IRIS_MODEL_ID,
-            "Iris model must be qwen3.5:9b",
+            "Iris model must be huihui_ai/gemma-4-abliterated:e2b",
         )?;
         require(
             self.model_policy.single_model_only,
@@ -153,8 +153,8 @@ impl ProjectManifest {
             "manifest num_ctx ceiling must be exactly 8192",
         )?;
         require(
-            self.model_policy.architecture == "qwen35",
-            "manifest must select the locked Qwen 3.5 architecture",
+            self.model_policy.architecture == "gemma4",
+            "manifest must select the locked Gemma 4 architecture",
         )?;
         require(
             self.model_policy
@@ -276,13 +276,13 @@ mod tests {
     }
 
     #[test]
-    fn configured_model_is_exact_ollama_qwen35_target() {
+    fn configured_model_is_exact_ollama_gemma4_target() {
         let manifest = ProjectManifest::from_json_str(VALID_MANIFEST).unwrap();
         let selection = manifest.configured_model();
 
         assert_eq!(selection.id, IRIS_MODEL_ID);
         assert_eq!(selection.provider, "ollama_local");
-        assert_eq!(selection.parameter_size, "9.7B");
+        assert_eq!(selection.parameter_size, "5.1B");
         assert_eq!(selection.effective_num_ctx_ceiling, 8192);
         assert!(manifest.model_policy.vision_capable);
         assert!(manifest.model_policy.image_input_capable);

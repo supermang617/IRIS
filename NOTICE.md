@@ -20,7 +20,7 @@ Project Iris is built on local-first, open tooling and local model infrastructur
 
 ## Model and Asset Notice
 
-The configured local Ollama model identity is `qwen3.5:9b`, distributed under Apache-2.0 terms. Ollama model blobs are not checked into this repository. Confirm the model license and redistribution terms before publishing model files, screenshots, recordings, demos, or packaged builds that include model artifacts.
+The configured local Ollama model identity is `huihui_ai/gemma-4-abliterated:e2b`, distributed under Apache-2.0 terms. Ollama model blobs are not checked into this repository. Confirm the model license and redistribution terms before publishing model files, screenshots, recordings, demos, or packaged builds that include model artifacts.
 
 Kokoro and Whisper model files under `models/` may have their own license terms. Confirm those terms before redistributing assets.
 

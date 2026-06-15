@@ -66,6 +66,20 @@ try {
             throw "Shortcut missing: $shortcut"
         }
     }
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($shortcutPath in @(
+        (Join-Path $startMenuDir "Iris.lnk"),
+        (Join-Path $desktopDir "Iris.lnk")
+    )) {
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $expectedTarget = Join-Path $installRoot "bin\iris-tauri.exe"
+        if ($shortcut.TargetPath -ne $expectedTarget) {
+            throw "Iris shortcut must launch the GUI directly. Expected $expectedTarget but got $($shortcut.TargetPath)."
+        }
+        if ($shortcut.Arguments) {
+            throw "Iris shortcut must not pass console-launcher arguments: $($shortcut.Arguments)"
+        }
+    }
 
     & (Join-Path $installRoot "Uninstall Iris.ps1") -Quiet
     if ($LASTEXITCODE -ne 0) {

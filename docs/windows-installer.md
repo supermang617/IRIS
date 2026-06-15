@@ -49,6 +49,11 @@ self-check, can run the setup wizard, and creates shortcuts:
 - Start Menu: `Uninstall Iris`
 - Desktop: `Iris`
 
+The normal `Iris` shortcuts target `bin\iris-tauri.exe` directly. The desktop
+window opens before local model and voice warm-up, and Iris starts Ollama
+hidden in the background when it is not already running. `Start Iris.ps1`
+remains the explicit diagnostics and self-check entry point.
+
 ## Uninstall And Upgrade
 
 Uninstall is available from the Start Menu shortcut or:

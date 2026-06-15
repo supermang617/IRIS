@@ -16,7 +16,7 @@ Iris is a single-user Windows prototype with a local-first runtime. The previous
 
 The only configured model identity is:
 
-- `qwen3.5:9b`
+- `huihui_ai/gemma-4-abliterated:e2b`
 
 This is treated as a local Ollama model name. Iris core remains behind a manifest/provider boundary, but this build does not include fallbacks, hardware-tier routing, Hugging Face downloads, GGUF registry management, model pulling, model auto-selection, critic/worker split, multi-model debate, or background network behavior.
 
@@ -63,7 +63,7 @@ The capability ledger records what each crate may and may not do. Any architectu
 
 - Target platform: Windows.
 - Model provider: local Ollama boundary.
-- Configured model: `qwen3.5:9b`.
+- Configured model: `huihui_ai/gemma-4-abliterated:e2b`.
 - Context ceiling: `num_ctx = 8192`.
 - Vision model: same configured model, no separate model.
 - Fallback models: disabled.

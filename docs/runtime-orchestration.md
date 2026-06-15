@@ -8,8 +8,8 @@ Contact: super.mangmail@gmail.com
 
 For v0.1, the best safe runtime shape is:
 
-- The Iris launcher starts Ollama hidden/minimized when needed and waits for
-  `127.0.0.1:11434`.
+- The Iris desktop window opens first, then starts Ollama hidden in the
+  background when needed and waits for `127.0.0.1:11434` inside the UI.
 - Ollama runs as the local model service on `127.0.0.1:11434`.
 - Iris runs as the Tauri desktop shell plus Rust command bridge.
 - Safe Hermes remains a restricted Iris-owned sidecar, started by Iris for
@@ -29,10 +29,10 @@ background when the executable is available.
 These are the safest universal settings for the current model and hardware
 target:
 
-- Ollama model: `qwen3.5:9b`
+- Ollama model: `huihui_ai/gemma-4-abliterated:e2b`
 - Ollama endpoint: `http://127.0.0.1:11434/api/generate`
 - Context ceiling: `8192`
-- Output cap per response: `384` tokens
+- Output cap per response: `192` tokens
 - Keep alive: `10m`
 - Thinking: disabled for Iris runtime calls
 - Parallel model streams: `1`
@@ -95,7 +95,7 @@ path.
 
 When all pieces are healthy:
 
-- `ollama list` shows `qwen3.5:9b`.
+- `ollama list` shows `huihui_ai/gemma-4-abliterated:e2b`.
 - Ollama reports `vision` in the configured model capabilities before claiming
   the image-probe milestone is ready.
 - Iris preflight reports Ollama/model PASS.

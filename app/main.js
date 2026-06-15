@@ -11,6 +11,13 @@ import {
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { latestBrowserPreview } from "./browser-preview.js";
+import {
+  clampResponseHeight,
+  composerHeightFor,
+  responseDefaultHeight,
+  responseMinHeight,
+  shouldSubmitComposer
+} from "./composer-state.js";
 import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
@@ -20,6 +27,7 @@ import { formatStagedMemories } from "./staging-state.js";
 import {
   classifyAsrError,
   classifyVoiceTranscript,
+  nextVoiceListenMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -44,13 +52,15 @@ const elements = {
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
-  dragHandle: document.querySelector(".drag-handle"),
+  irisConsole: document.querySelector(".iris-console"),
   memoryAddButton: document.querySelector("#memory-add-button"),
   memoryAddInput: document.querySelector("#memory-add-input"),
   memoryButton: document.querySelector("#memory-button"),
   memoryList: document.querySelector("#memory-list"),
   memoryPanel: document.querySelector("#memory-panel"),
   panicButton: document.querySelector("#panic-button"),
+  responsePane: document.querySelector("#response-pane"),
+  responseResizeHandle: document.querySelector("#response-resize-handle"),
   screenButton: document.querySelector("#screen-button"),
   visionButton: document.querySelector("#vision-button"),
   visionFileInput: document.querySelector("#vision-file-input"),
@@ -73,6 +83,7 @@ let interruptionListening = false;
 let activeAudio = null;
 let activeSpeechResolve = null;
 let activeListenMode = "idle";
+let listenGeneration = 0;
 let stopListeningRequested = false;
 let panicStopActive = false;
 let pendingVoiceLatency = null;
@@ -83,12 +94,13 @@ let cameraCaptureInProgress = false;
 let activeApprovalResolver = null;
 let browserPreviewRestoreHeight = null;
 const conversationHistory = [];
-const maxHistoryTurns = 12;
+const maxHistoryTurns = 8;
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
 const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
 const defaultScreenPrompt = "Describe what is visible underneath the Iris window. Keep it brief and natural.";
 const trustedAttachmentObjectUrls = new Set();
+const responseHeightStorageKey = "iris.responseHeight";
 
 class VoiceLatencyTrace {
   constructor() {
@@ -243,13 +255,29 @@ async function warmModel() {
 }
 
 async function warmRuntimeBeforeListening() {
-  elements.hudOutput.textContent = "Starting local voice and model.";
-  await Promise.allSettled([warmVoice(), warmModel()]);
+  elements.hudOutput.textContent = "Iris is starting.";
+  let runtimeReady = false;
+  try {
+    const runtime = await call("prepare_local_runtime");
+    runtimeReady = Boolean(runtime.ready);
+    logVoice(
+      "local_runtime_ready",
+      `started_ollama=${Boolean(runtime.startedOllama)}; elapsed_ms=${runtime.elapsedMs}`
+    );
+  } catch (error) {
+    logVoice("local_runtime_error", String(error));
+    elements.hudOutput.textContent = "Local model service is unavailable.";
+  }
+  if (runtimeReady) {
+    elements.hudOutput.textContent = "Waiting for input.";
+    restartListeningIfReady(100);
+  }
+  await Promise.allSettled([warmVoice(), runtimeReady ? warmModel() : Promise.resolve()]);
   logVoice("runtime_warm_ready");
-  if (elements.hudOutput.textContent === "Starting local voice and model.") {
+  if (elements.hudOutput.textContent === "Iris is starting.") {
     elements.hudOutput.textContent = "Waiting for input.";
   }
-  restartListeningIfReady(250);
+  restartListeningIfReady(100);
 }
 
 async function submitMessage(text, source = "typed") {
@@ -260,8 +288,12 @@ async function submitMessage(text, source = "typed") {
   if (thinking || speaking) {
     return;
   }
+  await cancelActiveAsr();
+  wakeCommandArmed = false;
+  voiceLoop = false;
   if (shouldClearInputOnSubmit(text, thinking || speaking)) {
     elements.hudInput.value = "";
+    resizeComposerInput();
   }
   const latencyTrace = new VoiceLatencyTrace();
   if (pendingVoiceLatency) {
@@ -271,6 +303,7 @@ async function submitMessage(text, source = "typed") {
   try {
     if (await handleMemoryCommand(text)) {
       elements.hudInput.value = "";
+      resizeComposerInput();
       restartListeningIfReady();
       return;
     }
@@ -393,6 +426,7 @@ async function submitScreenAreaMessage() {
   logVoice("screen_probe_start", "area-under-iris");
   setInputsDisabled(true);
   elements.hudInput.value = "";
+  resizeComposerInput();
   elements.hudOutput.textContent = `Looking under Iris.\n\nThinking locally...`;
   try {
     const response = await call("submit_screen_area_probe", { prompt });
@@ -1022,6 +1056,7 @@ function setInputsDisabled(disabled) {
 
 function renderPanicStop() {
   elements.panicButton.classList.toggle("active", panicStopActive);
+  elements.irisConsole.classList.toggle("panic-active", panicStopActive);
   elements.panicButton.setAttribute("aria-pressed", panicStopActive ? "true" : "false");
   elements.panicButton.setAttribute("title", panicStopActive ? "Resume Iris" : "Panic Stop");
   elements.panicButton.setAttribute("aria-label", panicStopActive ? "Resume Iris" : "Panic Stop");
@@ -1072,6 +1107,7 @@ elements.browserPreviewClose.addEventListener("click", () => {
 function setListening(nextListening) {
   listening = nextListening;
   elements.voiceButton.classList.toggle("listening", listening);
+  elements.irisConsole.classList.toggle("listening", listening);
   elements.voiceButton.setAttribute(
     "aria-label",
     listening && activeListenMode === "push" ? "Stop listening" : "Push to talk"
@@ -1093,15 +1129,18 @@ function startWindowDrag() {
 }
 
 function restartListeningIfReady(delayMs = 650) {
-  if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
+  if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
     return;
   }
 
   window.setTimeout(() => {
-    if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || stopListeningRequested) {
+    if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
       return;
     }
-    listenOnce(wakeWord ? "wake" : "loop");
+    const mode = nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop });
+    if (mode) {
+      listenOnce(mode);
+    }
   }, delayMs);
 }
 
@@ -1115,12 +1154,17 @@ async function listenOnce(mode) {
   }
 
   activeListenMode = mode;
+  const generation = listenGeneration;
   let restartDelayMs = 650;
   setListening(true);
   logVoice("native_asr_start_requested");
   elements.voiceStatus.textContent = mode === "push" ? "Listening..." : "Listening for Iris.";
   try {
     const result = await call("native_asr_listen_once", { mode });
+    if (generation !== listenGeneration) {
+      pendingVoiceLatency = null;
+      return;
+    }
     if (panicStopActive) {
       pendingVoiceLatency = null;
       return;
@@ -1216,6 +1260,21 @@ elements.hudForm.addEventListener("submit", async (event) => {
   submitMessage(text, "typed");
 });
 
+elements.hudInput.addEventListener("keydown", (event) => {
+  if (
+    shouldSubmitComposer({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.isComposing
+    })
+  ) {
+    event.preventDefault();
+    elements.hudForm.requestSubmit();
+  }
+});
+
+elements.hudInput.addEventListener("input", resizeComposerInput);
+
 elements.voiceButton.addEventListener("click", () => {
   if (panicStopActive) {
     elements.hudOutput.textContent = panicStatusText(true);
@@ -1272,8 +1331,13 @@ elements.windowDragStrip.addEventListener("pointerdown", () => {
   startWindowDrag();
 });
 
-elements.dragHandle.addEventListener("pointerdown", () => {
-  startWindowDrag();
+elements.responseResizeHandle.addEventListener("pointerdown", startResponseResize);
+elements.responseResizeHandle.addEventListener("keydown", resizeResponseWithKeyboard);
+elements.responseResizeHandle.addEventListener("dblclick", () => {
+  setResponseHeight(responseDefaultHeight);
+});
+window.addEventListener("resize", () => {
+  setResponseHeight(elements.responsePane.getBoundingClientRect().height);
 });
 
 elements.visionButton.addEventListener("click", () => {
@@ -1392,6 +1456,18 @@ async function attachFile(file) {
   }
 }
 
+async function cancelActiveAsr() {
+  listenGeneration += 1;
+  if (!invoke) {
+    return;
+  }
+  try {
+    await call("cancel_native_asr");
+  } catch (error) {
+    logVoice("native_asr_cancel_error", String(error));
+  }
+}
+
 async function readVisionImage(file) {
   if (classifyAttachmentFile(file) !== "image") {
     throw new Error("Vision input supports png, jpg, jpeg, and webp images.");
@@ -1422,6 +1498,7 @@ async function lookWithCamera() {
   const prompt = elements.hudInput.value.trim() || defaultCameraPrompt;
   await captureCameraSnapshot();
   elements.hudInput.value = "";
+  resizeComposerInput();
   await submitMessage(prompt, "camera-look");
 }
 
@@ -1611,6 +1688,86 @@ function renderAttachmentSelection() {
   }
 }
 
+function resizeComposerInput() {
+  elements.hudInput.style.height = "auto";
+  elements.hudInput.style.height = `${composerHeightFor(elements.hudInput.scrollHeight)}px`;
+}
+
+function responseHeightLimit() {
+  return Math.max(responseMinHeight, window.innerHeight - 194);
+}
+
+function setResponseHeight(requestedHeight) {
+  const maximum = responseHeightLimit();
+  const height = clampResponseHeight(requestedHeight, maximum);
+  document.documentElement.style.setProperty("--response-height", `${height}px`);
+  elements.responseResizeHandle.setAttribute("aria-valuenow", String(height));
+  elements.responseResizeHandle.setAttribute("aria-valuemax", String(maximum));
+  try {
+    window.localStorage.setItem(responseHeightStorageKey, String(height));
+  } catch {
+    // Persisted layout is optional when webview storage is unavailable.
+  }
+  return height;
+}
+
+function storedResponseHeight() {
+  try {
+    const stored = window.localStorage.getItem(responseHeightStorageKey);
+    return stored === null ? responseDefaultHeight : Number(stored);
+  } catch {
+    return responseDefaultHeight;
+  }
+}
+
+function startResponseResize(event) {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  const startY = event.clientY;
+  const startHeight = elements.responsePane.getBoundingClientRect().height;
+  elements.responseResizeHandle.setPointerCapture(event.pointerId);
+
+  const move = (moveEvent) => {
+    setResponseHeight(startHeight + moveEvent.clientY - startY);
+  };
+  const finish = () => {
+    elements.responseResizeHandle.removeEventListener("pointermove", move);
+    elements.responseResizeHandle.removeEventListener("pointerup", finish);
+    elements.responseResizeHandle.removeEventListener("pointercancel", finish);
+  };
+
+  elements.responseResizeHandle.addEventListener("pointermove", move);
+  elements.responseResizeHandle.addEventListener("pointerup", finish);
+  elements.responseResizeHandle.addEventListener("pointercancel", finish);
+}
+
+function resizeResponseWithKeyboard(event) {
+  const currentHeight = elements.responsePane.getBoundingClientRect().height;
+  let nextHeight = null;
+  if (event.key === "ArrowUp") {
+    nextHeight = currentHeight - 16;
+  } else if (event.key === "ArrowDown") {
+    nextHeight = currentHeight + 16;
+  } else if (event.key === "Home") {
+    nextHeight = responseMinHeight;
+  } else if (event.key === "End") {
+    nextHeight = responseHeightLimit();
+  }
+  if (nextHeight === null) {
+    return;
+  }
+  event.preventDefault();
+  setResponseHeight(nextHeight);
+}
+
+function initializeLayout() {
+  resizeComposerInput();
+  setResponseHeight(storedResponseHeight());
+}
+
+initializeLayout();
 renderVoiceCapability();
 renderAttachmentSelection();
 renderPanicStop();
