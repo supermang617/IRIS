@@ -18,6 +18,8 @@ This repository is public and source-first so people can inspect, test, and subm
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.
 - Document-image OCR: local Tesseract OCR.
 - Memory: Iris-owned local memory with restricted Hermes broker/staging path.
+- Dynamic system context: local, text-free aggregate communication metrics
+  adapt response presentation with a 30-day decay and explicit on/off/reset controls.
 - Hermes: Safe mode uses the restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal by default. Agentic Session uses pinned Hermes Agent 0.16.0 through an Iris-supervised local ACP bridge.
 - Hermes modes: Off, Safe, and Agentic Session are implemented. Safe is the startup default. Agentic supports supervised local text, file, PowerShell, process, and isolated browser tasks plus Iris-owned RAG and staged memory proposals.
 - OneDrive archive: cold, encrypted archive names must end with `.iris-memory-archive.enc`.
@@ -44,7 +46,7 @@ without putting live memory databases directly in OneDrive.
 
 - `app/`: compact Tauri web UI and voice-loop state.
 - `src-tauri/`: desktop command bridge for Ollama, native ASR, diagnostics, Kokoro playback, local memory, and restricted Hermes lifecycle commands.
-- `crates/`: Rust crates for config, policy, paths, redaction, context gating, cognition boundaries, hardware status, Ollama, status, UI, and runtime.
+- `crates/`: Rust crates for config, policy, paths, redaction, context gating, dynamic communication context, cognition boundaries, hardware status, Ollama, status, UI, and runtime.
 - `plugins/`: restricted Safe Hermes helpers and the Iris-owned official Hermes ACP launcher.
 - `profiles/`: Safe, Agentic, and pinned Hermes runtime policy metadata.
 - `models/`: Iris-owned local ASR/TTS assets only. Ollama LLM blobs stay in Ollama's managed store.

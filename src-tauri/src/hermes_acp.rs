@@ -1235,6 +1235,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
 
+    // Hermes ACP owns one supervised process and session, so live tests must not
+    // compete for that singleton even when the Rust test runner is parallel.
+    static LIVE_ACP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     struct BridgeCleanup;
 
     impl Drop for BridgeCleanup {
@@ -1661,6 +1665,9 @@ mod tests {
     #[test]
     #[ignore = "requires the provisioned Hermes ACP runtime, browser runtime, and live local Ollama"]
     fn live_hermes_acp_browser_research_returns_preview() {
+        let _serial = LIVE_ACP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _cleanup = BridgeCleanup;
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1694,6 +1701,9 @@ mod tests {
     #[test]
     #[ignore = "requires the provisioned Hermes ACP runtime and live local Ollama"]
     fn live_hermes_acp_round_trip() {
+        let _serial = LIVE_ACP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _cleanup = BridgeCleanup;
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -1735,6 +1745,9 @@ mod tests {
     #[test]
     #[ignore = "requires the provisioned Hermes ACP runtime and live local Ollama"]
     fn live_hermes_acp_uses_iris_rag_and_staging_tools() {
+        let _serial = LIVE_ACP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _cleanup = BridgeCleanup;
         let broker = FakeMemoryBroker::start();
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1789,6 +1802,9 @@ mod tests {
     #[test]
     #[ignore = "requires the provisioned Hermes ACP runtime and live local Ollama"]
     fn live_hermes_acp_file_shell_and_denied_destructive_git() {
+        let _serial = LIVE_ACP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _cleanup = BridgeCleanup;
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

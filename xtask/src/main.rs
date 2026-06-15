@@ -26,6 +26,7 @@ fn run_audit() -> Result<(), String> {
     assert_hermes_browser_runtime(&root)?;
     assert_desktop_ui(&root)?;
     assert_conversational_voice_guards(&root)?;
+    assert_dynamic_system_context(&root)?;
     assert_release_hardening(&root)?;
     assert_forbidden_api_absence(&root)?;
     Ok(())
@@ -52,6 +53,8 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "crates/iris-context-gate/Cargo.toml",
         "crates/iris-cognition/Cargo.toml",
         "crates/iris-config/Cargo.toml",
+        "crates/iris-dynamic-context/Cargo.toml",
+        "crates/iris-dynamic-context/src/lib.rs",
         "crates/iris-hardware/Cargo.toml",
         "crates/iris-ollama/Cargo.toml",
         "crates/iris-status/Cargo.toml",
@@ -61,11 +64,14 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "src-tauri/icons/icon.ico",
         "app/composer-state.js",
         "app/composer-state.test.mjs",
+        "app/dynamic-context-state.js",
+        "app/dynamic-context-state.test.mjs",
         "app/index.html",
         "app/main.js",
         "app/styles.css",
         "docs/adaptive-shell.md",
         "docs/download-and-run.md",
+        "docs/dynamic-system-context.md",
         "docs/finish-checklist.md",
         "docs/github-settings.md",
         "docs/installer-preflight.md",
@@ -212,6 +218,85 @@ fn assert_conversational_voice_guards(root: &Path) -> Result<(), String> {
     if ollama.contains("evaluate_output(") {
         return Err(
             "normal Ollama responses must not be censored by the legacy output scanner".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn assert_dynamic_system_context(root: &Path) -> Result<(), String> {
+    let manifest = read(root.join("manifest.json"))?;
+    let cargo = read(root.join("crates/iris-dynamic-context/Cargo.toml"))?;
+    let profile = read(root.join("crates/iris-dynamic-context/src/lib.rs"))?;
+    let ollama = read(root.join("crates/iris-ollama/src/lib.rs"))?;
+    let tauri = read(root.join("src-tauri/src/lib.rs"))?;
+    let app = read(root.join("app/main.js"))?;
+    let package = read(root.join("package.json"))?;
+    let sidecar = read(root.join("plugins/hermes_sidecar/sidecar.py"))?;
+    let docs = read(root.join("docs/dynamic-system-context.md"))?;
+
+    for required in [
+        "\"storage_path\": \".iris-data/dynamic_context.json\"",
+        "\"stores_raw_text\": false",
+        "\"half_life_days\": 30",
+        "\"max_observations\": 64",
+    ] {
+        if !manifest.contains(required) {
+            return Err(format!(
+                "dynamic context manifest policy missing `{required}`"
+            ));
+        }
+    }
+    if cargo.contains("reqwest")
+        || cargo.contains("tokio")
+        || cargo.contains("regex")
+        || cargo.contains("rust-bert")
+    {
+        return Err("dynamic context must remain deterministic and dependency-light".to_string());
+    }
+    for required in [
+        "DEFAULT_HALF_LIFE_DAYS",
+        "DEFAULT_MAX_OBSERVATIONS",
+        "profile_serialization_never_contains_raw_user_text",
+        "serialized_profile_survives_restart_without_raw_history",
+        "current user request, factual accuracy, and explicit user preferences override it",
+    ] {
+        if !profile.contains(required) {
+            return Err(format!(
+                "dynamic context implementation missing `{required}`"
+            ));
+        }
+    }
+    for required in [
+        "respond_with_dynamic_context",
+        "format_dynamic_context",
+        "dynamic_context_is_advisory_and_precedes_the_current_request",
+    ] {
+        if !ollama.contains(required) {
+            return Err(format!(
+                "Ollama dynamic context boundary missing `{required}`"
+            ));
+        }
+    }
+    for required in [
+        "dynamic_context_status",
+        "dynamic_context_set_enabled",
+        "dynamic_context_reset",
+        "observe_dynamic_context_nonfatal",
+        "style_text",
+    ] {
+        if !tauri.contains(required) {
+            return Err(format!("Tauri dynamic context path missing `{required}`"));
+        }
+    }
+    if !app.contains("parseDynamicContextCommand")
+        || !app.contains("styleText: originalText")
+        || !package.contains("app/dynamic-context-state.test.mjs")
+        || !sidecar.contains("\"dynamicContext\"")
+        || !docs.contains("It does not store user messages")
+    {
+        return Err(
+            "dynamic context UI controls, Hermes presentation, tests, and privacy docs must remain enabled"
+                .to_string(),
         );
     }
     Ok(())

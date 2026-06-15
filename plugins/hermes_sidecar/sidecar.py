@@ -53,6 +53,7 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
     if mode not in ALLOWED_MODES:
         raise ValueError("unsupported Hermes task mode")
     text = " ".join(str(request.get("text", "")).split())
+    dynamic_context = " ".join(str(request.get("dynamicContext", "")).split())[:600]
     if not text:
         raise ValueError("Hermes task text cannot be empty")
     if len(text) > MAX_TASK_CHARS:
@@ -89,7 +90,15 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             "text": response_text,
             "memoryProposals": proposals,
         }
-    response_text = model_response(mode, text, memory, memory_error, web_results, web_error)
+    response_text = model_response(
+        mode,
+        text,
+        memory,
+        memory_error,
+        web_results,
+        web_error,
+        dynamic_context,
+    )
     return {
         "ok": True,
         "mode": mode,
@@ -220,6 +229,7 @@ def model_response(
     memory_error: str,
     web_results: list[dict[str, Any]] | None = None,
     web_error: str = "",
+    dynamic_context: str = "",
 ) -> str:
     memory_block = format_memory(memory)
     if memory_error:
@@ -227,6 +237,11 @@ def model_response(
     web_block = format_web_results(web_results or [])
     if web_error:
         web_block = f"Web research failed: {web_error}"
+    dynamic_context_block = (
+        f"{dynamic_context}\n\n"
+        if dynamic_context
+        else ""
+    )
     prompt = (
         "You are Hermes, Iris's sandboxed research, RAG, and memory-transfer helper.\n"
         "Use approved Iris memory, approved web research snippets, and the user's task.\n"
@@ -235,6 +250,7 @@ def model_response(
         "Do not claim computer-control capabilities. Do not invent sources.\n"
         "If evidence is empty, say what is missing and give the best next step without asking for permission to search.\n"
         "Be direct and useful.\n\n"
+        f"{dynamic_context_block}"
         f"Mode: {mode}\n"
         f"Approved memory:\n{memory_block}\n\n"
         f"Approved web research:\n{web_block}\n\n"

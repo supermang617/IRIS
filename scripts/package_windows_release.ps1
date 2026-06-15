@@ -73,6 +73,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "NOTICE.md") -Destination (Join-P
 Copy-RequiredFile -Source (Join-Path $repoRoot "SECURITY.md") -Destination (Join-Path $packageRoot "SECURITY.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "known-limitations.md") -Destination (Join-Path $packageRoot "known-limitations.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\download-and-run.md") -Destination (Join-Path $packageRoot "README_RELEASE.md")
+Copy-RequiredFile -Source (Join-Path $repoRoot "docs\dynamic-system-context.md") -Destination (Join-Path $packageRoot "docs\dynamic-system-context.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\installer-preflight.md") -Destination (Join-Path $packageRoot "docs\installer-preflight.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Destination (Join-Path $packageRoot "docs\iris-architecture.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\windows-installer.md") -Destination (Join-Path $packageRoot "docs\windows-installer.md")

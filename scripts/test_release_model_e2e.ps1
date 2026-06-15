@@ -86,11 +86,15 @@ try {
     }
 
     Add-Type -AssemblyName System.Drawing
-    $bitmap = New-Object System.Drawing.Bitmap 256, 256
+    $bitmap = New-Object System.Drawing.Bitmap 512, 512
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.Clear([System.Drawing.Color]::White)
+    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Red)
-    $graphics.FillEllipse($brush, 64, 64, 128, 128)
+    $outline = New-Object System.Drawing.Pen ([System.Drawing.Color]::Black), 10
+    $graphics.FillEllipse($brush, 96, 96, 320, 320)
+    $graphics.DrawEllipse($outline, 96, 96, 320, 320)
+    $outline.Dispose()
     $brush.Dispose()
     $graphics.Dispose()
     $bitmap.Save($imagePath, [System.Drawing.Imaging.ImageFormat]::Png)

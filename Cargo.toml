@@ -7,6 +7,7 @@ members = [
     "crates/iris-context-gate",
     "crates/iris-cognition",
     "crates/iris-config",
+    "crates/iris-dynamic-context",
     "crates/iris-hardware",
     "crates/iris-ollama",
     "crates/iris-status",

@@ -68,6 +68,8 @@ deleted.
 
 Upgrades use the same install command. The installer replaces known managed
 release folders and files in the install root, then reruns self-check/setup.
+It preserves `.iris-data`, including accepted memories, staged memory
+proposals, diagnostics, and `dynamic_context.json`.
 
 For automated smoke tests, use `-SetupNonInteractive` with `-RunSetup` so the
 installed setup wizard reports diagnostics without prompting.

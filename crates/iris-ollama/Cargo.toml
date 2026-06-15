@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 iris-config = { path = "../iris-config" }
 iris-core-types = { path = "../iris-core-types" }
+iris-dynamic-context = { path = "../iris-dynamic-context" }
 iris-policy = { path = "../iris-policy" }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json"] }
 serde = { version = "1.0.228", features = ["derive"] }

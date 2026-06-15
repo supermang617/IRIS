@@ -9,6 +9,7 @@ pub struct ProjectManifest {
     pub project: ProjectSection,
     pub model_policy: ModelPolicy,
     pub resource_policy: ResourcePolicy,
+    pub dynamic_context_policy: DynamicContextPolicy,
     pub tts_policy: TtsPolicy,
     pub ipc_policy: IpcPolicy,
     pub safety_invariant: SafetyInvariant,
@@ -48,6 +49,15 @@ pub struct ModelPolicy {
 pub struct ResourcePolicy {
     pub reserved_system_memory_ratio: f64,
     pub scan_inputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct DynamicContextPolicy {
+    pub enabled_by_default: bool,
+    pub storage_path: String,
+    pub stores_raw_text: bool,
+    pub half_life_days: u32,
+    pub max_observations: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -174,6 +184,26 @@ impl ProjectManifest {
             self.resource_policy.reserved_system_memory_ratio >= 0.30
                 && self.resource_policy.reserved_system_memory_ratio <= 0.40,
             "reserved system memory ratio must stay between 30% and 40%",
+        )?;
+        require(
+            self.dynamic_context_policy.enabled_by_default,
+            "dynamic system context must be enabled by default",
+        )?;
+        require(
+            self.dynamic_context_policy.storage_path == ".iris-data/dynamic_context.json",
+            "dynamic system context must stay inside the Iris-owned data root",
+        )?;
+        require(
+            !self.dynamic_context_policy.stores_raw_text,
+            "dynamic system context must not store raw user text",
+        )?;
+        require(
+            self.dynamic_context_policy.half_life_days == 30,
+            "dynamic system context half-life must be 30 days",
+        )?;
+        require(
+            self.dynamic_context_policy.max_observations == 64,
+            "dynamic system context observation cap must be 64",
         )?;
         require(
             self.tts_policy.provider == "kokoro_onnx_python",
@@ -324,5 +354,17 @@ mod tests {
             manifest.tts_policy.model_path,
             "models/kokoro/kokoro-v1.0.onnx"
         );
+    }
+
+    #[test]
+    fn dynamic_context_policy_is_local_bounded_and_text_free() {
+        let manifest = ProjectManifest::from_json_str(VALID_MANIFEST).unwrap();
+        let policy = &manifest.dynamic_context_policy;
+
+        assert!(policy.enabled_by_default);
+        assert_eq!(policy.storage_path, ".iris-data/dynamic_context.json");
+        assert!(!policy.stores_raw_text);
+        assert_eq!(policy.half_life_days, 30);
+        assert_eq!(policy.max_observations, 64);
     }
 }

@@ -71,6 +71,12 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 26. Confirm Iris attaches one video frame preview for the next prompt.
 27. Click the attachment icon, paste, or drag a txt, md, csv, json, log, or rtf text document into the text bar.
 28. Confirm Iris shows a document attachment box and uses only capped text from that document as untrusted context.
+29. Enter `dynamic context reset`, then send two direct analytical prompts of
+    at least three words each.
+30. Enter `dynamic context` and confirm it reports observations plus sentence,
+    vocabulary, and tone labels without showing prior prompt text.
+31. Enter `dynamic context off`, send another prompt, then confirm the
+    observation count does not increase. Re-enable it with `dynamic context on`.
 
 ## Hermes and Memory Boundary Checks
 
@@ -137,3 +143,5 @@ If Iris stops listening, the last few lines of this file should show whether nat
 - Push-to-talk and typed text must keep working.
 - The interruption word is `Iris` while Iris is speaking; `stop` and `Iris stop` should also cancel current speech.
 - Voice input must use native local ASR. WebView speech recognition is not an acceptable runtime path because it censors profanity before Iris receives the transcript.
+- Dynamic system context must store aggregate metrics only. It must not retain
+  prompt text, attachment text, image contents, or screen contents.

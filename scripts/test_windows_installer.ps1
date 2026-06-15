@@ -34,6 +34,7 @@ try {
         "bin\iris-runtime.exe",
         "models\kokoro\kokoro-v1.0.onnx",
         "models\whisper\ggml-tiny.en.bin",
+        "docs\dynamic-system-context.md",
         "plugins\hermes_sidecar\sidecar.py",
         "plugins\memory\iris_broker\provider.py"
         "plugins\hermes_acp\iris_acp.py"
@@ -79,6 +80,20 @@ try {
         if ($shortcut.Arguments) {
             throw "Iris shortcut must not pass console-launcher arguments: $($shortcut.Arguments)"
         }
+    }
+
+    $profilePath = Join-Path $installRoot ".iris-data\dynamic_context.json"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $profilePath) | Out-Null
+    $profileMarker = '{"version":1,"enabled":false,"observation_count":7,"updated_ms":1234}'
+    [System.IO.File]::WriteAllText($profilePath, $profileMarker, [System.Text.Encoding]::UTF8)
+
+    & $installer -SourceZip $zipPath -Sha256Path $shaPath -InstallRoot $installRoot -StartMenuDir $startMenuDir -DesktopDir $desktopDir -NonInteractive
+    if ($LASTEXITCODE -ne 0) {
+        throw "Upgrade installer failed with exit code $LASTEXITCODE"
+    }
+    $preservedProfile = [System.IO.File]::ReadAllText($profilePath, [System.Text.Encoding]::UTF8)
+    if ($preservedProfile -ne $profileMarker) {
+        throw "Upgrade installer changed or removed the dynamic context profile."
     }
 
     & (Join-Path $installRoot "Uninstall Iris.ps1") -Quiet

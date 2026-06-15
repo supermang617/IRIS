@@ -421,19 +421,50 @@ fn current_dashboard_snapshot() -> Result<iris_status::DashboardSnapshot, String
 async fn submit_typed_hud(
     text: String,
     history: Option<Vec<ConversationTurn>>,
+    style_text: Option<String>,
 ) -> HudCommandResponse {
-    tauri::async_runtime::spawn_blocking(move || submit_typed_hud_blocking(text, history))
-        .await
-        .unwrap_or_else(|err| HudCommandResponse {
-            text: format!("Local model unavailable: {err}"),
-            cancelled: false,
-            model_elapsed_ms: 0,
-        })
+    tauri::async_runtime::spawn_blocking(move || {
+        submit_typed_hud_blocking(text, history, style_text)
+    })
+    .await
+    .unwrap_or_else(|err| HudCommandResponse {
+        text: format!("Local model unavailable: {err}"),
+        cancelled: false,
+        model_elapsed_ms: 0,
+    })
 }
 
 #[tauri::command]
 fn list_memories() -> Result<Vec<MemoryItem>, String> {
     load_memories()
+}
+
+#[tauri::command]
+fn dynamic_context_status() -> Result<iris_dynamic_context::DynamicContextSummary, String> {
+    let now = timestamp_ms_u64()?;
+    let (profile, policy) = load_dynamic_context_profile_or_default()?;
+    Ok(profile.summary(now, policy.half_life_days))
+}
+
+#[tauri::command]
+fn dynamic_context_set_enabled(
+    enabled: bool,
+) -> Result<iris_dynamic_context::DynamicContextSummary, String> {
+    let now = timestamp_ms_u64()?;
+    let (mut profile, policy) = load_dynamic_context_profile_or_default()?;
+    profile.enabled = enabled;
+    save_dynamic_context_profile(&profile, &policy)?;
+    Ok(profile.summary(now, policy.half_life_days))
+}
+
+#[tauri::command]
+fn dynamic_context_reset() -> Result<iris_dynamic_context::DynamicContextSummary, String> {
+    let now = timestamp_ms_u64()?;
+    let (mut profile, policy) = load_dynamic_context_profile_or_default()?;
+    profile.reset();
+    profile.updated_ms = now;
+    save_dynamic_context_profile(&profile, &policy)?;
+    Ok(profile.summary(now, policy.half_life_days))
 }
 
 #[tauri::command]
@@ -622,6 +653,7 @@ async fn hermes_submit_agentic_task(
             &text,
         )?;
         hermes_policy::record_agentic_activity(timestamp_ms()?)?;
+        observe_dynamic_context_nonfatal(&text, timestamp_ms_u64().unwrap_or(0));
         Ok(result)
     })
     .await
@@ -725,15 +757,20 @@ fn delete_memory(id: u64) -> Result<Vec<MemoryItem>, String> {
 fn submit_typed_hud_blocking(
     text: String,
     history: Option<Vec<ConversationTurn>>,
+    style_text: Option<String>,
 ) -> HudCommandResponse {
     let started = Instant::now();
     let history = history.unwrap_or_default();
-    let response = match model_response(&text, &history) {
+    let style_text = style_text.unwrap_or_else(|| text.clone());
+    let now = timestamp_ms_u64().unwrap_or(0);
+    let dynamic_context = dynamic_context_instruction(now);
+    let response = match model_response(&text, &history, dynamic_context.as_deref()) {
         Ok(response) => response,
         Err(error) => iris_core_types::AssistantResponse::text_only(format!(
             "Local model unavailable: {error}"
         )),
     };
+    observe_dynamic_context_nonfatal(&style_text, now);
     HudCommandResponse {
         text: response.text,
         cancelled: response.cancelled,
@@ -773,12 +810,20 @@ fn submit_image_probe_blocking(
     prompt: String,
 ) -> ImageProbeResponse {
     let started = Instant::now();
-    let response = match image_probe_response(&image_name, &image_bytes, &prompt) {
+    let now = timestamp_ms_u64().unwrap_or(0);
+    let dynamic_context = dynamic_context_instruction(now);
+    let response = match image_probe_response(
+        &image_name,
+        &image_bytes,
+        &prompt,
+        dynamic_context.as_deref(),
+    ) {
         Ok(response) => response,
         Err(error) => iris_core_types::AssistantResponse::text_only(format!(
             "Local image probe unavailable: {error}"
         )),
     };
+    observe_dynamic_context_nonfatal(&prompt, now);
     ImageProbeResponse {
         text: response.text,
         model_elapsed_ms: started.elapsed().as_millis(),
@@ -787,12 +832,15 @@ fn submit_image_probe_blocking(
 
 fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> ImageProbeResponse {
     let started = Instant::now();
-    let response = match screen_area_probe_response(&window, &prompt) {
+    let now = timestamp_ms_u64().unwrap_or(0);
+    let dynamic_context = dynamic_context_instruction(now);
+    let response = match screen_area_probe_response(&window, &prompt, dynamic_context.as_deref()) {
         Ok(response) => response,
         Err(error) => iris_core_types::AssistantResponse::text_only(format!(
             "Local screen probe unavailable: {error}"
         )),
     };
+    observe_dynamic_context_nonfatal(&prompt, now);
     ImageProbeResponse {
         text: response.text,
         model_elapsed_ms: started.elapsed().as_millis(),
@@ -1515,12 +1563,104 @@ fn timestamp_ms() -> Result<u128, String> {
         .map(|duration| duration.as_millis())
 }
 
+fn timestamp_ms_u64() -> Result<u64, String> {
+    timestamp_ms().and_then(|value| {
+        u64::try_from(value).map_err(|_| "system timestamp exceeds u64 range".to_string())
+    })
+}
+
 fn json_capped(value: &str) -> String {
     value.chars().take(500).collect()
 }
 
 fn memory_file_path() -> Result<std::path::PathBuf, String> {
     Ok(workspace_root()?.join(".iris-data/memories.json"))
+}
+
+fn dynamic_context_file_path(
+    policy: &iris_config::DynamicContextPolicy,
+) -> Result<std::path::PathBuf, String> {
+    Ok(workspace_root()?.join(&policy.storage_path))
+}
+
+fn load_dynamic_context_profile_or_default() -> Result<
+    (
+        iris_dynamic_context::DynamicContextProfile,
+        iris_config::DynamicContextPolicy,
+    ),
+    String,
+> {
+    let root = workspace_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&root)?;
+    let policy = manifest.dynamic_context_policy;
+    let path = dynamic_context_file_path(&policy)?;
+    if !path.exists() {
+        return Ok((
+            iris_dynamic_context::DynamicContextProfile::with_enabled(policy.enabled_by_default),
+            policy,
+        ));
+    }
+    let bytes = fs::read(&path)
+        .map_err(|err| format!("failed to read dynamic context {}: {err}", path.display()))?;
+    if bytes.is_empty() {
+        return Ok((
+            iris_dynamic_context::DynamicContextProfile::with_enabled(policy.enabled_by_default),
+            policy,
+        ));
+    }
+    let profile =
+        match serde_json::from_slice::<iris_dynamic_context::DynamicContextProfile>(&bytes) {
+            Ok(profile) => profile,
+            Err(error) => {
+                eprintln!(
+                    "Iris dynamic context was reset after invalid JSON in {}: {error}",
+                    path.display()
+                );
+                iris_dynamic_context::DynamicContextProfile::with_enabled(policy.enabled_by_default)
+            }
+        };
+    if profile.version != iris_dynamic_context::PROFILE_VERSION {
+        return Ok((
+            iris_dynamic_context::DynamicContextProfile::with_enabled(profile.enabled),
+            policy,
+        ));
+    }
+    Ok((profile, policy))
+}
+
+fn save_dynamic_context_profile(
+    profile: &iris_dynamic_context::DynamicContextProfile,
+    policy: &iris_config::DynamicContextPolicy,
+) -> Result<(), String> {
+    let path = dynamic_context_file_path(policy)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let json = serde_json::to_vec_pretty(profile).map_err(|err| err.to_string())?;
+    fs::write(&path, json)
+        .map_err(|err| format!("failed to write dynamic context {}: {err}", path.display()))
+}
+
+fn dynamic_context_instruction(now_ms: u64) -> Option<String> {
+    match load_dynamic_context_profile_or_default() {
+        Ok((profile, policy)) => profile.instruction_block(now_ms, policy.half_life_days),
+        Err(error) => {
+            eprintln!("Iris dynamic context unavailable: {error}");
+            None
+        }
+    }
+}
+
+fn observe_dynamic_context_nonfatal(text: &str, now_ms: u64) {
+    let result = load_dynamic_context_profile_or_default().and_then(|(mut profile, policy)| {
+        if profile.observe(text, now_ms, policy.half_life_days, policy.max_observations) {
+            save_dynamic_context_profile(&profile, &policy)?;
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        eprintln!("Iris dynamic context update failed: {error}");
+    }
 }
 
 fn load_memories() -> Result<Vec<MemoryItem>, String> {
@@ -2480,6 +2620,7 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
         "mode": hermes_mode_name(&request.mode),
         "text": normalize_hermes_task_text(&request.text)?,
         "explicitUserResearchRequest": request.explicit_user_research_request,
+        "dynamicContext": dynamic_context_instruction(timestamp_ms_u64().unwrap_or(0)),
     }))
     .map_err(|err| err.to_string())?;
     sidecar
@@ -2509,6 +2650,7 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
             .take(MAX_HERMES_RESPONSE_CHARS)
             .collect();
     }
+    observe_dynamic_context_nonfatal(&request.text, timestamp_ms_u64().unwrap_or(0));
     Ok(response)
 }
 
@@ -2637,6 +2779,7 @@ fn workspace_root() -> Result<std::path::PathBuf, String> {
 fn model_response(
     text: &str,
     history: &[ConversationTurn],
+    dynamic_context: Option<&str>,
 ) -> Result<iris_core_types::AssistantResponse, String> {
     let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
     let manifest = iris_config::load_manifest_from_workspace(&cwd)?;
@@ -2657,13 +2800,19 @@ fn model_response(
         .into_iter()
         .map(|memory| memory.text)
         .collect::<Vec<_>>();
-    Ok(client.respond_with_history_and_memories(&gated_context, &ollama_history, &memories))
+    Ok(client.respond_with_dynamic_context(
+        &gated_context,
+        &ollama_history,
+        &memories,
+        dynamic_context,
+    ))
 }
 
 fn image_probe_response(
     image_name: &str,
     image_bytes: &[u8],
     prompt: &str,
+    dynamic_context: Option<&str>,
 ) -> Result<iris_core_types::AssistantResponse, String> {
     let clean_prompt = prompt.trim();
     if clean_prompt.is_empty() {
@@ -2687,12 +2836,13 @@ fn image_probe_response(
     let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
-    Ok(client.respond_to_image_bytes(image_bytes, clean_prompt))
+    Ok(client.respond_to_image_bytes_with_context(image_bytes, clean_prompt, dynamic_context))
 }
 
 fn screen_area_probe_response(
     window: &IrisWindow,
     prompt: &str,
+    dynamic_context: Option<&str>,
 ) -> Result<iris_core_types::AssistantResponse, String> {
     let clean_prompt = prompt.trim();
     if clean_prompt.is_empty() {
@@ -2711,7 +2861,11 @@ fn screen_area_probe_response(
     let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
-    Ok(client.respond_to_screen_area_bytes(&image_bytes, clean_prompt))
+    Ok(client.respond_to_screen_area_bytes_with_context(
+        &image_bytes,
+        clean_prompt,
+        dynamic_context,
+    ))
 }
 
 fn capture_screen_area_under_window(window: &IrisWindow) -> Result<Vec<u8>, String> {
@@ -3339,6 +3493,9 @@ pub fn run() {
             browser_preview_data_url,
             dashboard_snapshot,
             delete_memory,
+            dynamic_context_reset,
+            dynamic_context_set_enabled,
+            dynamic_context_status,
             edit_memory,
             hermes_accept_staged_memory,
             hermes_agentic_runtime_status,

@@ -28,6 +28,11 @@ separate confirmation, the browser uses a dedicated Iris profile, and clipboard,
 mouse, keyboard, general window control, arbitrary plugins, and cloud model APIs
 remain unavailable.
 
+Dynamic system context is local and enabled by default. Enter `dynamic context`
+for status, or use `dynamic context off`, `dynamic context on`, and
+`dynamic context reset` for control. The profile stores aggregate metrics only,
+not prompt or attachment text.
+
 ## Download the Portable ZIP
 
 1. Open the GitHub Release for `supermang617/IRIS`.

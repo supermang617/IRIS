@@ -7,6 +7,7 @@ edition = "2024"
 cpal = "0.17.3"
 iris-config = { path = "../crates/iris-config" }
 iris-core-types = { path = "../crates/iris-core-types" }
+iris-dynamic-context = { path = "../crates/iris-dynamic-context" }
 iris-hardware = { path = "../crates/iris-hardware" }
 iris-ollama = { path = "../crates/iris-ollama" }
 iris-status = { path = "../crates/iris-status" }

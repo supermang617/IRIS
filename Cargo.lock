@@ -1606,6 +1606,14 @@ name = "iris-core-types"
 version = "0.1.1"
 
 [[package]]
+name = "iris-dynamic-context"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "iris-hardware"
 version = "0.1.1"
 dependencies = [
@@ -1619,6 +1627,7 @@ dependencies = [
  "iris-config",
  "iris-context-gate",
  "iris-core-types",
+ "iris-dynamic-context",
  "iris-policy",
  "reqwest",
  "serde",
@@ -1675,6 +1684,7 @@ dependencies = [
  "image",
  "iris-config",
  "iris-core-types",
+ "iris-dynamic-context",
  "iris-hardware",
  "iris-ollama",
  "iris-status",

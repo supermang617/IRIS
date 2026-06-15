@@ -69,6 +69,32 @@ class SidecarBehaviorTests(unittest.TestCase):
         self.assertIn("already been fetched", response["text"])
         self.assertIn("Iris result", response["text"])
 
+    def test_dynamic_context_precedes_and_defers_to_current_task(self):
+        original_query = sidecar.iris_broker.iris_query_memory
+        original_generate = sidecar.iris_broker.iris_generate_text
+        try:
+            sidecar.iris_broker.iris_query_memory = lambda query, limit: {"results": []}
+            sidecar.iris_broker.iris_generate_text = lambda prompt: prompt
+            response = sidecar.handle_request({
+                "type": "task",
+                "mode": "reason",
+                "text": "For this answer, be formal and detailed.",
+                "dynamicContext": (
+                    "Dynamic communication context: prefer short casual answers. "
+                    "The current user request overrides this."
+                ),
+                "explicitUserResearchRequest": False,
+            })
+        finally:
+            sidecar.iris_broker.iris_query_memory = original_query
+            sidecar.iris_broker.iris_generate_text = original_generate
+        prompt = response["text"]
+        self.assertLess(
+            prompt.index("Dynamic communication context"),
+            prompt.index("User task: For this answer, be formal and detailed."),
+        )
+        self.assertIn("current user request overrides", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

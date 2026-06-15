@@ -29,6 +29,13 @@
     "reserved_system_memory_ratio": 0.35,
     "scan_inputs": ["total_ram", "available_ram", "cpu_cores"]
   },
+  "dynamic_context_policy": {
+    "enabled_by_default": true,
+    "storage_path": ".iris-data/dynamic_context.json",
+    "stores_raw_text": false,
+    "half_life_days": 30,
+    "max_observations": 64
+  },
   "tts_policy": {
     "provider": "kokoro_onnx_python",
     "voice": "af_heart",

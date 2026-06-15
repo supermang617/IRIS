@@ -12,6 +12,10 @@ import {
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { latestBrowserPreview } from "./browser-preview.js";
 import {
+  formatDynamicContextStatus,
+  parseDynamicContextCommand
+} from "./dynamic-context-state.js";
+import {
   clampResponseHeight,
   composerHeightFor,
   responseDefaultHeight,
@@ -337,7 +341,11 @@ async function submitMessage(text, source = "typed") {
     : `${text}\n\nThinking locally...`;
   try {
     const history = conversationHistory.slice();
-    const response = await call("submit_typed_hud", { text, history });
+    const response = await call("submit_typed_hud", {
+      text,
+      history,
+      styleText: originalText
+    });
     latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", documentAttached ? `[document] ${originalText}` : originalText);
@@ -474,6 +482,24 @@ async function handleMemoryCommand(text) {
     return true;
   }
   const clean = String(text || "").trim();
+  const dynamicContextCommand = parseDynamicContextCommand(clean);
+  if (dynamicContextCommand.action === "status") {
+    const status = await call("dynamic_context_status");
+    elements.hudOutput.textContent = formatDynamicContextStatus(status);
+    return true;
+  }
+  if (dynamicContextCommand.action === "reset") {
+    const status = await call("dynamic_context_reset");
+    elements.hudOutput.textContent = `Dynamic context reset.\n\n${formatDynamicContextStatus(status)}`;
+    return true;
+  }
+  if (dynamicContextCommand.action === "set_enabled") {
+    const status = await call("dynamic_context_set_enabled", {
+      enabled: dynamicContextCommand.enabled
+    });
+    elements.hudOutput.textContent = formatDynamicContextStatus(status);
+    return true;
+  }
   const hermesControl = parseHermesControlCommand(clean);
   const hermesRoute = classifyHermesRoute(clean);
 
@@ -576,7 +602,7 @@ async function handleMemoryCommand(text) {
 
   if (/^memory\s+help$/i.test(clean)) {
     elements.hudOutput.textContent =
-      "Memory commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Online and research requests are routed through Iris to Safe Hermes.";
+      "Memory and context commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\ndynamic context\ndynamic context on\ndynamic context off\ndynamic context reset\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Dynamic context stores only decaying aggregate communication metrics. Online and research requests are routed through Iris to Safe Hermes.";
     return true;
   }
 

@@ -17,6 +17,8 @@ For v0.1, the best safe runtime shape is:
 - Agentic Hermes uses pinned Hermes Agent 0.16.0 through a hidden Iris-owned ACP
   child process supervised by a Windows Job Object.
 - The Iris memory broker is loopback-only on `127.0.0.1:48731`.
+- Dynamic system context runs inline inside Iris with no background process or
+  additional model call. It stores only aggregate communication metrics.
 
 Hermes should not be a separate visible app that the beginner manually opens.
 It should run as a hidden child process owned by Iris, with stdin/stdout JSON
@@ -52,6 +54,8 @@ target:
 - Agentic action tools: `read_file`, `write_file`, `patch`, `search_files`,
   `terminal`, `process`
 - Agentic native durable memory, MCP, lazy installs, and cloud fallback: disabled
+- Dynamic context: enabled by default, 30-day half-life, 64-observation cap,
+  no raw text storage
 
 These settings intentionally favor reliability and privacy over maximum raw
 throughput. Iris, Hermes, and Ollama share one local model path so they do not
@@ -111,6 +115,8 @@ When all pieces are healthy:
 - Ending the session, changing mode, Panic Stop, or Iris exit terminates ACP.
 - Natural online/research requests submitted to Iris route through Hermes.
 - Memory proposals remain staged until Iris/user approval.
+- `dynamic context` reports the current aggregate communication profile;
+  `dynamic context off`, `on`, and `reset` work without changing durable memory.
 
 ## What Not To Change
 
