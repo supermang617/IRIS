@@ -185,7 +185,7 @@ function Find-Python311Home {
         }
     }
 
-    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run `uv python install 3.11`, then run the Iris installer again."
+    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run uv python install 3.11, then run the Iris installer again."
 }
 
 function Test-HermesVenv {

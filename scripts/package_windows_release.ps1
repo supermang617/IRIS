@@ -230,7 +230,7 @@ function Find-Python311Home {
         }
     }
 
-    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run `uv python install 3.11`, then start Iris again."
+    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run uv python install 3.11, then start Iris again."
 }
 
 function Test-HermesVenv {
@@ -401,24 +401,47 @@ function Test-IrisAlreadyRunning {
 }
 
 function Invoke-IrisSelfCheck {
-    & $runtimeExe --self-check
-    if ($LASTEXITCODE -eq 0) {
-        return
+    $output = @()
+    $exitCode = 0
+    try {
+        $output = & $runtimeExe --self-check 2>&1
+        $exitCode = $LASTEXITCODE
+    } catch {
+        $output = @($output; ($_ | Out-String))
+        $exitCode = 1
+    }
+    if ($output.Count -gt 0) {
+        $output | ForEach-Object { Write-Host $_ }
+    }
+    if ($exitCode -eq 0) {
+        return 0
     }
 
-    $firstExitCode = $LASTEXITCODE
-    Write-Host "Iris self-check failed with exit code $firstExitCode. Restarting Ollama once and retrying."
+    Write-Host "Iris self-check failed with exit code $exitCode. Restarting Ollama once and retrying."
     Stop-OllamaForIris
     Start-Sleep -Seconds 2
     Start-OllamaForIris
-    & $runtimeExe --self-check
+
+    $retryOutput = @()
+    $retryExitCode = 0
+    try {
+        $retryOutput = & $runtimeExe --self-check 2>&1
+        $retryExitCode = $LASTEXITCODE
+    } catch {
+        $retryOutput = @($retryOutput; ($_ | Out-String))
+        $retryExitCode = 1
+    }
+    if ($retryOutput.Count -gt 0) {
+        $retryOutput | ForEach-Object { Write-Host $_ }
+    }
+    return $retryExitCode
 }
 
 if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
     Repair-HermesVenv
     Start-OllamaForIris
-    Invoke-IrisSelfCheck
-    exit $LASTEXITCODE
+    $selfCheckExitCode = Invoke-IrisSelfCheck
+    exit $selfCheckExitCode
 }
 
 Repair-HermesVenv
