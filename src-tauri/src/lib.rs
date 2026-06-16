@@ -3087,7 +3087,7 @@ fn record_microphone_mono_16khz(
     let captured_for_stream = Arc::clone(&captured);
     let error_state = Arc::new(Mutex::new(None::<String>));
     let error_for_stream = Arc::clone(&error_state);
-    let err_fn = move |err: cpal::StreamError| {
+    let err_fn = move |err: cpal::Error| {
         if let Ok(mut slot) = error_for_stream.lock() {
             *slot = Some(err.to_string());
         }
@@ -3095,13 +3095,13 @@ fn record_microphone_mono_16khz(
 
     let stream = match supported_config.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(
-            &config,
+            config,
             move |data: &[f32], _| push_mono_samples(data, channels, &captured_for_stream),
             err_fn,
             None,
         ),
         cpal::SampleFormat::I16 => device.build_input_stream(
-            &config,
+            config,
             move |data: &[i16], _| {
                 let converted: Vec<f32> = data
                     .iter()
@@ -3113,7 +3113,7 @@ fn record_microphone_mono_16khz(
             None,
         ),
         cpal::SampleFormat::U16 => device.build_input_stream(
-            &config,
+            config,
             move |data: &[u16], _| {
                 let converted: Vec<f32> = data
                     .iter()
