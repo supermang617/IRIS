@@ -80,9 +80,14 @@ function Get-RepairPlan {
             }
         }
         "^Configured Ollama model$" {
+            $description = if ($NonInteractive) {
+                "Open Iris after installation; the launcher self-check will verify the configured local model and report a clear error if it is unavailable."
+            } else {
+                "This downloads $modelId into the local Ollama model store."
+            }
             return [pscustomobject]@{
                 Title = "Download the configured local model"
-                Description = "This downloads $modelId into the local Ollama model store."
+                Description = $description
                 Link = "https://ollama.com/library"
                 Commands = @(
                     "ollama pull $modelId"

@@ -4,6 +4,7 @@ import {
   classifyAsrError,
   classifyVoiceTranscript,
   nextVoiceListenMode,
+  shouldDisplayVoiceTranscript,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -216,13 +217,21 @@ test("unexpected ASR failures remain errors", () => {
 });
 
 test("wake listener backs off after empty or ambient captures", () => {
-  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 150);
+  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 1200);
   assert.equal(
     wakeRestartDelayMs("wake", "background television", "wait-for-wake"),
-    600
+    2500
   );
+  assert.equal(wakeRestartDelayMs("wake", "", "ignore", 3), 5000);
+  assert.equal(wakeRestartDelayMs("wake", "background television", "wait-for-wake", 6), 10000);
   assert.equal(wakeRestartDelayMs("wake", "Iris hello", "submit"), 650);
   assert.equal(wakeRestartDelayMs("push", "", "ignore"), 650);
+});
+
+test("raw wake transcripts are hidden until a decision owns the UI", () => {
+  for (const action of ["ignore", "wait-for-wake", "arm-wake-followup", "submit", "interrupt"]) {
+    assert.equal(shouldDisplayVoiceTranscript({ action }), false);
+  }
 });
 
 test("armed wake follow-up uses command endpointing instead of wake endpointing", () => {

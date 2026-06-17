@@ -451,7 +451,17 @@ try {
 
     if ($RunSetup) {
         if ($NonInteractive.IsPresent -or $SetupNonInteractive.IsPresent) {
-            & (Join-Path $installRootResolved "Iris Setup Wizard.ps1") -NonInteractive
+            $previousFastPreflight = $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY
+            $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY = "1"
+            try {
+                & (Join-Path $installRootResolved "Iris Setup Wizard.ps1") -NonInteractive
+            } finally {
+                if ($null -eq $previousFastPreflight) {
+                    Remove-Item Env:\IRIS_PREFLIGHT_FAST_LOCAL_ONLY -ErrorAction SilentlyContinue
+                } else {
+                    $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY = $previousFastPreflight
+                }
+            }
         } else {
             & (Join-Path $installRootResolved "Iris Setup Wizard.ps1")
         }

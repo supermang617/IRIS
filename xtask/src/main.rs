@@ -388,6 +388,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
     let preflight_script = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
+    let setup_script = read(root.join("scripts/iris_setup_wizard.ps1"))?;
     let windows_installer_script = read(root.join("scripts/install_iris_windows.ps1"))?;
     let github_release_smoke = read(root.join("scripts/test_github_v1_release.ps1"))?;
 
@@ -559,6 +560,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if preflight_script.contains("& ollama list") {
         return Err("preflight script must not call `ollama list` without a timeout".to_string());
+    }
+    if !setup_script
+        .contains("Open Iris after installation; the launcher self-check will verify the configured local model")
+    {
+        return Err(
+            "setup wizard must use beginner-safe noninteractive model-check wording".to_string(),
+        );
     }
     if !windows_installer.contains("iris-windows.zip")
         || !windows_installer.contains("iris-windows.zip.sha256")
@@ -1187,6 +1195,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     for required in [
         "SelfCheckTimeoutSeconds",
         "SkipSelfCheck",
+        "IRIS_PREFLIGHT_FAST_LOCAL_ONLY",
         "Installed Iris self-check timed out",
         "Invoke-InstallerProbe",
         "timed out after $TimeoutSeconds seconds",

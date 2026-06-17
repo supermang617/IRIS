@@ -226,7 +226,7 @@ $ollamaPath = Test-CommandAvailable -Name "ollama"
 if ($ollamaPath) {
     Add-Check -Status "PASS" -Name "Ollama executable" -Detail "Found ollama at $ollamaPath." -Repair "No action needed."
     if ($fastLocalOnly) {
-        Add-Check -Status "WARN" -Name "Configured Ollama model" -Detail "Skipped local Ollama model listing for release smoke diagnostics." -Repair "Run this preflight without IRIS_PREFLIGHT_FAST_LOCAL_ONLY to verify the configured model."
+        Add-Check -Status "WARN" -Name "Configured Ollama model" -Detail "Deferred live Ollama model check during noninteractive install to keep setup responsive." -Repair "Open Iris after installation; the bounded launcher self-check verifies Ollama/model readiness and reports a clear error if it is unavailable."
     } else {
         $ollamaList = Invoke-PreflightProbe -FilePath $ollamaPath -Arguments "list" -TimeoutSeconds 20
         $tags = @($ollamaList.Output, $ollamaList.Error) -join "`n"

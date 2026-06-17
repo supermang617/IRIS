@@ -62,17 +62,28 @@ export function classifyAsrError(error) {
   return { severity: "error", event: "native_asr_error", status: message || "Native ASR failed." };
 }
 
-export function wakeRestartDelayMs(mode, transcript, action) {
+export function wakeRestartDelayMs(mode, transcript, action, consecutiveMisses = 0) {
   if (mode !== "wake") {
     return 650;
   }
+  const misses = Math.max(0, Number(consecutiveMisses) || 0);
+  if (misses >= 6) {
+    return 10000;
+  }
+  if (misses >= 3) {
+    return 5000;
+  }
   if (!String(transcript || "").trim()) {
-    return 150;
+    return 1200;
   }
   if (action === "wait-for-wake" || action === "ignore") {
-    return 600;
+    return 2500;
   }
   return 650;
+}
+
+export function shouldDisplayVoiceTranscript(decision) {
+  return decision?.action === "preview-transcript";
 }
 
 export function nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop }) {

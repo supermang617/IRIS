@@ -34,6 +34,7 @@ import {
   classifyAsrError,
   classifyVoiceTranscript,
   nextVoiceListenMode,
+  shouldDisplayVoiceTranscript,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -82,6 +83,7 @@ let speakReplies = true;
 let voiceLoop = false;
 let wakeWord = true;
 let wakeCommandArmed = false;
+let wakeMissStreak = 0;
 let thinking = false;
 let speaking = false;
 let speechRunId = 0;
@@ -1108,6 +1110,7 @@ async function togglePanicStop() {
     stopListeningRequested = true;
     voiceLoop = false;
     wakeCommandArmed = false;
+    wakeMissStreak = 0;
     pendingVoiceLatency = null;
     setListening(false);
     activeListenMode = "idle";
@@ -1123,6 +1126,7 @@ async function togglePanicStop() {
     elements.voiceStatus.textContent = "Panic Stop active.";
   } else {
     stopListeningRequested = false;
+    wakeMissStreak = 0;
     elements.voiceStatus.textContent = "Wake word armed. Say Iris.";
     restartListeningIfReady(250);
   }
@@ -1211,12 +1215,22 @@ async function listenOnce(mode) {
     if (!isUsableTranscript(transcript)) {
       pendingVoiceLatency = null;
       elements.voiceStatus.textContent = "No speech transcript captured.";
-      restartDelayMs = wakeRestartDelayMs(mode, transcript, "ignore");
+      if (mode === "wake") {
+        wakeMissStreak += 1;
+      }
+      restartDelayMs = wakeRestartDelayMs(mode, transcript, "ignore", wakeMissStreak);
       return;
     }
-    elements.hudOutput.textContent = transcript;
     const decision = handleVoiceTranscript(transcript);
-    restartDelayMs = wakeRestartDelayMs(mode, transcript, decision?.action);
+    if (shouldDisplayVoiceTranscript(decision)) {
+      elements.hudOutput.textContent = transcript;
+    }
+    if (mode === "wake" && (decision?.action === "wait-for-wake" || decision?.action === "ignore")) {
+      wakeMissStreak += 1;
+    } else if (mode !== "wake" || decision?.action === "submit" || decision?.action === "arm-wake-followup") {
+      wakeMissStreak = 0;
+    }
+    restartDelayMs = wakeRestartDelayMs(mode, transcript, decision?.action, wakeMissStreak);
   } catch (error) {
     if (panicStopActive) {
       return;
@@ -1249,6 +1263,7 @@ function handleVoiceTranscript(transcript) {
     pendingVoiceLatency = null;
     cancelSpeech();
     wakeCommandArmed = false;
+    wakeMissStreak = 0;
     voiceLoop = false;
     elements.hudOutput.textContent = "Stopped.";
     restartListeningIfReady(250);
@@ -1257,6 +1272,7 @@ function handleVoiceTranscript(transcript) {
 
   if (decision.action === "submit") {
     wakeCommandArmed = false;
+    wakeMissStreak = 0;
     voiceLoop = false;
     submitMessage(decision.prompt, decision.source);
     return decision;
@@ -1265,6 +1281,7 @@ function handleVoiceTranscript(transcript) {
   if (decision.action === "arm-wake-followup") {
     pendingVoiceLatency = null;
     wakeCommandArmed = true;
+    wakeMissStreak = 0;
     voiceLoop = false;
     elements.hudOutput.textContent = "Listening.";
     elements.voiceStatus.textContent = "Listening.";
