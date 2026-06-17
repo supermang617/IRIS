@@ -19,6 +19,8 @@ import {
   clampResponseHeight,
   composerHeightFor,
   responseDefaultHeight,
+  responseHeightFromDrag,
+  responseHeightFromKeyboard,
   responseMinHeight,
   shouldSubmitComposer
 } from "./composer-state.js";
@@ -1004,6 +1006,9 @@ function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
           resolveOnce(response.elapsedMs);
         };
         audio.onerror = () => {
+          const mediaError = audio.error ? `code=${audio.error.code}; message=${audio.error.message || "n/a"}` : "unknown";
+          logVoice("speech_media_error", `run=${runId}; ${mediaError}`);
+          elements.voiceStatus.textContent = "Speech output failed. Check the Windows audio output device.";
           URL.revokeObjectURL(url);
           if (activeAudio === audio) {
             activeAudio = null;
@@ -1012,6 +1017,7 @@ function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
         };
         audio.play().catch((error) => {
           logVoice("speech_playback_error", String(error));
+          elements.voiceStatus.textContent = "Speech output was blocked. Press Speak Replies or try typed chat once.";
           URL.revokeObjectURL(url);
           if (activeAudio === audio) {
             activeAudio = null;
@@ -1021,6 +1027,7 @@ function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
       })
       .catch((error) => {
         logVoice("kokoro_tts_error", String(error));
+        elements.voiceStatus.textContent = "Speech generation failed. Check diagnostics.";
         resolveOnce();
       });
   });
@@ -1756,7 +1763,7 @@ function startResponseResize(event) {
   elements.responseResizeHandle.setPointerCapture(event.pointerId);
 
   const move = (moveEvent) => {
-    setResponseHeight(startHeight + moveEvent.clientY - startY);
+    setResponseHeight(responseHeightFromDrag(startHeight, startY, moveEvent.clientY));
   };
   const finish = () => {
     elements.responseResizeHandle.removeEventListener("pointermove", move);
@@ -1771,12 +1778,8 @@ function startResponseResize(event) {
 
 function resizeResponseWithKeyboard(event) {
   const currentHeight = elements.responsePane.getBoundingClientRect().height;
-  let nextHeight = null;
-  if (event.key === "ArrowUp") {
-    nextHeight = currentHeight - 16;
-  } else if (event.key === "ArrowDown") {
-    nextHeight = currentHeight + 16;
-  } else if (event.key === "Home") {
+  let nextHeight = responseHeightFromKeyboard(currentHeight, event.key);
+  if (event.key === "Home") {
     nextHeight = responseMinHeight;
   } else if (event.key === "End") {
     nextHeight = responseHeightLimit();

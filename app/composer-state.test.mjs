@@ -6,6 +6,8 @@ import {
   composerMaxHeight,
   composerMinHeight,
   responseDefaultHeight,
+  responseHeightFromDrag,
+  responseHeightFromKeyboard,
   responseMinHeight,
   shouldSubmitComposer
 } from "./composer-state.js";
@@ -35,4 +37,12 @@ test("response height respects minimum, available space, and stable default", ()
   assert.equal(clampResponseHeight(40, 420), responseMinHeight);
   assert.equal(clampResponseHeight(260, 220), 220);
   assert.equal(clampResponseHeight("invalid", 420), responseDefaultHeight);
+});
+
+test("response resize grows upward because the pane sits above the handle", () => {
+  assert.equal(responseHeightFromDrag(180, 300, 260), 220);
+  assert.equal(responseHeightFromDrag(180, 300, 340), 140);
+  assert.equal(responseHeightFromKeyboard(180, "ArrowUp"), 196);
+  assert.equal(responseHeightFromKeyboard(180, "ArrowDown"), 164);
+  assert.equal(responseHeightFromKeyboard(180, "Escape"), null);
 });

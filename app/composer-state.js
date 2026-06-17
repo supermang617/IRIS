@@ -24,3 +24,17 @@ export function clampResponseHeight(requestedHeight, availableHeight) {
   }
   return Math.min(maximum, Math.max(responseMinHeight, Math.round(requested)));
 }
+
+export function responseHeightFromDrag(startHeight, startY, currentY) {
+  return Number(startHeight) - (Number(currentY) - Number(startY));
+}
+
+export function responseHeightFromKeyboard(currentHeight, key) {
+  if (key === "ArrowUp") {
+    return Number(currentHeight) + 16;
+  }
+  if (key === "ArrowDown") {
+    return Number(currentHeight) - 16;
+  }
+  return null;
+}

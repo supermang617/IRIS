@@ -974,7 +974,9 @@ async fn prepare_local_runtime() -> Result<LocalRuntimePreparation, String> {
 
 fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
     let started = Instant::now();
-    if ollama_loopback_ready() {
+    let root = workspace_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&root)?;
+    if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
         return Ok(LocalRuntimePreparation {
             ready: true,
             started_ollama: false,
@@ -982,9 +984,10 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             message: "Local model service is ready.".to_string(),
         });
     }
+    if ollama_loopback_ready() {
+        stop_ollama_for_iris();
+    }
 
-    let root = workspace_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&root)?;
     let executable = find_ollama_executable()?;
     let mut command = Command::new(executable);
     command
@@ -1007,7 +1010,7 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
 
     for _ in 0..40 {
         thread::sleep(std::time::Duration::from_millis(250));
-        if ollama_loopback_ready() {
+        if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
             return Ok(LocalRuntimePreparation {
                 ready: true,
                 started_ollama: true,
@@ -1017,6 +1020,33 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
         }
     }
     Err("Ollama did not become ready within 10 seconds".to_string())
+}
+
+fn configured_ollama_model_ready(manifest: &iris_config::ProjectManifest) -> bool {
+    let Ok(settings) = iris_ollama::OllamaSettings::from_manifest(manifest) else {
+        return false;
+    };
+    let Ok(client) = iris_ollama::OllamaClient::new(settings) else {
+        return false;
+    };
+    client
+        .health_check(&iris_ui::gate_typed_text("health check"))
+        .is_ok()
+}
+
+fn stop_ollama_for_iris() {
+    #[cfg(windows)]
+    {
+        for image in ["ollama.exe", "ollama app.exe", "llama-server.exe"] {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/IM", image])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+    }
 }
 
 fn ollama_loopback_ready() -> bool {
