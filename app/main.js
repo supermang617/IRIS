@@ -29,7 +29,7 @@ import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
 import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./panic-state.js";
 import { splitSpeechChunks } from "./speech-chunks.js";
-import { formatStagedMemories } from "./staging-state.js";
+import { formatHermesMemoryTaskText, formatStagedMemories } from "./staging-state.js";
 import {
   classifyAsrError,
   classifyVoiceTranscript,
@@ -660,10 +660,11 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
       explicitUserResearchRequest
     }
   });
+  const responseText = formatHermesMemoryTaskText(response.text, response.memoryProposals, clean);
   const staged = Array.isArray(response.memoryProposals) && response.memoryProposals.length > 0
     ? `\n\nStaged memory:\n${formatStagedMemories(response.memoryProposals)}`
     : "";
-  elements.hudOutput.textContent = route === "implicit" ? `Iris found this through Hermes:\n\n${response.text}${staged}` : `${response.text}${staged}`;
+  elements.hudOutput.textContent = route === "implicit" ? `Iris found this through Hermes:\n\n${responseText}${staged}` : `${responseText}${staged}`;
 }
 
 async function runAgenticTaskWithApprovals(text) {
