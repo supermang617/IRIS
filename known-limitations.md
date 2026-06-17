@@ -1,6 +1,6 @@
 ## Known Limitations
 
-This repository is a Windows-only v0.1 prototype.
+This repository is a Windows-only v1 local-first release.
 
 - Text inference requires Ollama running locally with `huihui_ai/gemma-4-abliterated:e2b` already available.
 - The setup wizard can offer an approved `ollama pull` for the configured model, but Iris runtime itself does not auto-download or switch models.
@@ -37,4 +37,4 @@ This repository is a Windows-only v0.1 prototype.
 
 ## Dependency Security Notes
 
-- GitHub may report a moderate `glib` advisory from the Linux GTK side of Tauri's transitive lockfile. Iris v0.1 is Windows-only, and current upstream Tauri 2.11.2 still resolves that path through `gtk` 0.18 and `glib` 0.18.5. Update Tauri/Wry and the lockfile when upstream can resolve `glib` 0.20.0 or newer.
+- GitHub may report a moderate `glib` advisory from the Linux GTK side of Tauri's transitive lockfile. Iris v1 is Windows-only, and current upstream Tauri 2.11.2 still resolves that path through `gtk` 0.18 and `glib` 0.18.5. Update Tauri/Wry and the lockfile when upstream can resolve `glib` 0.20.0 or newer.

@@ -74,7 +74,7 @@ proposal into durable memory.
 
 The future goal is clear: a user should be able to install Iris, authenticate to
 their own storage, restore an encrypted user-approved memory archive, and pick up
-where they left off. That is not fully active in v0.1. The current release has
+where they left off. That is not fully active in v1. The current release has
 the safety scaffolding and policy checks needed to build toward it without
 pretending private memory roaming is already complete.
 

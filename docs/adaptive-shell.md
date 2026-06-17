@@ -2,7 +2,7 @@
 
 Iris is no longer tracking the cross-platform Adaptive Shell plan in this workspace.
 
-The current build is a slim Windows prototype with:
+The current build is a focused Windows v1 release with:
 
 - one configured model: `huihui_ai/gemma-4-abliterated:e2b`
 - one provider boundary: `ollama_local`

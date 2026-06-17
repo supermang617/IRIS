@@ -94,6 +94,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/benchmark_hermes_model.py",
         "scripts/test_windows_beginner_installer.ps1",
         "scripts/test_windows_release_download.ps1",
+        "scripts/test_github_v1_release.ps1",
         "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
         "scripts/test_windows_installer.ps1",
@@ -373,6 +374,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let download = read(root.join("docs/download-and-run.md"))?;
     let finish_checklist = read(root.join("docs/finish-checklist.md"))?;
     let architecture = read(root.join("docs/iris-architecture.md"))?;
+    let adaptive_shell = read(root.join("docs/adaptive-shell.md"))?;
     let installer = read(root.join("docs/installer-preflight.md"))?;
     let signed_installer = read(root.join("docs/signed-installer-decision.md"))?;
     let runtime_orchestration = read(root.join("docs/runtime-orchestration.md"))?;
@@ -386,6 +388,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
     let windows_installer_script = read(root.join("scripts/install_iris_windows.ps1"))?;
+    let github_release_smoke = read(root.join("scripts/test_github_v1_release.ps1"))?;
 
     for (name, content) in [
         ("README.md", &readme),
@@ -430,6 +433,22 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         if limitations.contains(forbidden) || readme.contains(forbidden) {
             return Err(format!(
                 "public docs contain stale limitation `{forbidden}`"
+            ));
+        }
+    }
+    for (name, content) in [
+        ("known-limitations.md", limitations.as_str()),
+        ("docs/download-and-run.md", download.as_str()),
+        ("docs/iris-architecture.md", architecture.as_str()),
+        (
+            "docs/runtime-orchestration.md",
+            runtime_orchestration.as_str(),
+        ),
+        ("docs/adaptive-shell.md", adaptive_shell.as_str()),
+    ] {
+        if content.contains("v0.1") {
+            return Err(format!(
+                "{name} contains stale current-release v0.1 language"
             ));
         }
     }
@@ -502,13 +521,15 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "Beginner Installer Acceptance",
         "Installed-App Manual Acceptance",
         "Publish `v1`",
+        "Move/update only the single `v1` tag",
+        "scripts\\test_github_v1_release.ps1",
         "Production-Trusted Installer",
     ] {
         if !finish_checklist.contains(required) {
             return Err(format!("finish checklist missing `{required}`"));
         }
     }
-    if !architecture.contains("That is not fully active in v0.1")
+    if !architecture.contains("That is not fully active in v1")
         || !architecture.contains("prompt-injection defense")
         || !architecture.contains("OneDrive is currently a policy target")
     {
@@ -571,6 +592,20 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             "installed Iris shortcuts must launch the GUI executable directly without a console launcher"
                 .to_string(),
         );
+    }
+    for required in [
+        "gh release view $Tag",
+        "refs/heads/main",
+        "refs/tags/$Tag",
+        "Remote main and $Tag must point to the same commit",
+        "install-iris-windows.ps1.sha256",
+        "iris-windows-installer.zip.sha256",
+        "iris-windows.zip.sha256",
+        "DownloadPayloads",
+    ] {
+        if !github_release_smoke.contains(required) {
+            return Err(format!("GitHub v1 release smoke test missing `{required}`"));
+        }
     }
     for (name, content) in [
         ("Start Iris.ps1", launcher.as_str()),

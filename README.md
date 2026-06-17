@@ -125,7 +125,7 @@ Beginner preflight guide: `docs/installer-preflight.md`.
 Windows installer plan: `docs/windows-installer.md`.
 Signed installer decision: `docs/signed-installer-decision.md`.
 Runtime orchestration: `docs/runtime-orchestration.md`.
-Manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
+Historical manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
 The recommended beginner download is `iris-windows-installer.zip`: extract it
 and double-click `Install Iris.bat`. The portable release remains available for
 advanced/manual use and includes `Iris Setup Wizard.bat` plus read-only

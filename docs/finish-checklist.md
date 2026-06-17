@@ -146,7 +146,8 @@ Exit criteria:
 - Commit the release candidate atomically.
 - Push the verified commit.
 - Wait for CI and CodeQL success on that exact SHA.
-- Create and push annotated tag `v1`.
+- Move/update only the single `v1` tag after verification. Do not publish
+  additional patch-number tags for normal Iris downloads.
 - Confirm the release workflow uploads:
   - `iris-windows-installer.zip`
   - `iris-windows-installer.zip.sha256`
@@ -155,6 +156,8 @@ Exit criteria:
   - `install-iris-windows.ps1`
   - `install-iris-windows.ps1.sha256`
 - Download the assets back from GitHub and verify all published hashes.
+- Run `scripts\test_github_v1_release.ps1 -ExpectedCommit <release-sha>` against
+  the public release.
 - Run the beginner install once from the downloaded GitHub asset, not a local
   build.
 - Update release notes with prerequisites, safety boundaries, known

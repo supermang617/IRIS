@@ -6,7 +6,7 @@ Contact: super.mangmail@gmail.com
 
 ## Recommended Local Runtime Shape
 
-For v0.1, the best safe runtime shape is:
+For v1, the best safe runtime shape is:
 
 - The Iris desktop window opens first, then starts Ollama hidden in the
   background when needed and waits for `127.0.0.1:11434` inside the UI.
@@ -26,7 +26,7 @@ transport, fixed tools, and a startup audit. Ollama should also not require a
 separate user action during normal use: opening Iris should start Ollama in the
 background when the executable is available.
 
-## Default v0.1 Settings
+## Default v1 Settings
 
 These are the safest universal settings for the current model and hardware
 target:
