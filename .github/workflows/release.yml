@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+"
 
 permissions:
   contents: write
@@ -71,12 +71,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $bootstrap = Join-Path $PWD "release\bootstrap"
-          $extract = Join-Path $bootstrap "v0.1.0"
+          $extract = Join-Path $bootstrap "v1"
           New-Item -ItemType Directory -Force -Path $bootstrap | Out-Null
-          gh release download v0.1.0 --repo $env:GITHUB_REPOSITORY --pattern iris-windows.zip --dir $bootstrap --clobber
+          gh release download v1 --repo $env:GITHUB_REPOSITORY --pattern iris-windows.zip --dir $bootstrap --clobber
           Expand-Archive -LiteralPath (Join-Path $bootstrap "iris-windows.zip") -DestinationPath $extract -Force
           if (-not (Test-Path -LiteralPath (Join-Path $extract "models") -PathType Container)) {
-            throw "v0.1.0 release ZIP did not contain models."
+            throw "v1 release ZIP did not contain models."
           }
           Copy-Item -LiteralPath (Join-Path $extract "models") -Destination (Join-Path $PWD "models") -Recurse -Force
           Get-ChildItem -LiteralPath (Join-Path $PWD "models") -Recurse | Select-Object FullName, Length

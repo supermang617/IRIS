@@ -21,18 +21,18 @@ Implemented:
 - Single-download beginner bundle generated as
   `iris-windows-installer.zip`.
 
-Current public gap:
+Current public release rule:
 
-- GitHub's latest published release is `v0.1.1` from June 5, 2026. It predates
-  the current verified code and does not contain the beginner installer bundle.
-- The current source is prepared as `v0.1.2`, but it is not public until the
-  validated commit is pushed and a `v0.1.2` tag triggers the release workflow.
+- GitHub should expose one normal public release: `v1`.
+- Keep publishing fixes to `v1` until a deliberate `v2` release is ready.
+- Do not publish public `v0.x`, `v1.0.x`, or other patch-number release labels
+  for normal Iris downloads.
 
 ## 1. Source And Policy Freeze
 
 - Confirm `main` is clean and synchronized with `origin/main`.
 - Confirm all Cargo, npm, Tauri, manifest, docs, and release versions are
-  `0.1.2`/`v0.1.2`.
+  `1.0.0`/`v1`.
 - Confirm Gemma 4 is the only configured model and fallback models are disabled.
 - Confirm Safe is the startup Hermes mode and Agentic requires an expiring
   approval session.
@@ -141,12 +141,12 @@ Exit criteria:
 - No unresolved high/critical security finding.
 - No secret or user data in repository history or release assets.
 
-## 6. Publish `v0.1.2`
+## 6. Publish `v1`
 
 - Commit the release candidate atomically.
 - Push the verified commit.
 - Wait for CI and CodeQL success on that exact SHA.
-- Create and push annotated tag `v0.1.2`.
+- Create and push annotated tag `v1`.
 - Confirm the release workflow uploads:
   - `iris-windows-installer.zip`
   - `iris-windows-installer.zip.sha256`
@@ -162,7 +162,7 @@ Exit criteria:
 
 Exit criteria:
 
-- GitHub's Latest release points to `v0.1.2`.
+- GitHub's Latest release points to `v1`.
 - Published assets match the validated commit and documented behavior.
 
 ## 7. Production-Trusted Installer

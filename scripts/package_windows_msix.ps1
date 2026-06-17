@@ -1,6 +1,6 @@
 param(
     [string]$Publisher = "CN=Iris Local Test",
-    [string]$Version = "0.1.2.0",
+    [string]$Version = "1.0.0.0",
     [string]$CertificateThumbprint = "",
     [string]$PfxPath = "",
     [string]$PfxPassword = "",

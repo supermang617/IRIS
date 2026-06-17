@@ -461,7 +461,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         }
     }
     for required in [
-        "v[0-9]+.[0-9]+.[0-9]+",
+        "v[0-9]+",
+        "gh release download v1",
         "scripts\\package_windows_release.ps1",
         "scripts\\test_windows_release_download.ps1",
         "scripts\\test_windows_beginner_installer.ps1",
@@ -500,7 +501,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "Iris Production Readiness Checklist",
         "Beginner Installer Acceptance",
         "Installed-App Manual Acceptance",
-        "Publish `v0.1.2`",
+        "Publish `v1`",
         "Production-Trusted Installer",
     ] {
         if !finish_checklist.contains(required) {
@@ -1180,22 +1181,22 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "src-tauri/Cargo.toml",
         "xtask/Cargo.toml",
     ] {
-        if !read(root.join(path))?.contains("version = \"0.1.2\"") {
-            return Err(format!("{path} must use release version 0.1.2"));
+        if !read(root.join(path))?.contains("version = \"1.0.0\"") {
+            return Err(format!("{path} must use release version 1.0.0"));
         }
     }
-    if !read(root.join("package.json"))?.contains("\"version\": \"0.1.2\"")
-        || !tauri.contains("\"version\": \"0.1.2\"")
-        || !read(root.join("manifest.json"))?.contains("\"version\": \"v0.1.2\"")
+    if !read(root.join("package.json"))?.contains("\"version\": \"1.0.0\"")
+        || !tauri.contains("\"version\": \"1.0.0\"")
+        || !read(root.join("manifest.json"))?.contains("\"version\": \"v1\"")
         || !read(root.join("crates/iris-core-types/src/lib.rs"))?
-            .contains("PROJECT_VERSION: &str = \"v0.1.2\"")
+            .contains("PROJECT_VERSION: &str = \"v1\"")
         || read(root.join("crates/iris-runtime/src/main.rs"))?
             .contains("Project Iris v0.1 initialized")
         || !read(root.join("scripts/test_vision_text_diagnostics.ps1"))?
-            .contains("Project Iris v0.1.2 initialized")
+            .contains("Project Iris v1 initialized")
     {
         return Err(
-            "npm, Tauri, Iris manifest, shared constant, and runtime banner versions must be 0.1.2"
+            "npm, Tauri, Iris manifest, shared constant, and runtime banner versions must be 1.0.0"
                 .to_string(),
         );
     }

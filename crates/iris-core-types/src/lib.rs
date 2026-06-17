@@ -1,5 +1,5 @@
 pub const PROJECT_NAME: &str = "Project Iris";
-pub const PROJECT_VERSION: &str = "v0.1.2";
+pub const PROJECT_VERSION: &str = "v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextSource {
