@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
@@ -29,7 +30,7 @@ from iris_memory_tools import IRIS_MEMORY_TOOLS, register_iris_memory_tools
 
 IRIS_TOOLSET = "iris-acp-bridge"
 IRIS_MAX_ITERATIONS = 8
-IRIS_MAX_TOKENS = 512
+IRIS_MAX_TOKENS = 4096
 DISABLED_TOOLSETS = [
     "web",
     "vision",
@@ -46,6 +47,32 @@ IRIS_SLASH_COMMANDS = {
     "context": "Show conversation context info",
     "reset": "Clear conversation history",
     "version": "Show Hermes version",
+}
+TOOL_GROUPS = {
+    "browser": {
+        "browser_open",
+        "browser_get_url",
+        "browser_snapshot",
+        "browser_screenshot",
+        "browser_close",
+    },
+    "browser_interactive": {
+        "browser_open",
+        "browser_get_url",
+        "browser_snapshot",
+        "browser_screenshot",
+        "browser_click",
+        "browser_fill",
+        "browser_press",
+        "browser_upload",
+        "browser_download",
+        "browser_close",
+    },
+    "memory_query": {"iris_query_memory"},
+    "memory_propose": {"iris_propose_memory"},
+    "file_read": {"read_file", "search_files"},
+    "file_write": {"read_file", "write_file", "patch", "search_files"},
+    "shell": {"terminal", "process"},
 }
 
 
@@ -122,7 +149,16 @@ class IrisSessionManager(SessionManager):
             max_iterations=IRIS_MAX_ITERATIONS,
             max_tokens=IRIS_MAX_TOKENS,
             reasoning_config={"enabled": False},
-            request_overrides={"extra_body": {"think": False}},
+            request_overrides={
+                "temperature": 0,
+                "extra_body": {
+                    "think": False,
+                    "options": {
+                        "temperature": 0,
+                        "num_predict": IRIS_MAX_TOKENS,
+                    },
+                },
+            },
         )
         agent._print_fn = lambda *args, **kwargs: print(
             *args, **{**kwargs, "file": sys.stderr}
@@ -141,6 +177,89 @@ class IrisACPAgent(HermesACPAgent):
     async def _register_session_mcp_servers(self, state, mcp_servers) -> None:
         if mcp_servers:
             raise RuntimeError("Iris ACP bridge does not allow MCP servers")
+
+    async def prompt(self, prompt, session_id: str, **kwargs: Any):
+        state = self.session_manager.get_session(session_id)
+        if state is None:
+            return await super().prompt(prompt, session_id, **kwargs)
+        agent = state.agent
+        original_tools = list(getattr(agent, "tools", []) or [])
+        original_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        allowed = tool_names_for_prompt(prompt)
+        agent.tools = [
+            tool
+            for tool in original_tools
+            if tool.get("function", {}).get("name") in allowed
+        ]
+        if allowed:
+            agent.request_overrides = {**original_overrides, "tool_choice": "auto"}
+        else:
+            agent.request_overrides = {
+                key: value
+                for key, value in original_overrides.items()
+                if key != "tool_choice"
+            }
+        try:
+            return await super().prompt(prompt, session_id, **kwargs)
+        finally:
+            agent.tools = original_tools
+            agent.request_overrides = original_overrides
+
+
+def tool_names_for_prompt(prompt) -> set[str]:
+    text = prompt_text(prompt).lower()
+    allowed: set[str] = set()
+    explicit_tool_names = {
+        "browser_click",
+        "browser_close",
+        "browser_download",
+        "browser_fill",
+        "browser_get_url",
+        "browser_open",
+        "browser_press",
+        "browser_screenshot",
+        "browser_snapshot",
+        "browser_upload",
+        "iris_propose_memory",
+        "iris_query_memory",
+        "patch",
+        "process",
+        "read_file",
+        "search_files",
+        "terminal",
+        "write_file",
+    }
+    for name in explicit_tool_names:
+        if name in text:
+            allowed.add(name)
+    if any(marker in allowed for marker in TOOL_GROUPS["browser_interactive"]):
+        allowed.update(TOOL_GROUPS["browser"])
+    if any(word in text for word in ("http://", "https://", "web", "online", "research", "browser")):
+        allowed.update(TOOL_GROUPS["browser"])
+    if any(name in text for name in ("browser_click", "browser_fill", "browser_press", "browser_upload", "browser_download")):
+        allowed.update(TOOL_GROUPS["browser_interactive"])
+    if "iris_query_memory" in text or "query memory" in text or "from memory" in text:
+        allowed.update(TOOL_GROUPS["memory_query"])
+    if "iris_propose_memory" in text or "propose memory" in text or "stage memory" in text:
+        allowed.update(TOOL_GROUPS["memory_propose"])
+    if "read_file" in text or "search_files" in text:
+        allowed.update(TOOL_GROUPS["file_read"])
+    if "write_file" in text or "patch" in text:
+        allowed.update(TOOL_GROUPS["file_write"])
+    if "terminal" in text or "powershell" in text or "process" in text:
+        allowed.update(TOOL_GROUPS["shell"])
+    return allowed
+
+
+def prompt_text(prompt) -> str:
+    parts: list[str] = []
+    for block in prompt or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+        elif isinstance(block, dict) and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(parts)
 
 
 def audit_tools() -> int:
@@ -172,6 +291,18 @@ def audit_tools() -> int:
                 "allActingTools": [*action_tools, *browser_tools],
                 "maxIterations": IRIS_MAX_ITERATIONS,
                 "maxTokens": IRIS_MAX_TOKENS,
+                "requestOverrides": {
+                    "temperature": 0,
+                    "toolChoice": "prompt_scoped",
+                    "extraBody": {
+                        "think": False,
+                        "options": {
+                            "temperature": 0,
+                            "numPredict": IRIS_MAX_TOKENS,
+                        },
+                    },
+                },
+                "promptScopedTools": True,
                 "nativeDurableMemory": False,
                 "mcpAllowed": False,
             },

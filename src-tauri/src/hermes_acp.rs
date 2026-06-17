@@ -251,6 +251,9 @@ pub fn submit_task(
     let mut events = Vec::new();
     let mut thinking_emitted = false;
     for event in raw_events.iter().filter_map(event_from_notification) {
+        if matches!(event, HermesEvent::Text(_)) {
+            continue;
+        }
         if matches!(event, HermesEvent::Thinking(true)) {
             if thinking_emitted {
                 continue;
@@ -272,6 +275,9 @@ pub fn submit_task(
         text = fallback_text_from_successful_tool(&raw_events)
             .ok_or_else(|| "Hermes ACP returned no assistant text".to_string())?;
     }
+    if !text.is_empty() {
+        events.push(HermesEvent::Text(text.clone()));
+    }
     events.push(HermesEvent::Thinking(false));
     events.push(HermesEvent::Completion(text.clone()));
     Ok(HermesAcpTaskResult {
@@ -282,13 +288,63 @@ pub fn submit_task(
 }
 
 fn assistant_text_from_notifications(notifications: &[Value]) -> String {
-    notifications
+    let chunks = notifications
         .iter()
         .filter_map(agent_message_text)
-        .collect::<Vec<_>>()
-        .join("")
-        .trim()
-        .to_string()
+        .collect::<Vec<_>>();
+    assistant_text_from_chunks(&chunks)
+}
+
+fn assistant_text_from_chunks(chunks: &[String]) -> String {
+    let mut output = String::new();
+    for chunk in chunks
+        .iter()
+        .map(|chunk| chunk.as_str())
+        .filter(|chunk| !chunk.is_empty())
+    {
+        if output.is_empty() {
+            output.push_str(chunk);
+        } else if chunk.starts_with(&output) {
+            output.clear();
+            output.push_str(chunk);
+        } else if output.ends_with(chunk) || is_retry_fragment(&output, chunk) {
+            continue;
+        } else {
+            let overlap = suffix_prefix_overlap_len(&output, chunk);
+            output.push_str(&chunk[overlap..]);
+        }
+    }
+    output.trim().to_string()
+}
+
+fn is_retry_fragment(output: &str, chunk: &str) -> bool {
+    if output.chars().count() < 4 || chunk.chars().count() > 2 {
+        return false;
+    }
+    let Some(first) = output.chars().next() else {
+        return false;
+    };
+    chunk.chars().all(|character| character == first)
+}
+
+fn suffix_prefix_overlap_len(left: &str, right: &str) -> usize {
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let max = left_chars.len().min(right_chars.len());
+    let mut best = 0;
+    for width in 1..=max {
+        if left_chars[left_chars.len() - width..] == right_chars[..width] {
+            best = width;
+        }
+    }
+    if best == 0 {
+        return 0;
+    }
+    right
+        .char_indices()
+        .nth(best)
+        .map(|(index, _)| index)
+        .unwrap_or(right.len())
 }
 
 fn is_empty_agent_text(text: &str) -> bool {
@@ -1429,6 +1485,49 @@ mod tests {
         assert_eq!(
             event_from_notification(&notification),
             Some(HermesEvent::Text("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn reconstructs_final_text_from_cumulative_chunks() {
+        let chunks = vec![
+            "I".to_string(),
+            "IR".to_string(),
+            "IRIS".to_string(),
+            "IRIS_ROUNDTRIP_OK".to_string(),
+        ];
+
+        assert_eq!(
+            assistant_text_from_chunks(&chunks),
+            "IRIS_ROUNDTRIP_OK".to_string()
+        );
+    }
+
+    #[test]
+    fn reconstructs_final_text_from_incremental_chunks() {
+        let chunks = vec![
+            "The result is ".to_string(),
+            "IRIS_ACTION".to_string(),
+            "_OK".to_string(),
+        ];
+
+        assert_eq!(
+            assistant_text_from_chunks(&chunks),
+            "The result is IRIS_ACTION_OK".to_string()
+        );
+    }
+
+    #[test]
+    fn ignores_tiny_retry_fragments_after_complete_text() {
+        let chunks = vec![
+            "IRIS_ROUNDTRIP_OK".to_string(),
+            "I".to_string(),
+            "I".to_string(),
+        ];
+
+        assert_eq!(
+            assistant_text_from_chunks(&chunks),
+            "IRIS_ROUNDTRIP_OK".to_string()
         );
     }
 

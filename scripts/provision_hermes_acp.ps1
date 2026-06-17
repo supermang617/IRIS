@@ -83,7 +83,12 @@ if (
     -not (@($ToolAudit.allActingTools) -contains "browser_download") -or
     -not (@($ToolAudit.allActingTools) -contains "browser_close") -or
     $ToolAudit.maxIterations -ne 8 -or
-    $ToolAudit.maxTokens -ne 512 -or
+    $ToolAudit.maxTokens -ne 4096 -or
+    $ToolAudit.promptScopedTools -ne $true -or
+    $ToolAudit.requestOverrides.temperature -ne 0 -or
+    $ToolAudit.requestOverrides.toolChoice -ne "prompt_scoped" -or
+    $ToolAudit.requestOverrides.extraBody.think -ne $false -or
+    $ToolAudit.requestOverrides.extraBody.options.numPredict -ne 4096 -or
     $ToolAudit.nativeDurableMemory -ne $false -or
     $ToolAudit.mcpAllowed -ne $false
 ) {
