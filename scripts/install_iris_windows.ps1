@@ -8,7 +8,9 @@ param(
     [switch]$NonInteractive,
     [switch]$SetupNonInteractive,
     [switch]$LaunchAfterInstall,
-    [switch]$SkipShortcuts
+    [switch]$SkipShortcuts,
+    [switch]$SkipSelfCheck,
+    [int]$SelfCheckTimeoutSeconds = 240
 )
 
 $ErrorActionPreference = "Stop"
@@ -188,6 +190,41 @@ function Find-Python311Home {
     throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run uv python install 3.11, then run the Iris installer again."
 }
 
+function Invoke-InstallerProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    [void]$process.Start()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Stop-ProcessTree -ProcessId $process.Id
+        return [pscustomobject]@{
+            ExitCode = 124
+            Output = ""
+            Error = "timed out after $TimeoutSeconds seconds"
+        }
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        Output = $process.StandardOutput.ReadToEnd()
+        Error = $process.StandardError.ReadToEnd()
+    }
+}
+
 function Test-HermesVenv {
     param([Parameter(Mandatory = $true)][string]$Root)
     $python = Join-Path $Root ".iris-runtime\hermes\.venv\Scripts\python.exe"
@@ -195,8 +232,13 @@ function Test-HermesVenv {
         return $false
     }
     try {
-        $output = & $python -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>$null
-        return ($LASTEXITCODE -eq 0 -and (@($output) -join "`n").Trim() -eq "0.16.0`n0.9.0")
+        $probe = Invoke-InstallerProbe `
+            -FilePath $python `
+            -Arguments '-c "import importlib.metadata as m; print(m.version(''hermes-agent'')); print(m.version(''agent-client-protocol''))"' `
+            -WorkingDirectory $Root `
+            -TimeoutSeconds 30
+        $normalized = $probe.Output.Trim().Replace("`r`n", "`n")
+        return ($probe.ExitCode -eq 0 -and $normalized -eq "0.16.0`n0.9.0")
     } catch {
         return $false
     }
@@ -289,6 +331,55 @@ if (-not `$Quiet) {
     Set-Content -LiteralPath (Join-Path $TargetRoot "Uninstall Iris.ps1") -Value $script -Encoding utf8
 }
 
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-InstalledSelfCheck {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallRoot,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    if ($TimeoutSeconds -lt 30) {
+        throw "SelfCheckTimeoutSeconds must be at least 30 seconds."
+    }
+
+    $launcher = Join-Path $InstallRoot "Start Iris.ps1"
+    $powershell = (Get-Command powershell.exe).Source
+    $outputPath = Join-Path $InstallRoot "diagnostics\installer-self-check.log"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outputPath) | Out-Null
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $powershell
+    $startInfo.WorkingDirectory = $InstallRoot
+    $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" --self-check"
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    [void]$process.Start()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Stop-ProcessTree -ProcessId $process.Id
+        throw "Installed Iris self-check timed out after $TimeoutSeconds seconds. Log: $outputPath"
+    }
+
+    $output = $process.StandardOutput.ReadToEnd()
+    $errorOutput = $process.StandardError.ReadToEnd()
+    Set-Content -LiteralPath $outputPath -Value @($output, $errorOutput) -Encoding utf8
+    if ($process.ExitCode -ne 0) {
+        throw "Installed Iris self-check failed with exit code $($process.ExitCode). Log: $outputPath"
+    }
+}
+
 if (-not $InstallRoot) {
     $InstallRoot = Resolve-DefaultInstallRoot
 }
@@ -369,9 +460,8 @@ try {
         }
     }
 
-    & (Join-Path $installRootResolved "Start Iris.ps1") --self-check
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installed Iris self-check failed with exit code $LASTEXITCODE"
+    if (-not $SkipSelfCheck) {
+        Invoke-InstalledSelfCheck -InstallRoot $installRootResolved -TimeoutSeconds $SelfCheckTimeoutSeconds
     }
 
     Write-Host "Iris installed successfully."

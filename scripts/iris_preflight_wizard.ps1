@@ -49,6 +49,50 @@ function Test-File {
     return Test-Path -LiteralPath $Path -PathType Leaf
 }
 
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-PreflightProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$Arguments,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = $root
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    [void]$process.Start()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Stop-ProcessTree -ProcessId $process.Id
+        return [pscustomobject]@{
+            ExitCode = 124
+            Output = ""
+            Error = "timed out after $TimeoutSeconds seconds"
+        }
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $process.ExitCode
+        Output = $process.StandardOutput.ReadToEnd()
+        Error = $process.StandardError.ReadToEnd()
+    }
+}
+
 function Test-WebView2 {
     $roots = @(
         "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients",
@@ -184,8 +228,9 @@ if ($ollamaPath) {
     if ($fastLocalOnly) {
         Add-Check -Status "WARN" -Name "Configured Ollama model" -Detail "Skipped local Ollama model listing for release smoke diagnostics." -Repair "Run this preflight without IRIS_PREFLIGHT_FAST_LOCAL_ONLY to verify the configured model."
     } else {
-        $tags = (& ollama list 2>&1) -join "`n"
-        if ($LASTEXITCODE -eq 0) {
+        $ollamaList = Invoke-PreflightProbe -FilePath $ollamaPath -Arguments "list" -TimeoutSeconds 20
+        $tags = @($ollamaList.Output, $ollamaList.Error) -join "`n"
+        if ($ollamaList.ExitCode -eq 0) {
             if ($tags.Contains($modelId)) {
                 Add-Check -Status "PASS" -Name "Configured Ollama model" -Detail "$modelId is available locally." -Repair "No action needed."
                 Test-ConfiguredModelVisionCapability -ModelId $modelId
@@ -193,7 +238,7 @@ if ($ollamaPath) {
                 Add-Check -Status "FAIL" -Name "Configured Ollama model" -Detail "$modelId is not listed by the current Ollama service." -Repair "Install or point Ollama at the existing local model store for $modelId, then rerun this preflight. This script will not pull models automatically."
             }
         } else {
-            Add-Check -Status "FAIL" -Name "Ollama service" -Detail "ollama list failed: $tags" -Repair "Start Ollama, then rerun this preflight."
+            Add-Check -Status "FAIL" -Name "Ollama service" -Detail "ollama list failed or timed out: $tags" -Repair "Start Ollama, then rerun this preflight."
         }
     }
 } else {

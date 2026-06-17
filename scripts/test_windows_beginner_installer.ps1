@@ -61,9 +61,21 @@ try {
 
     $installer = Get-Content -LiteralPath (Join-Path $testRoot "install-iris-windows.ps1") -Raw
     $setupPosition = $installer.IndexOf('if ($RunSetup)')
-    $selfCheckPosition = $installer.IndexOf('"Start Iris.ps1") --self-check')
+    $selfCheckPosition = $installer.IndexOf('Invoke-InstalledSelfCheck -InstallRoot')
     if ($setupPosition -lt 0 -or $selfCheckPosition -lt 0 -or $setupPosition -gt $selfCheckPosition) {
         throw "Installer must run the setup wizard before the final live self-check."
+    }
+    foreach ($requiredText in @(
+        "SelfCheckTimeoutSeconds",
+        "Installed Iris self-check timed out",
+        "Invoke-InstallerProbe",
+        'timed out after $TimeoutSeconds seconds',
+        "Stop-ProcessTree",
+        "installer-self-check.log"
+    )) {
+        if (-not $installer.Contains($requiredText)) {
+            throw "Installer is missing bounded self-check behavior: $requiredText"
+        }
     }
 
     Write-Host "Beginner installer bundle smoke test passed."

@@ -387,6 +387,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let manual_end_user_test = read(root.join("docs/manual-end-user-test-v0.1.0.md"))?;
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
+    let preflight_script = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
     let windows_installer_script = read(root.join("scripts/install_iris_windows.ps1"))?;
     let github_release_smoke = read(root.join("scripts/test_github_v1_release.ps1"))?;
 
@@ -543,6 +544,21 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         return Err(
             "installer doc must describe setup wizard repairs and read-only preflight".to_string(),
         );
+    }
+    for required in [
+        "Invoke-PreflightProbe",
+        "Stop-ProcessTree",
+        "TimeoutSeconds = 20",
+        "ollama list failed or timed out",
+    ] {
+        if !preflight_script.contains(required) {
+            return Err(format!(
+                "preflight script missing bounded external probe `{required}`"
+            ));
+        }
+    }
+    if preflight_script.contains("& ollama list") {
+        return Err("preflight script must not call `ollama list` without a timeout".to_string());
     }
     if !windows_installer.contains("iris-windows.zip")
         || !windows_installer.contains("iris-windows.zip.sha256")
@@ -1111,6 +1127,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     let installer = read(root.join("scripts/install_iris_windows.ps1"))?;
     let release_smoke = read(root.join("scripts/test_windows_release_download.ps1"))?;
     let beginner_smoke = read(root.join("scripts/test_windows_beginner_installer.ps1"))?;
+    let installer_smoke = read(root.join("scripts/test_windows_installer.ps1"))?;
     for required in [
         ".iris-runtime\\hermes\\.venv",
         ".iris-runtime\\browser\\node_modules",
@@ -1144,10 +1161,41 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "Beginner installer bundle SHA256 mismatch",
         "payload ZIP with an invalid SHA256",
         "setup wizard before the final live self-check",
+        "bounded self-check behavior",
     ] {
         if !beginner_smoke.contains(required) {
             return Err(format!(
                 "beginner installer smoke test missing `{required}`"
+            ));
+        }
+    }
+    for required in [
+        "Invoke-SmokeCommand",
+        "Stop-ProcessTree",
+        "fresh installer smoke",
+        "upgrade installer smoke",
+        "-SkipSelfCheck",
+        "installed Hermes Python probe",
+        "timed out after $TimeoutSeconds seconds",
+    ] {
+        if !installer_smoke.contains(required) {
+            return Err(format!(
+                "Windows installer smoke test missing bounded command rule `{required}`"
+            ));
+        }
+    }
+    for required in [
+        "SelfCheckTimeoutSeconds",
+        "SkipSelfCheck",
+        "Installed Iris self-check timed out",
+        "Invoke-InstallerProbe",
+        "timed out after $TimeoutSeconds seconds",
+        "Stop-ProcessTree",
+        "installer-self-check.log",
+    ] {
+        if !installer.contains(required) {
+            return Err(format!(
+                "installer missing bounded self-check rule `{required}`"
             ));
         }
     }
@@ -1163,7 +1211,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         .find("if ($RunSetup)")
         .ok_or_else(|| "installer missing setup execution".to_string())?;
     let self_check_position = installer
-        .find("\"Start Iris.ps1\") --self-check")
+        .find("Invoke-InstalledSelfCheck -InstallRoot")
         .ok_or_else(|| "installer missing final self-check".to_string())?;
     if setup_position > self_check_position {
         return Err("installer must run setup before final self-check".to_string());

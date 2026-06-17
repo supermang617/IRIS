@@ -13,6 +13,57 @@ foreach ($path in @($zipPath, $shaPath, $installer)) {
     }
 }
 
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-SmokeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $beforeProcesses = @(Get-Process "ollama", "ollama app", "llama-server", "iris-tauri", "iris-runtime" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    [void]$process.Start()
+    try {
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            Stop-ProcessTree -ProcessId $process.Id
+            throw "$Name timed out after $TimeoutSeconds seconds."
+        }
+
+        $output = @($process.StandardOutput.ReadToEnd(), $process.StandardError.ReadToEnd()) -join "`n"
+        if ($process.ExitCode -ne 0) {
+            throw "$Name failed with exit code $($process.ExitCode): $output"
+        }
+        return $output
+    } finally {
+        foreach ($leftover in @(Get-Process "ollama", "ollama app", "llama-server", "iris-tauri", "iris-runtime" -ErrorAction SilentlyContinue)) {
+            if ($beforeProcesses -notcontains $leftover.Id) {
+                Stop-Process -Id $leftover.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-installer-smoke-" + [System.Guid]::NewGuid().ToString("N"))
 $installRoot = Join-Path $testRoot "Install"
 $startMenuDir = Join-Path $testRoot "StartMenu"
@@ -20,10 +71,13 @@ $desktopDir = Join-Path $testRoot "Desktop"
 New-Item -ItemType Directory -Force -Path $testRoot, $desktopDir | Out-Null
 
 try {
-    & $installer -SourceZip $zipPath -Sha256Path $shaPath -InstallRoot $installRoot -StartMenuDir $startMenuDir -DesktopDir $desktopDir -RunSetup -SetupNonInteractive
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installer failed with exit code $LASTEXITCODE"
-    }
+    $powershell = (Get-Command powershell.exe).Source
+    Invoke-SmokeCommand `
+        -FilePath $powershell `
+        -WorkingDirectory $repoRoot `
+        -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installer`" -SourceZip `"$zipPath`" -Sha256Path `"$shaPath`" -InstallRoot `"$installRoot`" -StartMenuDir `"$startMenuDir`" -DesktopDir `"$desktopDir`" -NonInteractive -SkipSelfCheck" `
+        -TimeoutSeconds 180 `
+        -Name "fresh installer smoke" | Out-Null
 
     foreach ($relative in @(
         "Start Iris.bat",
@@ -57,9 +111,14 @@ try {
         throw "Installed Agentic runtime version/hash verification failed."
     }
     $hermesPython = Join-Path $installRoot ".iris-runtime\hermes\.venv\Scripts\python.exe"
-    $hermesVersions = & $hermesPython -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>&1
-    if ($LASTEXITCODE -ne 0 -or ((@($hermesVersions) -join "`n").Trim() -ne "0.16.0`n0.9.0")) {
-        throw "Installed Hermes Python is not locally runnable with the pinned packages: $(@($hermesVersions) -join "`n")"
+    $hermesVersions = Invoke-SmokeCommand `
+        -FilePath $hermesPython `
+        -WorkingDirectory $installRoot `
+        -Arguments '-c "import importlib.metadata as m; print(m.version(''hermes-agent'')); print(m.version(''agent-client-protocol''))"' `
+        -TimeoutSeconds 30 `
+        -Name "installed Hermes Python probe"
+    if ($hermesVersions.Trim().Replace("`r`n", "`n") -ne "0.16.0`n0.9.0") {
+        throw "Installed Hermes Python is not locally runnable with the pinned packages: $hermesVersions"
     }
 
     foreach ($shortcut in @(
@@ -92,19 +151,23 @@ try {
     $profileMarker = '{"version":1,"enabled":false,"observation_count":7,"updated_ms":1234}'
     [System.IO.File]::WriteAllText($profilePath, $profileMarker, [System.Text.Encoding]::UTF8)
 
-    & $installer -SourceZip $zipPath -Sha256Path $shaPath -InstallRoot $installRoot -StartMenuDir $startMenuDir -DesktopDir $desktopDir -NonInteractive
-    if ($LASTEXITCODE -ne 0) {
-        throw "Upgrade installer failed with exit code $LASTEXITCODE"
-    }
+    Invoke-SmokeCommand `
+        -FilePath $powershell `
+        -WorkingDirectory $repoRoot `
+        -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installer`" -SourceZip `"$zipPath`" -Sha256Path `"$shaPath`" -InstallRoot `"$installRoot`" -StartMenuDir `"$startMenuDir`" -DesktopDir `"$desktopDir`" -NonInteractive -SkipSelfCheck" `
+        -TimeoutSeconds 180 `
+        -Name "upgrade installer smoke" | Out-Null
     $preservedProfile = [System.IO.File]::ReadAllText($profilePath, [System.Text.Encoding]::UTF8)
     if ($preservedProfile -ne $profileMarker) {
         throw "Upgrade installer changed or removed the dynamic context profile."
     }
 
-    & (Join-Path $installRoot "Uninstall Iris.ps1") -Quiet
-    if ($LASTEXITCODE -ne 0) {
-        throw "Uninstaller failed with exit code $LASTEXITCODE"
-    }
+    Invoke-SmokeCommand `
+        -FilePath $powershell `
+        -WorkingDirectory $installRoot `
+        -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRoot\Uninstall Iris.ps1`" -Quiet" `
+        -TimeoutSeconds 60 `
+        -Name "uninstaller smoke" | Out-Null
     foreach ($shortcut in @(
         (Join-Path $startMenuDir "Iris.lnk"),
         (Join-Path $startMenuDir "Iris Setup Wizard.lnk"),
