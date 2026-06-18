@@ -6,6 +6,8 @@ Contact: super.mangmail@gmail.com
 
 IRIS is a local-first Windows assistant. Iris sees, listens, thinks, speaks, and can remember with permission. 
 
+Website and v1 download: https://supermang617.github.io/IRIS/
+
 This repository is public and source-first so people can inspect, test, and submit narrow fixes. Contributions should stay focused on bug fixes, safety-preserving diagnostics, documentation fixes, compatibility repairs, and tests for existing behavior.
 
 ## Current Runtime

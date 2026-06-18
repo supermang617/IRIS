@@ -8,6 +8,9 @@ const requiredFiles = [
   "styles.css",
   "site.js",
   "release-manifest.json",
+  "robots.txt",
+  "sitemap.xml",
+  "llms.txt",
   "assets/iris-logo-256.png",
   "assets/iris-electric-banner.png",
 ];
@@ -22,6 +25,9 @@ for (const file of requiredFiles) {
 const html = readFileSync(join(siteDir, "index.html"), "utf8");
 const css = readFileSync(join(siteDir, "styles.css"), "utf8");
 const manifest = JSON.parse(readFileSync(join(siteDir, "release-manifest.json"), "utf8"));
+const robots = readFileSync(join(siteDir, "robots.txt"), "utf8");
+const sitemap = readFileSync(join(siteDir, "sitemap.xml"), "utf8");
+const llms = readFileSync(join(siteDir, "llms.txt"), "utf8");
 
 const expectedHashes = new Map([
   ["iris-windows-installer.zip", "e1ca7f9092d0ffac4f54a1510a0f138dfe4e4d8b2c758614408d0176e1011340"],
@@ -31,11 +37,14 @@ const expectedHashes = new Map([
 
 const requiredFragments = [
   "Iris v1",
+  "Local-First Windows AI Assistant",
+  "application/ld+json",
   "Download beginner bundle",
   "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip",
   "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows.zip",
   "https://supermang617.github.io/IRIS/assets/iris-electric-banner.png",
   "twitter:card",
+  "max-image-preview:large",
   "docs/download-and-run.md",
   "docs/manual-test.md",
   "docs/runtime-orchestration.md",
@@ -83,6 +92,7 @@ for (const asset of manifest.assets) {
 }
 
 const requiredMeta = [
+  /<title>Iris v1 \| Local-First Windows AI Assistant<\/title>/,
   /<link rel="canonical" href="https:\/\/supermang617\.github\.io\/IRIS\/" \/>/,
   /<meta property="og:url" content="https:\/\/supermang617\.github\.io\/IRIS\/" \/>/,
   /<meta property="og:type" content="website" \/>/,
@@ -107,6 +117,41 @@ for (const [foreground, background, label] of contrastPairs) {
   const ratio = contrastRatio(foreground, background);
   if (ratio < 4.5) {
     throw new Error(`${label} contrast ratio ${ratio.toFixed(2)} is below 4.5.`);
+  }
+}
+
+const jsonLdMatch = html.match(/<script type="application\/ld\+json">\s*([\s\S]*?)\s*<\/script>/);
+if (!jsonLdMatch) {
+  throw new Error("Missing SoftwareApplication JSON-LD.");
+}
+
+const jsonLd = JSON.parse(jsonLdMatch[1]);
+if (jsonLd["@type"] !== "SoftwareApplication" || jsonLd.operatingSystem !== "Windows") {
+  throw new Error("JSON-LD must describe Iris as a Windows SoftwareApplication.");
+}
+if (!jsonLd.downloadUrl?.includes("/releases/download/v1/iris-windows-installer.zip")) {
+  throw new Error("JSON-LD downloadUrl must point at the v1 beginner bundle.");
+}
+
+const robotsFragments = [
+  "User-agent: *",
+  "User-agent: GPTBot",
+  "User-agent: OAI-SearchBot",
+  "Sitemap: https://supermang617.github.io/IRIS/sitemap.xml",
+];
+for (const fragment of robotsFragments) {
+  if (!robots.includes(fragment)) {
+    throw new Error(`robots.txt is missing ${fragment}`);
+  }
+}
+
+if (!sitemap.includes("<loc>https://supermang617.github.io/IRIS/</loc>")) {
+  throw new Error("sitemap.xml must include the canonical Iris URL.");
+}
+
+for (const fragment of ["Iris v1", "Canonical site", "Recommended download", "Runtime orchestration"]) {
+  if (!llms.includes(fragment)) {
+    throw new Error(`llms.txt is missing ${fragment}`);
   }
 }
 

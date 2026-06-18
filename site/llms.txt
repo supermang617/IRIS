@@ -1,0 +1,19 @@
+# Iris v1
+
+Iris v1 is a local-first Windows AI assistant with voice, vision, memory, and approval-gated Hermes tools.
+
+Canonical site: https://supermang617.github.io/IRIS/
+Source repository: https://github.com/supermang617/IRIS
+Current release: https://github.com/supermang617/IRIS/releases/tag/v1
+Recommended download: https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip
+
+## Key Pages
+
+- Download and run: https://github.com/supermang617/IRIS/blob/main/docs/download-and-run.md
+- Manual test guide: https://github.com/supermang617/IRIS/blob/main/docs/manual-test.md
+- Runtime orchestration: https://github.com/supermang617/IRIS/blob/main/docs/runtime-orchestration.md
+- Security policy: https://github.com/supermang617/IRIS/blob/main/SECURITY.md
+
+## Summary
+
+Iris is the user-facing desktop assistant. Hermes is the background agent path for approved research, memory transfer, browser work, and tool-backed tasks. Iris v1 is distributed from the single GitHub release tag v1.
