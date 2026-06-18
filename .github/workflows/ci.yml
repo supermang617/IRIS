@@ -108,7 +108,7 @@ jobs:
           uv pip list --python .\.iris-runtime\hermes\.venv\Scripts\python.exe --format freeze | Set-Content diagnostics\hermes-python-dependencies.txt
 
       - name: Upload dependency inventory
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: iris-dependency-inventory
           path: |
