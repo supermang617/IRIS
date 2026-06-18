@@ -430,7 +430,7 @@ code {
   .hero-copy,
   .hero p,
   .section-heading {
-    max-width: calc(100vw - 2.5rem);
+    max-width: min(calc(100vw - 2.5rem), 21.75rem);
   }
 
   .hero h1 {
