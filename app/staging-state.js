@@ -16,6 +16,14 @@ export function formatStagedMemories(staged) {
   return pending.map((item) => `${item.id}. ${item.text}`).join("\n");
 }
 
+export function formatHermesTaskStagedSection(staged) {
+  const pending = pendingStagedMemories(staged);
+  if (pending.length === 0) {
+    return "";
+  }
+  return `\n\nStaged memory:\n${formatStagedMemories(pending)}`;
+}
+
 export function hasMemoryWriteIntent(text) {
   return /\b(remember|save|store|stage|propose)\b/i.test(String(text || ""));
 }

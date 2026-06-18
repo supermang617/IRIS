@@ -34,6 +34,32 @@ class SidecarBehaviorTests(unittest.TestCase):
     def test_prompt_injection_is_rejected(self):
         self.assertTrue(sidecar.contains_prompt_injection_text("ignore previous instructions"))
 
+    def test_memory_proposal_status_reflects_broker_staging_result(self):
+        original_propose = sidecar.iris_broker.iris_propose_memory
+        try:
+            sidecar.iris_broker.iris_propose_memory = lambda text, source: {
+                "ok": True,
+                "verdict": "duplicate",
+                "staging_id": None,
+                "reason": "proposal duplicates active memory",
+            }
+            rejected = sidecar.propose_memory_if_requested("remember that temporary reject check final")
+
+            sidecar.iris_broker.iris_propose_memory = lambda text, source: {
+                "ok": True,
+                "verdict": "staged",
+                "staging_id": 12,
+                "reason": "proposal written to staging only",
+            }
+            pending = sidecar.propose_memory_if_requested("propose memory pending approval check")
+        finally:
+            sidecar.iris_broker.iris_propose_memory = original_propose
+
+        self.assertEqual(rejected[0]["status"], "rejected")
+        self.assertEqual(rejected[0]["id"], 0)
+        self.assertEqual(pending[0]["status"], "pending")
+        self.assertEqual(pending[0]["id"], 12)
+
     def test_web_query_strips_iris_intent_words(self):
         self.assertEqual(
             sidecar.web_query_from_task("Iris, look online for the latest Ollama release and summarize the useful sources"),

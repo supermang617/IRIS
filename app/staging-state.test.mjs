@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   claimsActiveMemoryWrite,
   formatHermesMemoryTaskText,
+  formatHermesTaskStagedSection,
   formatStagedMemories,
   hasMemoryWriteIntent,
   pendingStagedMemories
@@ -21,6 +22,17 @@ test("staging display only shows pending Hermes memories", () => {
 
 test("staging display names no pending items clearly", () => {
   assert.equal(formatStagedMemories([{ id: 1, text: "old accepted", status: "accepted" }]), "No pending Hermes memories.");
+});
+
+test("Hermes task staged section only renders pending proposals", () => {
+  assert.equal(formatHermesTaskStagedSection([{ id: 1, text: "old rejected", status: "rejected" }]), "");
+  assert.equal(
+    formatHermesTaskStagedSection([
+      { id: 1, text: "old rejected", status: "rejected" },
+      { id: 2, text: "pending detail", status: "pending" }
+    ]),
+    "\n\nStaged memory:\n2. pending detail"
+  );
 });
 
 test("Hermes staged-memory output cannot claim active memory before approval", () => {
