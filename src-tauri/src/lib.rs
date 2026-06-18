@@ -14,7 +14,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Manager, PhysicalPosition};
 
@@ -53,7 +53,7 @@ struct WindowRect {
     height: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MonitorRect {
     x: i32,
     y: i32,
@@ -3550,6 +3550,7 @@ fn rect_intersection_area(window: WindowRect, monitor: MonitorRect) -> i64 {
     width * height
 }
 
+#[cfg(test)]
 fn window_is_visible_on_any_monitor(window: WindowRect, monitors: &[MonitorRect]) -> bool {
     if window.width == 0 || window.height == 0 {
         return false;
@@ -3561,10 +3562,42 @@ fn window_is_visible_on_any_monitor(window: WindowRect, monitors: &[MonitorRect]
     })
 }
 
+fn window_is_visible_on_monitor(window: WindowRect, monitor: MonitorRect) -> bool {
+    if window.width == 0 || window.height == 0 {
+        return false;
+    }
+    let visible_area = rect_intersection_area(window, monitor);
+    let required_area = (i64::from(window.width) * i64::from(window.height) / 4).max(1);
+    visible_area >= required_area
+}
+
+fn monitor_rect(monitor: &tauri::Monitor) -> MonitorRect {
+    let position = monitor.position();
+    let size = monitor.size();
+    MonitorRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    }
+}
+
 fn center_position_for_monitor(window: WindowRect, monitor: MonitorRect) -> PhysicalPosition<i32> {
     let x = monitor.x + ((monitor.width as i32 - window.width as i32) / 2).max(0);
     let y = monitor.y + ((monitor.height as i32 - window.height as i32) / 2).max(0);
     PhysicalPosition::new(x, y)
+}
+
+fn preferred_startup_monitor(
+    monitors: &[MonitorRect],
+    tauri_primary: Option<MonitorRect>,
+) -> Option<MonitorRect> {
+    monitors
+        .iter()
+        .copied()
+        .find(|monitor| monitor.x == 0 && monitor.y == 0)
+        .or(tauri_primary)
+        .or_else(|| monitors.first().copied())
 }
 
 fn keep_main_window_visible(
@@ -3576,35 +3609,38 @@ fn keep_main_window_visible(
     let Ok(size) = window.outer_size() else {
         return;
     };
-    let Ok(monitors) = window.available_monitors() else {
-        return;
-    };
-    let monitor_rects = monitors
-        .iter()
-        .map(|monitor| {
-            let position = monitor.position();
-            let size = monitor.size();
-            MonitorRect {
-                x: position.x,
-                y: position.y,
-                width: size.width,
-                height: size.height,
-            }
-        })
-        .collect::<Vec<_>>();
     let window_rect = WindowRect {
         x: position.x,
         y: position.y,
         width: size.width,
         height: size.height,
     };
-    if window_is_visible_on_any_monitor(window_rect, &monitor_rects) {
+    let Ok(monitors) = window.available_monitors() else {
         return;
-    }
-    if let Some(target_monitor) = monitor_rects.first().copied() {
-        let _ = window.set_position(center_position_for_monitor(window_rect, target_monitor));
+    };
+    let monitor_rects = monitors.iter().map(monitor_rect).collect::<Vec<_>>();
+    let tauri_primary = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .as_ref()
+        .map(monitor_rect);
+    if let Some(startup_monitor) = preferred_startup_monitor(&monitor_rects, tauri_primary)
+        && !window_is_visible_on_monitor(window_rect, startup_monitor)
+    {
+        let _ = window.set_position(center_position_for_monitor(window_rect, startup_monitor));
         let _ = window.set_focus();
     }
+}
+
+fn keep_main_window_visible_after_startup(
+    window: tauri::WebviewWindow<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>,
+) {
+    keep_main_window_visible(&window);
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(700));
+        keep_main_window_visible(&window);
+    });
 }
 
 pub fn run() {
@@ -3621,7 +3657,7 @@ pub fn run() {
     let result = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                keep_main_window_visible(&window);
+                keep_main_window_visible_after_startup(window);
             }
             Ok(())
         })
@@ -3914,6 +3950,55 @@ mod tests {
             },
             &[monitor]
         ));
+    }
+
+    #[test]
+    fn primary_monitor_visibility_rejects_secondary_only_position() {
+        let primary = MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let secondary_above = MonitorRect {
+            x: 0,
+            y: -1080,
+            width: 1920,
+            height: 1080,
+        };
+        let window = WindowRect {
+            x: 100,
+            y: -900,
+            width: 800,
+            height: 400,
+        };
+
+        assert!(window_is_visible_on_any_monitor(
+            window,
+            &[primary, secondary_above]
+        ));
+        assert!(!window_is_visible_on_monitor(window, primary));
+    }
+
+    #[test]
+    fn startup_monitor_prefers_desktop_origin_over_tauri_primary() {
+        let desktop_origin = MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1600,
+            height: 1067,
+        };
+        let secondary = MonitorRect {
+            x: -534,
+            y: -1440,
+            width: 2560,
+            height: 1440,
+        };
+
+        assert_eq!(
+            preferred_startup_monitor(&[secondary, desktop_origin], Some(secondary)),
+            Some(desktop_origin)
+        );
     }
 
     #[test]

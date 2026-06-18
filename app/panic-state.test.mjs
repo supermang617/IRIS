@@ -9,7 +9,7 @@ test("panic stop toggles local UI submission gate", () => {
   assert.equal(canSubmitWhilePanicStopped(false), true);
 });
 
-test("panic stop status text is explicit", () => {
-  assert.equal(panicStatusText(true), "Panic Stop active. Iris is paused.");
-  assert.equal(panicStatusText(false), "Panic Stop cleared. Iris is ready.");
+test("panic status text describes the visible pause behavior", () => {
+  assert.equal(panicStatusText(true), "Iris is paused.");
+  assert.equal(panicStatusText(false), "Iris resumed. Wake word armed.");
 });

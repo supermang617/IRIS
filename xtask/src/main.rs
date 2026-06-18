@@ -211,7 +211,7 @@ fn assert_conversational_voice_guards(root: &Path) -> Result<(), String> {
         (
             "Kokoro leading silence",
             kokoro.as_str(),
-            "LEAD_SILENCE_SECONDS = 0.22",
+            "LEAD_SILENCE_SECONDS = 0.35",
         ),
     ] {
         if !content.contains(required) {

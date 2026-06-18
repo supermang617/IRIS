@@ -7,5 +7,5 @@ export function canSubmitWhilePanicStopped(active) {
 }
 
 export function panicStatusText(active) {
-  return active ? "Panic Stop active. Iris is paused." : "Panic Stop cleared. Iris is ready.";
+  return active ? "Iris is paused." : "Iris resumed. Wake word armed.";
 }

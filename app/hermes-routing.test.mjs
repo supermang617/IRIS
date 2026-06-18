@@ -11,11 +11,24 @@ test("explicit Hermes research command routes to research mode", () => {
   });
 });
 
-test("natural online request routes through Hermes research", () => {
+test("natural online request routes through Iris background research", () => {
   assert.deepEqual(classifyHermesRoute("Iris, look online for the latest Ollama release"), {
     route: "implicit",
     mode: "research",
     text: "Iris, look online for the latest Ollama release"
+  });
+});
+
+test("natural browser or image generation requests route without requiring the Hermes name", () => {
+  assert.deepEqual(classifyHermesRoute("open the website https://example.com and summarize it"), {
+    route: "implicit",
+    mode: "research",
+    text: "open the website https://example.com and summarize it"
+  });
+  assert.deepEqual(classifyHermesRoute("generate an image of Iris in glass style"), {
+    route: "implicit",
+    mode: "research",
+    text: "generate an image of Iris in glass style"
   });
 });
 

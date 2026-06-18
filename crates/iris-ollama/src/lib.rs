@@ -766,6 +766,19 @@ mod tests {
     }
 
     #[test]
+    fn prompt_declares_local_speech_output() {
+        let gated = iris_context_gate::gate_context(vec![iris_core_types::RawContextItem::new(
+            iris_core_types::ContextSource::UserUtterance,
+            "say this out loud",
+        )]);
+        let prompt = prompt_from_gated_context(&gated, &[], &[], None).expect("prompt");
+
+        assert!(prompt.contains("local Kokoro speech output"));
+        assert!(prompt.contains("Do not claim that you cannot speak"));
+        assert!(prompt.contains("Iris will speak it when voice output is enabled"));
+    }
+
+    #[test]
     fn dynamic_context_is_advisory_and_precedes_the_current_request() {
         let bundle = gate_context(vec![RawContextItem::new(
             ContextSource::HudText,

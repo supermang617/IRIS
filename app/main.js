@@ -610,7 +610,7 @@ async function handleMemoryCommand(text) {
 
   if (/^memory\s+help$/i.test(clean)) {
     elements.hudOutput.textContent =
-      "Memory and context commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\ndynamic context\ndynamic context on\ndynamic context off\ndynamic context reset\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Dynamic context stores only decaying aggregate communication metrics. Online and research requests are routed through Iris to Safe Hermes.";
+      "Memory and context commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\ndynamic context\ndynamic context on\ndynamic context off\ndynamic context reset\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Dynamic context stores only decaying aggregate communication metrics. Online, browser, and research requests can be asked directly through Iris.";
     return true;
   }
 
@@ -656,7 +656,7 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
     }
     return;
   }
-  elements.hudOutput.textContent = route === "implicit" ? "Iris is researching through Hermes." : "Hermes thinking locally.";
+  elements.hudOutput.textContent = route === "implicit" ? "Iris is checking current sources." : "Hermes thinking locally.";
   const response = await call("hermes_submit_task", {
     request: {
       mode,
@@ -666,7 +666,7 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
   });
   const responseText = formatHermesMemoryTaskText(response.text, response.memoryProposals, clean);
   const staged = formatHermesTaskStagedSection(response.memoryProposals);
-  elements.hudOutput.textContent = route === "implicit" ? `Iris found this through Hermes:\n\n${responseText}${staged}` : `${responseText}${staged}`;
+  elements.hudOutput.textContent = route === "implicit" ? `Iris found this:\n\n${responseText}${staged}` : `${responseText}${staged}`;
 }
 
 async function runAgenticTaskWithApprovals(text) {
@@ -1096,8 +1096,8 @@ function renderPanicStop() {
   elements.panicButton.classList.toggle("active", panicStopActive);
   elements.irisConsole.classList.toggle("panic-active", panicStopActive);
   elements.panicButton.setAttribute("aria-pressed", panicStopActive ? "true" : "false");
-  elements.panicButton.setAttribute("title", panicStopActive ? "Resume Iris" : "Panic Stop");
-  elements.panicButton.setAttribute("aria-label", panicStopActive ? "Resume Iris" : "Panic Stop");
+  elements.panicButton.setAttribute("title", panicStopActive ? "Resume Iris" : "Pause Iris");
+  elements.panicButton.setAttribute("aria-label", panicStopActive ? "Resume Iris" : "Pause Iris");
   setInputsDisabled(thinking || speaking || listening);
 }
 
@@ -1126,7 +1126,7 @@ async function togglePanicStop() {
       activeSpeechResolve = null;
     }
     speaking = false;
-    elements.voiceStatus.textContent = "Panic Stop active.";
+    elements.voiceStatus.textContent = "Iris paused.";
   } else {
     stopListeningRequested = false;
     wakeMissStreak = 0;
