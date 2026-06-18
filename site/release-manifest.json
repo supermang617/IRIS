@@ -1,0 +1,17 @@
+{
+  "tag": "v1",
+  "repository": "https://github.com/supermang617/IRIS",
+  "release": "https://github.com/supermang617/IRIS/releases/tag/v1",
+  "assets": [
+    {
+      "name": "iris-windows-installer.zip",
+      "url": "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip",
+      "sha256": "2fad05933328c7fcff1e3667b37c392682be1f0dc4bee1eba826c7a00e404a3a"
+    },
+    {
+      "name": "iris-windows.zip",
+      "url": "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows.zip",
+      "sha256": "28a948833f1396f8add27aadecec196e5be5a17fd83868d6ee7bf17f0e1f7f47"
+    }
+  ]
+}

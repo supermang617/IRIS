@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Iris is a local-first Windows assistant with voice, vision, memory, and approval-gated Hermes tools."
+    />
+    <meta property="og:title" content="Iris v1" />
+    <meta
+      property="og:description"
+      content="Download Iris v1 for Windows and review the local-first architecture, setup notes, checksums, and safety model."
+    />
+    <meta property="og:image" content="./assets/iris-electric-banner.png" />
+    <title>Iris v1</title>
+    <link rel="icon" href="./assets/iris-logo-256.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Iris home">
+        <img src="./assets/iris-logo-256.png" alt="" />
+        <span>Iris</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#download">Download</a>
+        <a href="#setup">Setup</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#docs">Docs</a>
+      </nav>
+      <a class="header-download" href="https://github.com/supermang617/IRIS/releases/tag/v1">Get v1</a>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <img class="hero-bg" src="./assets/iris-electric-banner.png" alt="" />
+        <div class="hero-copy">
+          <h1 id="hero-title">Iris v1</h1>
+          <p>
+            A local-first Windows assistant built around voice, vision, memory, and an approval-gated
+            Hermes agent path. Iris stays the interface. Hermes works in the background when a task needs
+            tools.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip">
+              Download beginner bundle
+            </a>
+            <a class="button secondary" href="https://github.com/supermang617/IRIS">View source</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="download" class="section download-section" aria-labelledby="download-title">
+        <div class="section-heading">
+          <p class="section-label">Download</p>
+          <h2 id="download-title">Install the single Iris v1 release</h2>
+          <p>
+            The beginner bundle includes the Windows installer scripts and packaged application. Use the
+            checksums below to verify the downloaded files before installation.
+          </p>
+        </div>
+        <div class="download-grid">
+          <article class="download-panel primary-panel">
+            <h3>Beginner Windows bundle</h3>
+            <p>Recommended for first-time installation on Windows.</p>
+            <a class="button primary" href="https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip">
+              Download installer zip
+            </a>
+            <code>iris-windows-installer.zip</code>
+          </article>
+          <article class="download-panel">
+            <h3>Portable package</h3>
+            <p>Use this when you want the packaged app archive directly.</p>
+            <a class="button secondary" href="https://github.com/supermang617/IRIS/releases/download/v1/iris-windows.zip">
+              Download app zip
+            </a>
+            <code>iris-windows.zip</code>
+          </article>
+        </div>
+        <div class="checksum-panel" aria-labelledby="checksum-title">
+          <h3 id="checksum-title">Release checksums</h3>
+          <dl>
+            <div>
+              <dt>iris-windows-installer.zip</dt>
+              <dd><code>2fad05933328c7fcff1e3667b37c392682be1f0dc4bee1eba826c7a00e404a3a</code></dd>
+            </div>
+            <div>
+              <dt>iris-windows.zip</dt>
+              <dd><code>28a948833f1396f8add27aadecec196e5be5a17fd83868d6ee7bf17f0e1f7f47</code></dd>
+            </div>
+          </dl>
+          <p>
+            Verify in PowerShell with
+            <code>Get-FileHash .\iris-windows-installer.zip -Algorithm SHA256</code>.
+          </p>
+        </div>
+      </section>
+
+      <section class="section feature-band" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="section-label">What Iris does</p>
+          <h2 id="features-title">One assistant surface for local work</h2>
+        </div>
+        <div class="feature-list">
+          <article>
+            <h3>Voice and conversation</h3>
+            <p>Wake/listen, push-to-talk, typed chat, local speech recognition, and Kokoro voice output.</p>
+          </article>
+          <article>
+            <h3>Vision and attachments</h3>
+            <p>Camera, screen capture, image files, and text attachments feed into Iris as user-approved evidence.</p>
+          </article>
+          <article>
+            <h3>Memory with review</h3>
+            <p>Iris can stage memory proposals, show what changed, and keep accept/reject control in the UI.</p>
+          </article>
+          <article>
+            <h3>Hermes in the background</h3>
+            <p>Research, files, browser work, and agentic tasks route through Hermes while Iris remains the user interface.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="setup" class="section setup-section" aria-labelledby="setup-title">
+        <div class="section-heading">
+          <p class="section-label">Setup</p>
+          <h2 id="setup-title">Install, launch, verify</h2>
+          <p>Designed for a single-user Windows v1 release with local runtime dependencies.</p>
+        </div>
+        <ol class="steps">
+          <li>
+            <span>1</span>
+            <div>
+              <h3>Download v1</h3>
+              <p>Download <code>iris-windows-installer.zip</code> from the GitHub release.</p>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <h3>Verify the hash</h3>
+              <p>Compare the SHA-256 value against the checksum shown on this page or in the release asset.</p>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <h3>Run the installer script</h3>
+              <p>Use the included PowerShell installer. It checks prerequisites and installs Iris for the current user.</p>
+            </div>
+          </li>
+          <li>
+            <span>4</span>
+            <div>
+              <h3>Open Iris</h3>
+              <p>Launch from the Desktop or Start Menu shortcut and run the manual voice, vision, memory, and Hermes checks.</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section id="architecture" class="section architecture-section" aria-labelledby="architecture-title">
+        <div class="section-heading">
+          <p class="section-label">Architecture</p>
+          <h2 id="architecture-title">Local-first core with controlled tool access</h2>
+        </div>
+        <div class="architecture-map">
+          <article>
+            <h3>Iris UI</h3>
+            <p>The desktop app is the only user-facing control surface for chat, voice, attachments, preview, and approvals.</p>
+          </article>
+          <article>
+            <h3>Local runtime</h3>
+            <p>Ollama, ASR, Kokoro TTS, diagnostics, and Iris-owned memory run locally on the Windows machine.</p>
+          </article>
+          <article>
+            <h3>Hermes tools</h3>
+            <p>Hermes handles approved research and agentic work through explicit sessions, audit events, and process cleanup.</p>
+          </article>
+          <article>
+            <h3>Safety gates</h3>
+            <p>Panic pause, mode transitions, high-risk confirmations, and staged memory keep user control visible.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section safety-section" aria-labelledby="safety-title">
+        <div class="section-heading">
+          <p class="section-label">Safety</p>
+          <h2 id="safety-title">Practical boundaries, not fake capability</h2>
+          <p>
+            Iris should say what it can do, ask when a risky action needs approval, and route tool work through the
+            approved Hermes path instead of pretending work happened.
+          </p>
+        </div>
+        <div class="safety-grid">
+          <article>
+            <h3>Safe default</h3>
+            <p>Startup begins in Safe mode. Agentic work requires a session and expires automatically.</p>
+          </article>
+          <article>
+            <h3>Memory authority</h3>
+            <p>Iris owns durable memory. Hermes can propose and query, but accepted memory remains user-controlled.</p>
+          </article>
+          <article>
+            <h3>Visible approvals</h3>
+            <p>High-risk work requires explicit confirmation with command, path, browser, or file context surfaced in Iris.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="docs" class="section docs-section" aria-labelledby="docs-title">
+        <div class="section-heading">
+          <p class="section-label">Docs</p>
+          <h2 id="docs-title">Read before installing or testing</h2>
+        </div>
+        <div class="docs-grid">
+          <a href="https://github.com/supermang617/IRIS/blob/main/README.md">README</a>
+          <a href="https://github.com/supermang617/IRIS/blob/main/docs/download-and-run.md">Download and run</a>
+          <a href="https://github.com/supermang617/IRIS/blob/main/docs/manual-test.md">Manual test guide</a>
+          <a href="https://github.com/supermang617/IRIS/blob/main/docs/runtime-orchestration.md">Runtime orchestration</a>
+          <a href="https://github.com/supermang617/IRIS/blob/main/SECURITY.md">Security policy</a>
+          <a href="https://github.com/supermang617/IRIS/releases/tag/v1">GitHub v1 release</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <img src="./assets/iris-logo-256.png" alt="" />
+      <p>Iris v1 is distributed from the single GitHub release tag <a href="https://github.com/supermang617/IRIS/releases/tag/v1">v1</a>.</p>
+      <p>Contact: <a href="mailto:super.mangmail@gmail.com">super.mangmail@gmail.com</a></p>
+    </footer>
+
+    <script src="./site.js" defer></script>
+  </body>
+</html>
