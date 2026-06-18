@@ -1790,6 +1790,16 @@ fn save_staged_memory_proposals(staged: &[StagedMemoryProposal]) -> Result<(), S
         .map_err(|err| format!("failed to write staging memory {}: {err}", path.display()))
 }
 
+fn staging_status_counts(staged: &[StagedMemoryProposal]) -> (usize, usize) {
+    staged.iter().fold((0, 0), |(pending, decided), proposal| {
+        if proposal.status == StagingStatus::Pending {
+            (pending + 1, decided)
+        } else {
+            (pending, decided + 1)
+        }
+    })
+}
+
 fn normalize_memory_text(text: &str) -> Result<String, String> {
     let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if clean.is_empty() {
@@ -2297,23 +2307,29 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
         },
     );
     match (fields[0], fields[1]) {
-        ("GET", "/memory/status") => json_ok(serde_json::json!({
-            "ok": true,
-            "service": "iris_hermes_memory_broker",
-            "bind": HERMES_MEMORY_BROKER_ADDR,
-            "loopbackOnly": true,
-            "maxRequestBytes": MAX_HERMES_HTTP_REQUEST_BYTES,
-            "maxQueryChars": MAX_HERMES_MEMORY_QUERY_CHARS,
-            "maxProposalChars": MAX_HERMES_PROPOSAL_CHARS,
-            "activeMemoryItems": load_memories().map(|items| items.len()).unwrap_or(0),
-            "stagingItems": load_staged_memory_proposals().map(|items| items.len()).unwrap_or(0),
-            "hermesEnabled": hermes_enabled() && policy.mode != hermes_policy::HermesMode::Off,
-            "hermesMode": policy.mode,
-            "panicStopActive": policy.panic_stop_active,
-            "searchEnabled": hermes_memory_search_enabled(),
-            "onedriveSyncEnabled": env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
-            "inferenceProvider": hermes_inference_provider()
-        })),
+        ("GET", "/memory/status") => {
+            let staged = load_staged_memory_proposals().unwrap_or_default();
+            let (pending_staging_items, decided_staging_items) = staging_status_counts(&staged);
+            json_ok(serde_json::json!({
+                "ok": true,
+                "service": "iris_hermes_memory_broker",
+                "bind": HERMES_MEMORY_BROKER_ADDR,
+                "loopbackOnly": true,
+                "maxRequestBytes": MAX_HERMES_HTTP_REQUEST_BYTES,
+                "maxQueryChars": MAX_HERMES_MEMORY_QUERY_CHARS,
+                "maxProposalChars": MAX_HERMES_PROPOSAL_CHARS,
+                "activeMemoryItems": load_memories().map(|items| items.len()).unwrap_or(0),
+                "stagingItems": staged.len(),
+                "pendingStagingItems": pending_staging_items,
+                "decidedStagingItems": decided_staging_items,
+                "hermesEnabled": hermes_enabled() && policy.mode != hermes_policy::HermesMode::Off,
+                "hermesMode": policy.mode,
+                "panicStopActive": policy.panic_stop_active,
+                "searchEnabled": hermes_memory_search_enabled(),
+                "onedriveSyncEnabled": env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
+                "inferenceProvider": hermes_inference_provider()
+            }))
+        }
         ("POST", "/memory/search") => {
             if policy.mode == hermes_policy::HermesMode::Off {
                 return json_error("403 Forbidden", "Hermes is Off");
@@ -3810,6 +3826,9 @@ mod tests {
 
         assert!(body.contains("\"ok\":true"));
         assert!(body.contains("\"loopbackOnly\":true"));
+        assert!(body.contains("\"stagingItems\""));
+        assert!(body.contains("\"pendingStagingItems\""));
+        assert!(body.contains("\"decidedStagingItems\""));
         assert!(body.contains("127.0.0.1:48731"));
     }
 
@@ -3859,6 +3878,47 @@ mod tests {
 
         assert!(proposal.evidence.is_none());
         assert!(proposal.provenance.is_none());
+    }
+
+    #[test]
+    fn staging_status_counts_separate_pending_from_decided_records() {
+        let staged = vec![
+            StagedMemoryProposal {
+                id: 1,
+                text: "pending".to_string(),
+                source: "test".to_string(),
+                evidence: None,
+                provenance: None,
+                status: StagingStatus::Pending,
+                verdict: ProposalVerdict::Staged,
+                created_ms: 1,
+                updated_ms: 1,
+            },
+            StagedMemoryProposal {
+                id: 2,
+                text: "accepted".to_string(),
+                source: "test".to_string(),
+                evidence: None,
+                provenance: None,
+                status: StagingStatus::Accepted,
+                verdict: ProposalVerdict::Staged,
+                created_ms: 1,
+                updated_ms: 2,
+            },
+            StagedMemoryProposal {
+                id: 3,
+                text: "rejected".to_string(),
+                source: "test".to_string(),
+                evidence: None,
+                provenance: None,
+                status: StagingStatus::Rejected,
+                verdict: ProposalVerdict::Rejected,
+                created_ms: 1,
+                updated_ms: 3,
+            },
+        ];
+
+        assert_eq!(staging_status_counts(&staged), (1, 2));
     }
 
     #[test]
