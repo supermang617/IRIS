@@ -89,8 +89,22 @@ def startup_check() -> dict[str, Any]:
         raise IrisBrokerUnavailable("Iris broker status did not return ok")
     if not status.get("loopbackOnly"):
         raise IrisBrokerUnavailable("Iris broker must report loopbackOnly=true")
+    _validate_staging_status_counts(status)
     inference_policy()
     return status
+
+
+def _validate_staging_status_counts(status: dict[str, Any]) -> None:
+    required = ("stagingItems", "pendingStagingItems", "decidedStagingItems")
+    if any(key not in status for key in required):
+        raise IrisBrokerUnavailable("Iris broker status must report explicit staging counts")
+    total = status.get("stagingItems")
+    pending = status.get("pendingStagingItems")
+    decided = status.get("decidedStagingItems")
+    if not all(isinstance(value, int) and value >= 0 for value in (total, pending, decided)):
+        raise IrisBrokerUnavailable("Iris broker staging counts must be non-negative integers")
+    if pending + decided != total:
+        raise IrisBrokerUnavailable("Iris broker staging counts are inconsistent")
 
 
 def iris_query_memory(query: str, limit: int = 5) -> dict[str, Any]:
