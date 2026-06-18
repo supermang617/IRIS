@@ -43,13 +43,15 @@ test("Hermes staged-memory output cannot claim active memory before approval", (
 test("Hermes memory-intent output cannot claim active memory without shaped proposals", () => {
   assert.equal(hasMemoryWriteIntent("remember that Alejandro is 45"), true);
   assert.equal(claimsActiveMemoryWrite("I have remembered that Alejandro is 45."), true);
+  assert.equal(claimsActiveMemoryWrite("I've saved that to memory."), true);
+  assert.equal(claimsActiveMemoryWrite("Hermes already stored that detail."), true);
   assert.equal(
     formatHermesMemoryTaskText(
       "I have remembered that Alejandro is 45 years old.",
       [],
       "remember that Alejandro is 45 years old"
     ),
-    "Hermes staged a memory proposal for your approval."
+    "Hermes did not stage a memory proposal."
   );
 });
 
