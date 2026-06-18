@@ -16,6 +16,7 @@ use std::{
     thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+use tauri::{Manager, PhysicalPosition};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -43,6 +44,22 @@ const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
 const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
 const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
 type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
+
+#[derive(Debug, Clone, Copy)]
+struct WindowRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MonitorRect {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct HudCommandResponse {
@@ -3522,6 +3539,74 @@ fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Resu
     Ok(text)
 }
 
+fn rect_intersection_area(window: WindowRect, monitor: MonitorRect) -> i64 {
+    let left = i64::from(window.x.max(monitor.x));
+    let top = i64::from(window.y.max(monitor.y));
+    let right = i64::from((window.x + window.width as i32).min(monitor.x + monitor.width as i32));
+    let bottom =
+        i64::from((window.y + window.height as i32).min(monitor.y + monitor.height as i32));
+    let width = (right - left).max(0);
+    let height = (bottom - top).max(0);
+    width * height
+}
+
+fn window_is_visible_on_any_monitor(window: WindowRect, monitors: &[MonitorRect]) -> bool {
+    if window.width == 0 || window.height == 0 {
+        return false;
+    }
+    monitors.iter().any(|monitor| {
+        let visible_area = rect_intersection_area(window, *monitor);
+        let required_area = (i64::from(window.width) * i64::from(window.height) / 4).max(1);
+        visible_area >= required_area
+    })
+}
+
+fn center_position_for_monitor(window: WindowRect, monitor: MonitorRect) -> PhysicalPosition<i32> {
+    let x = monitor.x + ((monitor.width as i32 - window.width as i32) / 2).max(0);
+    let y = monitor.y + ((monitor.height as i32 - window.height as i32) / 2).max(0);
+    PhysicalPosition::new(x, y)
+}
+
+fn keep_main_window_visible(
+    window: &tauri::WebviewWindow<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>,
+) {
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let Ok(monitors) = window.available_monitors() else {
+        return;
+    };
+    let monitor_rects = monitors
+        .iter()
+        .map(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            MonitorRect {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect::<Vec<_>>();
+    let window_rect = WindowRect {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    };
+    if window_is_visible_on_any_monitor(window_rect, &monitor_rects) {
+        return;
+    }
+    if let Some(target_monitor) = monitor_rects.first().copied() {
+        let _ = window.set_position(center_position_for_monitor(window_rect, target_monitor));
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     if INSTANCE_LOCK
         .set(match TcpListener::bind("127.0.0.1:48729") {
@@ -3534,6 +3619,12 @@ pub fn run() {
     }
     start_hermes_memory_broker_if_enabled();
     let result = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                keep_main_window_visible(&window);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             add_memory,
             browser_preview_data_url,
@@ -3795,6 +3886,54 @@ mod tests {
         );
         assert_eq!(whisper_initial_prompt(Some("command")), None);
         assert_eq!(whisper_initial_prompt(Some("push")), None);
+    }
+
+    #[test]
+    fn window_visibility_requires_meaningful_monitor_overlap() {
+        let monitor = MonitorRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        assert!(window_is_visible_on_any_monitor(
+            WindowRect {
+                x: 100,
+                y: 100,
+                width: 800,
+                height: 400,
+            },
+            &[monitor]
+        ));
+        assert!(!window_is_visible_on_any_monitor(
+            WindowRect {
+                x: -1400,
+                y: -1200,
+                width: 800,
+                height: 400,
+            },
+            &[monitor]
+        ));
+    }
+
+    #[test]
+    fn offscreen_window_recenters_on_monitor() {
+        let position = center_position_for_monitor(
+            WindowRect {
+                x: -1400,
+                y: -1200,
+                width: 800,
+                height: 400,
+            },
+            MonitorRect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+        );
+        assert_eq!(position.x, 560);
+        assert_eq!(position.y, 340);
     }
 
     #[test]
