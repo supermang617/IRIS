@@ -28,6 +28,7 @@ import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
 import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./panic-state.js";
+import { playWavBytes } from "./speech-output.js";
 import { splitSpeechChunks } from "./speech-chunks.js";
 import {
   formatHermesMemoryTaskText,
@@ -38,6 +39,7 @@ import {
   classifyAsrError,
   classifyVoiceTranscript,
   nextVoiceListenMode,
+  shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   wakeRestartDelayMs
 } from "./voice-state.js";
@@ -1062,48 +1064,60 @@ function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
           return;
         }
         const bytes = new Uint8Array(response.wavBytes);
-        const blob = new Blob([bytes], { type: "audio/wav" });
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        activeAudio = audio;
-        logVoice("speech_started", `run=${runId}; voice=${response.voice}; tts_ms=${response.elapsedMs}`);
-        if (firstChunk) {
-          monitorSpeechInterruption(runId);
-        }
-        audio.onplaying = () => {
+        let speechMarkedPlaying = false;
+        const markSpeechPlaying = (method) => {
+          if (speechMarkedPlaying || speechRunId !== runId) {
+            return;
+          }
+          speechMarkedPlaying = true;
+          logVoice(
+            "speech_started",
+            `run=${runId}; method=${method}; voice=${response.voice}; tts_ms=${response.elapsedMs}`
+          );
           if (latencyTrace && latencyTrace.ttsFirstAudioMs === null) {
             latencyTrace.ttsFirstAudioMs = Math.round(performance.now() - ttsStartedAt);
             latencyTrace.timeToFirstSpokenWordMs = Math.round(
               performance.now() - latencyTrace.turnStartedAt
             );
           }
-        };
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-          if (activeAudio === audio) {
-            activeAudio = null;
+          if (firstChunk) {
+            monitorSpeechInterruption(runId);
           }
-          resolveOnce(response.elapsedMs);
         };
-        audio.onerror = () => {
-          const mediaError = audio.error ? `code=${audio.error.code}; message=${audio.error.message || "n/a"}` : "unknown";
-          logVoice("speech_media_error", `run=${runId}; ${mediaError}`);
-          elements.voiceStatus.textContent = "Speech output failed. Check the Windows audio output device.";
-          URL.revokeObjectURL(url);
-          if (activeAudio === audio) {
-            activeAudio = null;
-          }
-          resolveOnce(response.elapsedMs);
-        };
-        audio.play().catch((error) => {
-          logVoice("speech_playback_error", String(error));
-          elements.voiceStatus.textContent = "Speech output was blocked. Press Speak Replies or try typed chat once.";
-          URL.revokeObjectURL(url);
-          if (activeAudio === audio) {
-            activeAudio = null;
-          }
-          resolveOnce(response.elapsedMs);
-        });
+        playNativeSpeech(bytes, runId, markSpeechPlaying)
+          .catch((nativeError) => {
+            logVoice("speech_native_playback_error", `run=${runId}; ${String(nativeError)}`);
+            return playWavBytes(bytes, {
+              clearActiveHandle: (handle) => {
+                if (activeAudio === handle) {
+                  activeAudio = null;
+                }
+              },
+              onDiagnostic: (event, message) => {
+                logVoice(event, `run=${runId}; ${message}`);
+              },
+              onPlaying: markSpeechPlaying,
+              setActiveHandle: (handle) => {
+                activeAudio = handle;
+              }
+            });
+          })
+          .then((method) => {
+            if (!speechMarkedPlaying && speechRunId === runId) {
+              markSpeechPlaying(method);
+            }
+          })
+          .catch((error) => {
+            logVoice("speech_playback_error", String(error));
+            elements.voiceStatus.textContent =
+              "Speech output failed. Check the Windows audio output device and app volume.";
+          })
+          .finally(() => {
+            if (speechRunId === runId && speechMarkedPlaying) {
+              logVoice("speech_playback_finished", `run=${runId}`);
+            }
+            resolveOnce(response.elapsedMs);
+          });
       })
       .catch((error) => {
         logVoice("kokoro_tts_error", String(error));
@@ -1111,6 +1125,15 @@ function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
         resolveOnce();
       });
   });
+}
+
+async function playNativeSpeech(bytes, runId, markSpeechPlaying) {
+  if (!invoke) {
+    throw new Error("native playback is unavailable");
+  }
+  markSpeechPlaying("native_cpal");
+  await call("play_tts_wav", { wavBytes: Array.from(bytes) });
+  return "native_cpal";
 }
 
 async function monitorSpeechInterruption(runId) {
@@ -1150,6 +1173,9 @@ async function monitorSpeechInterruption(runId) {
     logVoice("speech_interruption_error", String(error));
   } finally {
     interruptionListening = false;
+    if (!speaking && speechRunId === runId) {
+      restartListeningIfReady(100);
+    }
   }
 }
 
@@ -1351,7 +1377,7 @@ function handleVoiceTranscript(transcript) {
   if (decision.action === "submit") {
     wakeCommandArmed = false;
     wakeMissStreak = 0;
-    voiceLoop = false;
+    voiceLoop = shouldContinueVoiceSession(decision);
     submitMessage(decision.prompt, decision.source);
     return decision;
   }

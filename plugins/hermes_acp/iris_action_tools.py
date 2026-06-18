@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -50,6 +51,28 @@ POWERSHELL_DESCRIPTION = (
 PROCESS_DESCRIPTION = (
     "Manage native PowerShell background processes started by terminal. "
     "Supported actions: list, poll, log, wait, kill, write, submit, and close."
+)
+BASHISM_REPAIRS = (
+    (
+        re.compile(r"\bls\s+-[A-Za-z]*a[A-Za-z]*\b", re.IGNORECASE),
+        "Use `Get-ChildItem -Force` instead of `ls -la` or other Bash ls flags.",
+    ),
+    (
+        re.compile(r"(^|[\s|;])grep(\s|$)", re.IGNORECASE),
+        "Use `Select-String` instead of `grep`.",
+    ),
+    (
+        re.compile(r"(^|[\s|;])head(\s|$)", re.IGNORECASE),
+        "Use `Select-Object -First <count>` instead of `head`.",
+    ),
+    (
+        re.compile(r"(^|[\s|;])tail(\s|$)", re.IGNORECASE),
+        "Use `Select-Object -Last <count>` instead of `tail`.",
+    ),
+    (
+        re.compile(r"&&|\|\|"),
+        "Use PowerShell control flow or separate commands instead of Bash `&&` or `||`.",
+    ),
 )
 
 
@@ -283,6 +306,9 @@ def _native_terminal_handler(args: dict[str, Any], **kwargs: Any) -> str:
     approval = terminal_tool._check_all_guards(command, "local")
     if not approval.get("approved"):
         return _approval_denied_result(command, approval)
+    compatibility_error = _powershell_compatibility_error(command)
+    if compatibility_error:
+        return _json_result(error=compatibility_error)
 
     try:
         timeout = _coerce_timeout(args.get("timeout"), default=180)
@@ -380,7 +406,10 @@ def _native_process_handler(args: dict[str, Any], **kwargs: Any) -> str:
             ensure_ascii=False,
         )
     if action == "wait":
-        timeout = int(args.get("timeout") or 60)
+        try:
+            timeout = _coerce_timeout(args.get("timeout"), default=60)
+        except (TypeError, ValueError):
+            return _json_result(error="timeout must be a positive whole number")
         try:
             session.process.wait(timeout=max(1, timeout))
         except subprocess.TimeoutExpired:
@@ -600,6 +629,16 @@ def _coerce_timeout(value: Any, *, default: int) -> int:
     if not numeric.is_integer() or numeric < 1:
         raise ValueError("timeout is not a positive whole number")
     return int(numeric)
+
+
+def _powershell_compatibility_error(command: str) -> str | None:
+    for pattern, repair in BASHISM_REPAIRS:
+        if pattern.search(command):
+            return (
+                "Iris terminal runs native Windows PowerShell, not Bash. "
+                f"{repair} No command was run."
+            )
+    return None
 
 
 def _json_result(

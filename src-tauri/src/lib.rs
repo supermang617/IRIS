@@ -10,7 +10,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -45,6 +45,8 @@ const MAX_SCREEN_CAPTURE_WIDTH: u32 = 1280;
 const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
 const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
 const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
+const TTS_NATIVE_PREROLL_MS: u64 = 350;
+const TTS_NATIVE_TAIL_MS: u64 = 120;
 type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
 
 #[derive(Debug, Clone, Copy)]
@@ -392,6 +394,13 @@ struct TtsCommandResponse {
     wav_bytes: Vec<u8>,
     elapsed_ms: u128,
     voice: String,
+}
+
+#[derive(Debug, Clone)]
+struct PcmWav {
+    sample_rate: u32,
+    channels: u16,
+    samples: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -1042,6 +1051,13 @@ fn native_asr_listen_for(
 #[tauri::command]
 async fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
     tauri::async_runtime::spawn_blocking(move || kokoro_tts_wav_blocking(text))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn play_tts_wav(wav_bytes: Vec<u8>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || play_tts_wav_blocking(&wav_bytes))
         .await
         .map_err(|err| err.to_string())?
 }
@@ -3819,6 +3835,282 @@ fn whisper_initial_prompt(mode: Option<&str>) -> Option<&'static str> {
     }
 }
 
+fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+    let wav = parse_pcm_wav(wav_bytes)?;
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "no default audio output device found".to_string())?;
+    let supported_config = device
+        .default_output_config()
+        .map_err(|err| format!("failed to read output audio config: {err}"))?;
+    let output_rate = supported_config.sample_rate();
+    let output_channels = usize::from(supported_config.channels());
+    if output_channels == 0 {
+        return Err("default audio output device reports zero channels".to_string());
+    }
+    let samples = prepare_tts_output_samples(&wav, output_rate, output_channels);
+    if samples.is_empty() {
+        return Err("TTS wav contains no playable samples".to_string());
+    }
+
+    let config = supported_config.config();
+    let samples = Arc::new(samples);
+    let cursor = Arc::new(AtomicUsize::new(0));
+    let completion_sent = Arc::new(AtomicBool::new(false));
+    let error_state = Arc::new(Mutex::new(None::<String>));
+    let (done_tx, done_rx) = mpsc::channel();
+
+    let stream = match supported_config.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let samples = Arc::clone(&samples);
+            let cursor = Arc::clone(&cursor);
+            let completion_sent = Arc::clone(&completion_sent);
+            let done_tx = done_tx.clone();
+            device.build_output_stream(
+                config,
+                move |data: &mut [f32], _| {
+                    fill_output_f32(data, &samples, &cursor, &completion_sent, &done_tx)
+                },
+                output_error_handler(Arc::clone(&error_state)),
+                None,
+            )
+        }
+        cpal::SampleFormat::I16 => {
+            let samples = Arc::clone(&samples);
+            let cursor = Arc::clone(&cursor);
+            let completion_sent = Arc::clone(&completion_sent);
+            let done_tx = done_tx.clone();
+            device.build_output_stream(
+                config,
+                move |data: &mut [i16], _| {
+                    fill_output_i16(data, &samples, &cursor, &completion_sent, &done_tx)
+                },
+                output_error_handler(Arc::clone(&error_state)),
+                None,
+            )
+        }
+        cpal::SampleFormat::U16 => {
+            let samples = Arc::clone(&samples);
+            let cursor = Arc::clone(&cursor);
+            let completion_sent = Arc::clone(&completion_sent);
+            let done_tx = done_tx.clone();
+            device.build_output_stream(
+                config,
+                move |data: &mut [u16], _| {
+                    fill_output_u16(data, &samples, &cursor, &completion_sent, &done_tx)
+                },
+                output_error_handler(Arc::clone(&error_state)),
+                None,
+            )
+        }
+        other => return Err(format!("unsupported output sample format: {other:?}")),
+    }
+    .map_err(|err| format!("failed to open output audio stream: {err}"))?;
+
+    stream
+        .play()
+        .map_err(|err| format!("failed to start output audio stream: {err}"))?;
+    let output_frames = samples.len() / output_channels;
+    let timeout_ms =
+        ((output_frames as f64 / f64::from(output_rate)) * 1000.0).ceil() as u64 + 3_000;
+    done_rx
+        .recv_timeout(Duration::from_millis(timeout_ms.max(1_000)))
+        .map_err(|err| format!("timed out waiting for TTS playback to finish: {err}"))?;
+    drop(stream);
+
+    if let Some(error) = error_state.lock().map_err(|err| err.to_string())?.clone() {
+        return Err(format!("output audio stream error: {error}"));
+    }
+    Ok(())
+}
+
+fn prepare_tts_output_samples(wav: &PcmWav, output_rate: u32, output_channels: usize) -> Vec<f32> {
+    let input_channels = usize::from(wav.channels);
+    if input_channels == 0 || output_channels == 0 {
+        return Vec::new();
+    }
+    let mut mono = Vec::with_capacity(wav.samples.len() / input_channels);
+    for frame in wav.samples.chunks_exact(input_channels) {
+        mono.push(frame.iter().copied().sum::<f32>() / input_channels as f32);
+    }
+    let resampled = resample_linear(&mono, wav.sample_rate, output_rate);
+    let preroll_frames = frames_for_ms(output_rate, TTS_NATIVE_PREROLL_MS);
+    let tail_frames = frames_for_ms(output_rate, TTS_NATIVE_TAIL_MS);
+    let mut output =
+        Vec::with_capacity((preroll_frames + resampled.len() + tail_frames) * output_channels);
+    output.resize(preroll_frames * output_channels, 0.0);
+    for sample in resampled {
+        let sample = sample.clamp(-1.0, 1.0);
+        for _ in 0..output_channels {
+            output.push(sample);
+        }
+    }
+    output.resize(output.len() + tail_frames * output_channels, 0.0);
+    output
+}
+
+fn output_error_handler(
+    error_state: Arc<Mutex<Option<String>>>,
+) -> impl FnMut(cpal::Error) + Send + 'static {
+    move |err: cpal::Error| {
+        if let Ok(mut slot) = error_state.lock() {
+            *slot = Some(err.to_string());
+        }
+    }
+}
+
+fn frames_for_ms(sample_rate: u32, milliseconds: u64) -> usize {
+    ((u64::from(sample_rate) * milliseconds) / 1_000) as usize
+}
+
+fn fill_output_f32(
+    data: &mut [f32],
+    samples: &Arc<Vec<f32>>,
+    cursor: &AtomicUsize,
+    completion_sent: &AtomicBool,
+    done_tx: &mpsc::Sender<()>,
+) {
+    for sample in data {
+        let index = cursor.fetch_add(1, Ordering::SeqCst);
+        *sample = output_sample_at(samples, index);
+        notify_playback_complete(samples, index, completion_sent, done_tx);
+    }
+}
+
+fn fill_output_i16(
+    data: &mut [i16],
+    samples: &Arc<Vec<f32>>,
+    cursor: &AtomicUsize,
+    completion_sent: &AtomicBool,
+    done_tx: &mpsc::Sender<()>,
+) {
+    for sample in data {
+        let index = cursor.fetch_add(1, Ordering::SeqCst);
+        *sample = (output_sample_at(samples, index) * f32::from(i16::MAX)).round() as i16;
+        notify_playback_complete(samples, index, completion_sent, done_tx);
+    }
+}
+
+fn fill_output_u16(
+    data: &mut [u16],
+    samples: &Arc<Vec<f32>>,
+    cursor: &AtomicUsize,
+    completion_sent: &AtomicBool,
+    done_tx: &mpsc::Sender<()>,
+) {
+    for sample in data {
+        let index = cursor.fetch_add(1, Ordering::SeqCst);
+        let normalized = (output_sample_at(samples, index) + 1.0) * 0.5;
+        *sample = (normalized.clamp(0.0, 1.0) * f32::from(u16::MAX)).round() as u16;
+        notify_playback_complete(samples, index, completion_sent, done_tx);
+    }
+}
+
+fn output_sample_at(samples: &[f32], index: usize) -> f32 {
+    samples.get(index).copied().unwrap_or(0.0).clamp(-1.0, 1.0)
+}
+
+fn notify_playback_complete(
+    samples: &[f32],
+    index: usize,
+    completion_sent: &AtomicBool,
+    done_tx: &mpsc::Sender<()>,
+) {
+    if index >= samples.len() && !completion_sent.swap(true, Ordering::SeqCst) {
+        let _ = done_tx.send(());
+    }
+}
+
+fn parse_pcm_wav(bytes: &[u8]) -> Result<PcmWav, String> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("TTS output is not a RIFF/WAVE file".to_string());
+    }
+
+    let mut offset = 12usize;
+    let mut format = None::<(u16, u16, u32, u16)>;
+    let mut data = None::<&[u8]>;
+    while offset + 8 <= bytes.len() {
+        let chunk_id = &bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes(
+            bytes[offset + 4..offset + 8]
+                .try_into()
+                .map_err(|_| "invalid WAV chunk header".to_string())?,
+        ) as usize;
+        offset += 8;
+        if offset + chunk_size > bytes.len() {
+            return Err("WAV chunk extends past end of file".to_string());
+        }
+        let chunk = &bytes[offset..offset + chunk_size];
+        match chunk_id {
+            b"fmt " => {
+                if chunk.len() < 16 {
+                    return Err("WAV fmt chunk is too short".to_string());
+                }
+                let audio_format = u16::from_le_bytes([chunk[0], chunk[1]]);
+                let channels = u16::from_le_bytes([chunk[2], chunk[3]]);
+                let sample_rate = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                let bits_per_sample = u16::from_le_bytes([chunk[14], chunk[15]]);
+                if channels == 0 || sample_rate == 0 {
+                    return Err("WAV fmt chunk reports no channels or sample rate".to_string());
+                }
+                format = Some((audio_format, channels, sample_rate, bits_per_sample));
+            }
+            b"data" => data = Some(chunk),
+            _ => {}
+        }
+        offset += chunk_size + (chunk_size % 2);
+    }
+
+    let (audio_format, channels, sample_rate, bits_per_sample) =
+        format.ok_or_else(|| "WAV fmt chunk is missing".to_string())?;
+    let data = data.ok_or_else(|| "WAV data chunk is missing".to_string())?;
+    let bytes_per_sample = usize::from(bits_per_sample / 8);
+    if bytes_per_sample == 0 || data.len() % bytes_per_sample != 0 {
+        return Err("WAV data has invalid sample width".to_string());
+    }
+    let frame_bytes = bytes_per_sample * usize::from(channels);
+    if frame_bytes == 0 || data.len() % frame_bytes != 0 {
+        return Err("WAV data is not aligned to complete frames".to_string());
+    }
+
+    let mut samples = Vec::with_capacity(data.len() / bytes_per_sample);
+    for sample in data.chunks_exact(bytes_per_sample) {
+        samples.push(match (audio_format, bits_per_sample) {
+            (1, 16) => f32::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.0,
+            (1, 24) => {
+                let raw = i32::from(sample[0])
+                    | (i32::from(sample[1]) << 8)
+                    | (i32::from(sample[2]) << 16);
+                let signed = if raw & 0x80_0000 != 0 {
+                    raw | !0xFF_FFFF
+                } else {
+                    raw
+                };
+                signed as f32 / 8_388_608.0
+            }
+            (1, 32) => {
+                i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32
+                    / 2_147_483_648.0
+            }
+            (3, 32) => f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]),
+            _ => {
+                return Err(format!(
+                    "unsupported WAV format={audio_format} bits_per_sample={bits_per_sample}"
+                ));
+            }
+        });
+    }
+
+    Ok(PcmWav {
+        sample_rate,
+        channels,
+        samples,
+    })
+}
+
 fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Result<String, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
@@ -4016,6 +4308,7 @@ pub fn run() {
             hermes_submit_agentic_task,
             hermes_submit_task,
             kokoro_tts_wav,
+            play_tts_wav,
             list_memories,
             log_voice_diagnostic,
             log_voice_latency_report,
@@ -4048,6 +4341,31 @@ mod tests {
         fn drop(&mut self) {
             stop_kokoro_worker();
         }
+    }
+
+    fn test_pcm16_wav(sample_rate: u32, channels: u16, samples: &[i16]) -> Vec<u8> {
+        let data_len = samples.len() * 2;
+        let riff_len = 4 + 8 + 16 + 8 + data_len;
+        let block_align = channels * 2;
+        let byte_rate = sample_rate * u32::from(block_align);
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(riff_len as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
     }
 
     #[test]
@@ -4088,6 +4406,16 @@ mod tests {
             first_elapsed.as_millis(),
             second_elapsed.as_millis()
         );
+    }
+
+    #[test]
+    #[ignore = "requires local Kokoro model files, Python dependencies, and a default audio output device"]
+    fn live_native_tts_playback_uses_default_output_device() {
+        let _cleanup = KokoroTestCleanup;
+        stop_kokoro_worker();
+        let response = kokoro_tts_wav_blocking("A B C D E F G. Iris audio test.".to_string())
+            .expect("synthesize native playback test wav");
+        play_tts_wav_blocking(&response.wav_bytes).expect("play synthesized speech natively");
     }
 
     #[test]
@@ -4234,6 +4562,40 @@ mod tests {
         );
         assert_eq!(sample_rate_hz_from_debug("48000").unwrap(), 48_000);
         assert!(sample_rate_hz_from_debug("SampleRate(?)").is_err());
+    }
+
+    #[test]
+    fn parses_pcm16_wav_for_native_tts_playback() {
+        let bytes = test_pcm16_wav(24_000, 1, &[0, i16::MAX, i16::MIN]);
+        let wav = parse_pcm_wav(&bytes).expect("parse pcm16 wav");
+
+        assert_eq!(wav.sample_rate, 24_000);
+        assert_eq!(wav.channels, 1);
+        assert_eq!(wav.samples.len(), 3);
+        assert_eq!(wav.samples[0], 0.0);
+        assert!(wav.samples[1] > 0.99);
+        assert_eq!(wav.samples[2], -1.0);
+    }
+
+    #[test]
+    fn native_tts_output_adds_device_preroll_and_duplicates_channels() {
+        let wav = PcmWav {
+            sample_rate: 1_000,
+            channels: 1,
+            samples: vec![0.5, -0.25],
+        };
+        let output = prepare_tts_output_samples(&wav, 1_000, 2);
+        let preroll_samples = frames_for_ms(1_000, TTS_NATIVE_PREROLL_MS) * 2;
+
+        assert!(
+            output[..preroll_samples]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert_eq!(output[preroll_samples], 0.5);
+        assert_eq!(output[preroll_samples + 1], 0.5);
+        assert_eq!(output[preroll_samples + 2], -0.25);
+        assert_eq!(output[preroll_samples + 3], -0.25);
     }
 
     #[test]

@@ -73,6 +73,31 @@ class IrisActionToolPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             iris_action_tools._coerce_timeout("1.5", default=60)
 
+    def test_terminal_bashisms_return_repair_hint_without_running(self):
+        workspace = Path(tempfile.gettempdir()).resolve()
+        with (
+            patch.object(
+                iris_action_tools,
+                "_workspace_for_task",
+                return_value=workspace,
+            ),
+            patch(
+                "tools.terminal_tool._check_all_guards",
+                return_value={"approved": True},
+            ),
+            patch.object(iris_action_tools, "_start_powershell") as start_powershell,
+        ):
+            result = json.loads(
+                iris_action_tools._native_terminal_handler(
+                    {"command": "pwd && ls -la 2>&1 | head -5 || true"},
+                    task_id="test",
+                )
+            )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("native Windows PowerShell", result["error"])
+        self.assertIn("Get-ChildItem -Force", result["error"])
+        start_powershell.assert_not_called()
+
     def test_user_denial_is_a_completed_safety_outcome(self):
         result = json.loads(
             iris_action_tools._approval_denied_result(
@@ -150,6 +175,42 @@ class IrisActionToolPolicyTests(unittest.TestCase):
             )
         self.assertEqual(result["exit_code"], 0)
         self.assertIn("IRIS_NATIVE_POWERSHELL_OK", result["output"])
+
+    def test_process_wait_accepts_integral_numeric_timeout(self):
+        class FakeProcess:
+            pid = 123
+            stdin = None
+
+            def __init__(self):
+                self.exit_code = None
+                self.timeout = None
+
+            def poll(self):
+                return self.exit_code
+
+            def wait(self, timeout):
+                self.timeout = timeout
+                self.exit_code = 0
+
+        process = FakeProcess()
+        session = iris_action_tools._NativeProcess(
+            session_id="proc_test",
+            task_id="task",
+            command="Write-Output ok",
+            cwd=str(Path(tempfile.gettempdir()).resolve()),
+            process=process,
+            started_at=0,
+            notify_on_complete=False,
+        )
+        with patch.object(iris_action_tools, "_get_process", return_value=session):
+            result = json.loads(
+                iris_action_tools._native_process_handler(
+                    {"action": "wait", "session_id": "proc_test", "timeout": "10.0"},
+                    task_id="task",
+                )
+            )
+        self.assertEqual(process.timeout, 10)
+        self.assertEqual(result["exit_code"], 0)
 
     @unittest.skipUnless(os.name == "nt", "native PowerShell adapter is Windows-only")
     def test_background_process_can_be_waited_and_read(self):

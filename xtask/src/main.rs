@@ -66,6 +66,8 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "app/composer-state.test.mjs",
         "app/dynamic-context-state.js",
         "app/dynamic-context-state.test.mjs",
+        "app/speech-output.js",
+        "app/speech-output.test.mjs",
         "app/index.html",
         "app/main.js",
         "app/styles.css",
@@ -211,7 +213,7 @@ fn assert_conversational_voice_guards(root: &Path) -> Result<(), String> {
         (
             "Kokoro leading silence",
             kokoro.as_str(),
-            "LEAD_SILENCE_SECONDS = 0.35",
+            "LEAD_SILENCE_SECONDS = 0.75",
         ),
     ] {
         if !content.contains(required) {

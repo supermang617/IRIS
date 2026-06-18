@@ -4,6 +4,7 @@ import {
   classifyAsrError,
   classifyVoiceTranscript,
   nextVoiceListenMode,
+  shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   wakeRestartDelayMs
 } from "./voice-state.js";
@@ -69,13 +70,27 @@ test("wake up phrase arms the next utterance instead of submitting wake up", () 
 });
 
 test("common Iris wake word mishear arms listening", () => {
-  const decision = classifyVoiceTranscript("Hi Im Eric Swayup", {
+  for (const transcript of ["Hi Im Eric Swayup", "Hey Airis", "Ares", "I Reese"]) {
+    const decision = classifyVoiceTranscript(transcript, {
+      voiceLoop: false,
+      wakeWord: true,
+      wakeCommandArmed: false
+    });
+
+    assert.equal(decision.action, "arm-wake-followup", transcript);
+  }
+});
+
+test("common Iris wake word mishear submits following request", () => {
+  const decision = classifyVoiceTranscript("Ares tell me the alphabet", {
     voiceLoop: false,
     wakeWord: true,
     wakeCommandArmed: false
   });
 
-  assert.equal(decision.action, "arm-wake-followup");
+  assert.equal(decision.action, "submit");
+  assert.equal(decision.prompt, "tell me the alphabet");
+  assert.equal(decision.source, "wake-word");
 });
 
 test("speaker marker before Iris still arms listening", () => {
@@ -234,9 +249,16 @@ test("raw wake transcripts are hidden until a decision owns the UI", () => {
   }
 });
 
-test("armed wake follow-up uses command endpointing instead of wake endpointing", () => {
+test("active voice session uses loop endpointing before wake endpointing", () => {
   assert.equal(
-    nextVoiceListenMode({ wakeCommandArmed: true, wakeWord: true, voiceLoop: false }),
+    nextVoiceListenMode({ wakeCommandArmed: false, wakeWord: true, voiceLoop: true }),
+    "loop"
+  );
+});
+
+test("armed wake follow-up uses command endpointing before voice session endpointing", () => {
+  assert.equal(
+    nextVoiceListenMode({ wakeCommandArmed: true, wakeWord: true, voiceLoop: true }),
     "command"
   );
   assert.equal(
@@ -246,5 +268,24 @@ test("armed wake follow-up uses command endpointing instead of wake endpointing"
   assert.equal(
     nextVoiceListenMode({ wakeCommandArmed: false, wakeWord: false, voiceLoop: true }),
     "loop"
+  );
+});
+
+test("voice submissions continue the active conversation session", () => {
+  assert.equal(
+    shouldContinueVoiceSession({ action: "submit", source: "wake-word" }),
+    true
+  );
+  assert.equal(
+    shouldContinueVoiceSession({ action: "submit", source: "wake-followup" }),
+    true
+  );
+  assert.equal(
+    shouldContinueVoiceSession({ action: "submit", source: "voice-loop" }),
+    true
+  );
+  assert.equal(
+    shouldContinueVoiceSession({ action: "wait-for-wake", source: "wake-word" }),
+    false
   );
 });

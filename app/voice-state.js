@@ -90,10 +90,20 @@ export function nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop }) {
   if (wakeCommandArmed) {
     return "command";
   }
+  if (voiceLoop) {
+    return "loop";
+  }
   if (wakeWord) {
     return "wake";
   }
-  return voiceLoop ? "loop" : null;
+  return null;
+}
+
+export function shouldContinueVoiceSession(decision) {
+  return (
+    decision?.action === "submit" &&
+    ["voice", "voice-loop", "wake-word", "wake-followup", "voice-session"].includes(decision.source)
+  );
 }
 
 function isInterruption(text) {
@@ -101,7 +111,11 @@ function isInterruption(text) {
 }
 
 function isBareWakeWord(text) {
-  return /^iris[\s,.:;!?-]*$/i.test(text) || /^eric\s+sway\s*up[\s,.:;!?-]*$/i.test(text);
+  return (
+    /^(?:hey|hi|okay|ok)?\s*(?:iris|irish|airis|eyeris|aires|ares|aris|eris|i\s+reese)[\s,.:;!?-]*$/i.test(
+      text
+    ) || /^eric\s+sway\s*up[\s,.:;!?-]*$/i.test(text)
+  );
 }
 
 function isWakeOnlyPrompt(text) {
@@ -110,8 +124,9 @@ function isWakeOnlyPrompt(text) {
 
 function findWakeMatch(text) {
   const patterns = [
-    /\biris\b[\s,.:;!?-]*/i,
-    /\birish\b[\s,.:;!?-]*/i,
+    /\b(?:hey|hi|okay|ok)\s+(?:iris|irish|airis|eyeris|aires|ares|aris|eris)\b[\s,.:;!?-]*/i,
+    /\b(?:iris|irish|airis|eyeris|aires|ares|aris|eris)\b[\s,.:;!?-]*/i,
+    /\bi\s+reese\b[\s,.:;!?-]*/i,
     /\beric\s+sway\s*up\b[\s,.:;!?-]*/i,
     /\bhi\s+i'?m\s+eric\s+sway\s*up\b[\s,.:;!?-]*/i,
     /\bi\s+always\b[\s,.:;!?-]*/i,
