@@ -39,6 +39,8 @@ const MAX_HERMES_TASK_CHARS: usize = 2_000;
 const MAX_HERMES_RESPONSE_CHARS: usize = 4_000;
 const MAX_HERMES_HTTP_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_IMAGE_PROBE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IMAGE_GENERATION_PROMPT_CHARS: usize = 2_000;
+const MAX_GENERATED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_SCREEN_CAPTURE_WIDTH: u32 = 1280;
 const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
 const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
@@ -72,6 +74,61 @@ struct HudCommandResponse {
 struct ImageProbeResponse {
     text: String,
     model_elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageGenerationRequest {
+    prompt: String,
+    approved: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageGenerationResponse {
+    text: String,
+    saved_path: String,
+    image_data_url: String,
+    provenance: ImageGenerationProvenance,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageGenerationProvenance {
+    authority: String,
+    route: String,
+    provider: String,
+    model: String,
+    size: String,
+    quality: String,
+    mime: String,
+    approved: bool,
+    generated_ms: u128,
+    prompt_chars: usize,
+    revised_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageProviderOutput {
+    #[serde(default)]
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default, alias = "image_b64")]
+    image_b64: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(default)]
+    quality: Option<String>,
+    #[serde(default)]
+    mime: Option<String>,
+    #[serde(default, alias = "revised_prompt")]
+    revised_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -600,6 +657,21 @@ fn browser_preview_data_url(screenshot_path: String) -> Result<String, String> {
     browser_preview_data_url_for(&root, std::path::Path::new(screenshot_path.trim()))
 }
 
+#[tauri::command]
+fn generated_image_data_url(saved_path: String) -> Result<String, String> {
+    let root = workspace_root()?;
+    generated_image_data_url_for(&root, std::path::Path::new(saved_path.trim()))
+}
+
+#[tauri::command]
+async fn hermes_generate_image(
+    request: ImageGenerationRequest,
+) -> Result<ImageGenerationResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || generate_image_with_provider(request))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
 fn browser_preview_data_url_for(
     workspace_root: &std::path::Path,
     screenshot_path: &std::path::Path,
@@ -636,6 +708,35 @@ fn browser_preview_data_url_for(
     };
     let bytes =
         fs::read(&candidate).map_err(|err| format!("failed to read browser preview: {err}"))?;
+    Ok(format!("data:{mime};base64,{}", base64_encode(&bytes)))
+}
+
+fn generated_image_data_url_for(
+    workspace_root: &std::path::Path,
+    saved_path: &std::path::Path,
+) -> Result<String, String> {
+    let allowed_root = generated_images_dir(workspace_root)?
+        .canonicalize()
+        .map_err(|err| format!("generated image directory is unavailable: {err}"))?;
+    let candidate = if saved_path.is_absolute() {
+        saved_path.to_path_buf()
+    } else {
+        workspace_root.join(saved_path)
+    };
+    let candidate = candidate
+        .canonicalize()
+        .map_err(|err| format!("generated image is unavailable: {err}"))?;
+    if !candidate.starts_with(&allowed_root) {
+        return Err("generated image path is outside the Iris image directory".to_string());
+    }
+    let metadata = fs::metadata(&candidate)
+        .map_err(|err| format!("failed to inspect generated image: {err}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_GENERATED_IMAGE_BYTES as u64 {
+        return Err("generated image must be no larger than 25 MB".to_string());
+    }
+    let mime = image_mime_for_path(&candidate)?;
+    let bytes =
+        fs::read(&candidate).map_err(|err| format!("failed to read generated image: {err}"))?;
     Ok(format!("data:{mime};base64,{}", base64_encode(&bytes)))
 }
 
@@ -2839,6 +2940,229 @@ fn workspace_root() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "manifest path has no parent".to_string())
 }
 
+fn generated_images_dir(workspace_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let dir = workspace_root.join(".iris-data/generated-images");
+    fs::create_dir_all(&dir).map_err(|err| format!("failed to create image output dir: {err}"))?;
+    Ok(dir)
+}
+
+fn normalize_image_generation_prompt(prompt: &str) -> Result<String, String> {
+    let clean = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        return Err("image prompt cannot be empty".to_string());
+    }
+    if clean.chars().count() > MAX_IMAGE_GENERATION_PROMPT_CHARS {
+        return Err(format!(
+            "image prompt must be {MAX_IMAGE_GENERATION_PROMPT_CHARS} characters or less"
+        ));
+    }
+    Ok(clean)
+}
+
+fn generate_image_with_provider(
+    request: ImageGenerationRequest,
+) -> Result<ImageGenerationResponse, String> {
+    if !request.approved {
+        return Err("Image generation requires explicit approval.".to_string());
+    }
+    let policy = hermes_policy::snapshot(timestamp_ms()?)?;
+    if policy.panic_stop_active {
+        return Err("Iris is paused. Resume Iris before generating an image.".to_string());
+    }
+    if policy.mode == hermes_policy::HermesMode::Off {
+        return Err("Hermes is Off. Resume Safe mode before generating an image.".to_string());
+    }
+
+    let prompt = normalize_image_generation_prompt(&request.prompt)?;
+    let root = workspace_root()?;
+    let provider_output = run_image_provider(&root, &prompt)?;
+    write_generated_image_response(&root, &prompt, provider_output, timestamp_ms()?)
+}
+
+fn run_image_provider(
+    workspace_root: &std::path::Path,
+    prompt: &str,
+) -> Result<ImageProviderOutput, String> {
+    let script = workspace_root.join("tools/iris_image_provider.py");
+    if !script.is_file() {
+        return Err(format!(
+            "Iris image provider helper is missing: {}",
+            script.display()
+        ));
+    }
+    let python = image_provider_python(workspace_root);
+    let mut command = Command::new(python);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
+        .arg(&script)
+        .current_dir(workspace_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to start Iris image provider: {err}"))?;
+    let request = serde_json::json!({ "prompt": prompt });
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| "failed to open Iris image provider stdin".to_string())?
+        .write_all(request.to_string().as_bytes())
+        .map_err(|err| format!("failed to send prompt to Iris image provider: {err}"))?;
+    drop(child.stdin.take());
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("failed to wait for Iris image provider: {err}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let parsed = serde_json::from_str::<ImageProviderOutput>(stdout.trim()).map_err(|err| {
+        format!(
+            "Iris image provider returned invalid JSON: {err}; stderr={}",
+            stderr.trim()
+        )
+    })?;
+    if !output.status.success() || !parsed.ok {
+        return Err(parsed.error.unwrap_or_else(|| {
+            format!(
+                "Iris image provider failed{}",
+                if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", stderr.trim())
+                }
+            )
+        }));
+    }
+    Ok(parsed)
+}
+
+fn image_provider_python(workspace_root: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("IRIS_PYTHON")
+        && !path.trim().is_empty()
+    {
+        return std::path::PathBuf::from(path);
+    }
+    let packaged = workspace_root.join(".iris-runtime/hermes/.venv/Scripts/python.exe");
+    if packaged.is_file() {
+        return packaged;
+    }
+    std::path::PathBuf::from("python")
+}
+
+fn write_generated_image_response(
+    workspace_root: &std::path::Path,
+    prompt: &str,
+    provider_output: ImageProviderOutput,
+    now_ms: u128,
+) -> Result<ImageGenerationResponse, String> {
+    let image_b64 = provider_output
+        .image_b64
+        .ok_or_else(|| "Iris image provider returned no image data".to_string())?;
+    let image_bytes = base64_decode(&image_b64)?;
+    if image_bytes.is_empty() || image_bytes.len() > MAX_GENERATED_IMAGE_BYTES {
+        return Err("generated image must be non-empty and no larger than 25 MB".to_string());
+    }
+    let mime = provider_output.mime.unwrap_or_else(|| {
+        image_mime_for_bytes(&image_bytes)
+            .unwrap_or("image/png")
+            .to_string()
+    });
+    validate_generated_image_bytes(&image_bytes, &mime)?;
+    let extension = image_extension_for_mime(&mime)?;
+    let file_name = format!(
+        "iris-generated-{now_ms}-{}.{}",
+        std::process::id(),
+        extension
+    );
+    let output_dir = generated_images_dir(workspace_root)?;
+    let output_path = output_dir.join(file_name);
+    fs::write(&output_path, &image_bytes)
+        .map_err(|err| format!("failed to write generated image: {err}"))?;
+    let data_url = format!("data:{mime};base64,{}", base64_encode(&image_bytes));
+    let saved_path = output_path.to_string_lossy().to_string();
+    let provider = provider_output
+        .provider
+        .unwrap_or_else(|| "configured_image_provider".to_string());
+    let model = provider_output
+        .model
+        .unwrap_or_else(|| "configured_model".to_string());
+    let size = provider_output
+        .size
+        .unwrap_or_else(|| "unknown".to_string());
+    let quality = provider_output
+        .quality
+        .unwrap_or_else(|| "unknown".to_string());
+    let revised_prompt = provider_output
+        .revised_prompt
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let provenance = ImageGenerationProvenance {
+        authority: "direct_user_request".to_string(),
+        route: "iris_background_hermes_provider".to_string(),
+        provider,
+        model,
+        size,
+        quality,
+        mime: mime.clone(),
+        approved: true,
+        generated_ms: now_ms,
+        prompt_chars: prompt.chars().count(),
+        revised_prompt,
+    };
+    Ok(ImageGenerationResponse {
+        text: "Image generated and saved.".to_string(),
+        saved_path,
+        image_data_url: data_url,
+        provenance,
+    })
+}
+
+fn image_mime_for_path(path: &std::path::Path) -> Result<&'static str, String> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => Ok("image/png"),
+        Some("jpg" | "jpeg") => Ok("image/jpeg"),
+        Some("webp") => Ok("image/webp"),
+        _ => Err("generated image must be PNG, JPEG, or WebP".to_string()),
+    }
+}
+
+fn image_mime_for_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+fn validate_generated_image_bytes(bytes: &[u8], mime: &str) -> Result<(), String> {
+    let detected = image_mime_for_bytes(bytes)
+        .ok_or_else(|| "generated image bytes are not a supported image".to_string())?;
+    if detected != mime {
+        return Err(format!(
+            "generated image MIME mismatch: provider reported {mime}, bytes look like {detected}"
+        ));
+    }
+    Ok(())
+}
+
+fn image_extension_for_mime(mime: &str) -> Result<&'static str, String> {
+    match mime {
+        "image/png" => Ok("png"),
+        "image/jpeg" => Ok("jpg"),
+        "image/webp" => Ok("webp"),
+        _ => Err("generated image must be PNG, JPEG, or WebP".to_string()),
+    }
+}
+
 fn model_response(
     text: &str,
     history: &[ConversationTurn],
@@ -3670,6 +3994,7 @@ pub fn run() {
             dynamic_context_set_enabled,
             dynamic_context_status,
             edit_memory,
+            generated_image_data_url,
             hermes_accept_staged_memory,
             hermes_agentic_runtime_status,
             hermes_cancel_agentic_task,
@@ -3684,6 +4009,7 @@ pub fn run() {
             hermes_respond_agentic_approval,
             hermes_safety_audit,
             hermes_set_mode,
+            hermes_generate_image,
             hermes_start_sidecar,
             hermes_staging_list,
             hermes_status,
@@ -4377,6 +4703,67 @@ mod tests {
         assert!(browser_preview_data_url_for(&root, &outside).is_err());
 
         fs::remove_dir_all(root).expect("remove preview test directory");
+    }
+
+    #[test]
+    fn image_generation_requires_explicit_approval_before_provider_work() {
+        let err = generate_image_with_provider(ImageGenerationRequest {
+            prompt: "generate an image of Iris".to_string(),
+            approved: false,
+        })
+        .expect_err("unapproved image generation must fail");
+
+        assert!(err.contains("explicit approval"));
+    }
+
+    #[test]
+    fn generated_image_output_is_saved_with_provenance_and_scoped_preview() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-generated-image-test-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("root");
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+        let response = write_generated_image_response(
+            &root,
+            "Iris electric blue logo",
+            ImageProviderOutput {
+                ok: true,
+                error: None,
+                image_b64: Some(png_b64.to_string()),
+                provider: Some("test_provider".to_string()),
+                model: Some("test-image-model".to_string()),
+                size: Some("1024x1024".to_string()),
+                quality: Some("low".to_string()),
+                mime: Some("image/png".to_string()),
+                revised_prompt: Some("Iris electric blue logo".to_string()),
+            },
+            12345,
+        )
+        .expect("generated image");
+
+        assert!(response.saved_path.contains(".iris-data"));
+        assert!(response.saved_path.contains("iris-generated-12345-"));
+        assert!(response.saved_path.ends_with(".png"));
+        assert_eq!(response.provenance.provider, "test_provider");
+        assert_eq!(response.provenance.model, "test-image-model");
+        assert_eq!(response.provenance.route, "iris_background_hermes_provider");
+        assert!(
+            response
+                .image_data_url
+                .starts_with("data:image/png;base64,")
+        );
+        assert!(
+            generated_image_data_url_for(&root, std::path::Path::new(&response.saved_path))
+                .expect("preview")
+                .starts_with("data:image/png;base64,")
+        );
+        let outside = root.join("outside.png");
+        fs::write(&outside, base64_decode(png_b64).expect("png")).expect("outside");
+        assert!(generated_image_data_url_for(&root, &outside).is_err());
+
+        fs::remove_dir_all(root).expect("remove generated image test directory");
     }
 
     #[test]

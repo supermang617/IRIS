@@ -88,6 +88,7 @@ try {
         "bin\iris-runtime.exe",
         "models\kokoro\kokoro-v1.0.onnx",
         "models\whisper\ggml-tiny.en.bin",
+        "tools\iris_image_provider.py",
         "docs\dynamic-system-context.md",
         "plugins\hermes_sidecar\sidecar.py",
         "plugins\memory\iris_broker\provider.py"

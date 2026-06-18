@@ -132,12 +132,24 @@ are missing.
 - `models\kokoro\voices-v1.0.bin`
 - `models\whisper\ggml-tiny.en.bin`
 - `tools\kokoro_tts.py`
+- `tools\iris_image_provider.py`
 - `profiles\iris_restricted.json`
 - `profiles\iris_agentic.json`
 - `.iris-runtime\hermes` pinned Hermes Agent environment
 - `.iris-runtime\browser` pinned agent-browser and Chrome for Testing runtime
 - `capabilities\v0_1_capability_ledger.toml`
 - user-facing docs, license, notice, security notes, known limitations, assets
+
+## Optional Image Generation
+
+Image generation is disabled until a dedicated provider credential is
+configured. Set `OPENAI_API_KEY` in the Windows user environment to enable the
+default OpenAI Images API provider. Optional settings are `IRIS_IMAGE_MODEL`,
+`IRIS_IMAGE_SIZE`, `IRIS_IMAGE_QUALITY`, and `IRIS_IMAGE_OUTPUT_FORMAT`.
+
+Generated images require an Iris approval click, are saved under
+`.iris-data\generated-images`, and are previewed inside Iris. Iris does not use
+ChatGPT web UI automation for image generation.
 
 ## Source Checkout
 

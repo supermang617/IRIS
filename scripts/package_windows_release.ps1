@@ -85,6 +85,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "docs\signed-installer-decision.m
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\runtime-orchestration.md") -Destination (Join-Path $packageRoot "docs\runtime-orchestration.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\manual-end-user-test-v0.1.0.md") -Destination (Join-Path $packageRoot "docs\manual-end-user-test-v0.1.0.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "tools\kokoro_tts.py") -Destination (Join-Path $packageRoot "tools\kokoro_tts.py")
+Copy-RequiredFile -Source (Join-Path $repoRoot "tools\iris_image_provider.py") -Destination (Join-Path $packageRoot "tools\iris_image_provider.py")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_preflight_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Preflight.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_setup_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Setup Wizard.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_document_ocr.ps1") -Destination (Join-Path $packageRoot "Iris Document OCR.ps1")

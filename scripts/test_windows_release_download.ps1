@@ -105,6 +105,7 @@ try {
         "models\kokoro\voices-v1.0.bin",
         "models\whisper\ggml-tiny.en.bin",
         "tools\kokoro_tts.py",
+        "tools\iris_image_provider.py",
         "plugins\hermes_sidecar\sidecar.py",
         "plugins\memory\iris_broker\provider.py",
         "plugins\hermes_acp\iris_acp.py",

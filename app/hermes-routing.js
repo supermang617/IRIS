@@ -1,4 +1,6 @@
-const onlineIntentPattern = /\b(?:look\s+(?:it\s+)?up|look\s+online|search\s+(?:online|the\s+web|the\s+internet)|research|find\s+(?:online|on\s+the\s+web)|check\s+(?:online|the\s+web|the\s+internet)|what(?:'s| is)\s+(?:the\s+latest|new|current)|latest\s+(?:news|info|information|updates?)|current\s+(?:release|version|news|price|weather|status)|browse\s+(?:the\s+web|online|the\s+internet)|visit\s+(?:the\s+site|the\s+website|https?:\/\/)|open\s+(?:a\s+|the\s+)?(?:site|website|webpage|browser)|go\s+to\s+https?:\/\/|use\s+(?:the\s+)?(?:site|website|web)|download\s+(?:from\s+)?(?:the\s+web|https?:\/\/)|upload\s+.+\b(?:site|website|webpage)|generate\s+(?:an?\s+)?(?:image|picture|logo|illustration)|create\s+(?:an?\s+)?(?:image|picture|logo|illustration))\b/i;
+const imageGenerationIntentPattern = /\b(?:generate|create|make|draw|render)\s+(?:an?\s+)?(?:image|picture|logo|illustration|wallpaper|banner|icon|avatar)\b/i;
+
+const onlineIntentPattern = /\b(?:look\s+(?:it\s+)?up|look\s+online|search\s+(?:online|the\s+web|the\s+internet)|research|find\s+(?:online|on\s+the\s+web)|check\s+(?:online|the\s+web|the\s+internet)|what(?:'s| is)\s+(?:the\s+latest|new|current)|latest\s+(?:news|info|information|updates?)|current\s+(?:release|version|news|price|weather|status)|browse\s+(?:the\s+web|online|the\s+internet)|visit\s+(?:the\s+site|the\s+website|https?:\/\/)|open\s+(?:a\s+|the\s+)?(?:site|website|webpage|browser)|go\s+to\s+https?:\/\/|use\s+(?:the\s+)?(?:site|website|web)|download\s+(?:from\s+)?(?:the\s+web|https?:\/\/)|upload\s+.+\b(?:site|website|webpage))\b/i;
 
 const codeIntentPattern = /\b(?:review|debug|fix|explain|suggest)\b.*\b(?:code|error|test|build|clippy|cargo|npm|rust|javascript|typescript)\b/i;
 
@@ -21,6 +23,10 @@ export function classifyHermesRoute(text) {
   const hermesMatch = clean.match(/^hermes\s*[:,-]?\s+(.+)$/i);
   if (hermesMatch) {
     return { route: "explicit", mode: "reason", text: hermesMatch[1].trim() };
+  }
+
+  if (imageGenerationIntentPattern.test(clean)) {
+    return { route: "implicit", mode: "image_generation", text: clean };
   }
 
   if (onlineIntentPattern.test(clean)) {

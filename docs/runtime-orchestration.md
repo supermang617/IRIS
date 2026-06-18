@@ -46,6 +46,8 @@ target:
 - Hermes research: requires explicit user research request
 - Safe Hermes acting tools: none
 - Hermes web research: enabled through a restricted text-only search fetcher
+- Iris image generation: approval-gated provider call, saved under
+  `.iris-data/generated-images`
 - Hermes startup mode: Safe
 - Hermes modes: Off, Safe, Agentic Session
 - Agentic inactivity expiry: 30 minutes
@@ -60,6 +62,26 @@ target:
 These settings intentionally favor reliability and privacy over maximum raw
 throughput. Iris, Hermes, and Ollama share one local model path so they do not
 fight for VRAM/RAM or create inconsistent answers.
+
+## Image Generation Provider
+
+Iris can generate images only after the user asks for an image and approves the
+provider call in the Iris UI. The output is saved under
+`.iris-data/generated-images`, displayed in the Iris preview panel, and returned
+with provider/model/size/quality provenance.
+
+The default provider helper is `tools/iris_image_provider.py`. It uses the
+dedicated OpenAI Images API when `OPENAI_API_KEY` is present. Optional
+configuration:
+
+- `IRIS_IMAGE_PROVIDER=openai`
+- `IRIS_IMAGE_MODEL=gpt-image-2`
+- `IRIS_IMAGE_SIZE=1024x1024`
+- `IRIS_IMAGE_QUALITY=auto`
+- `IRIS_IMAGE_OUTPUT_FORMAT=png`
+
+If no provider credential is configured, Iris fails closed with a visible error.
+Iris does not drive the ChatGPT web UI for image generation.
 
 ## Hermes Manual Testing
 

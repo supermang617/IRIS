@@ -93,6 +93,7 @@ Expected:
 - Hermes is enabled by default as an Iris-owned research, local RAG, and memory-transfer helper.
 - Hermes exposes only `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Natural Iris requests such as `look online for the latest Ollama release` route through Hermes research.
+- Natural Iris requests such as `generate an image of Iris as an electric blue logo` open an approval request, call the configured provider only after approval, save the file under `.iris-data\generated-images`, and show the generated preview.
 - Hermes can propose staged memory, and Iris can transfer it into active memory only after explicit `hermes accept <number>`.
 - Hermes cannot access raw memory files.
 - Hermes cannot access OneDrive.

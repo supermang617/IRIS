@@ -19,15 +19,18 @@ test("natural online request routes through Iris background research", () => {
   });
 });
 
-test("natural browser or image generation requests route without requiring the Hermes name", () => {
+test("natural browser request routes without requiring the Hermes name", () => {
   assert.deepEqual(classifyHermesRoute("open the website https://example.com and summarize it"), {
     route: "implicit",
     mode: "research",
     text: "open the website https://example.com and summarize it"
   });
+});
+
+test("natural image generation request routes to the image provider", () => {
   assert.deepEqual(classifyHermesRoute("generate an image of Iris in glass style"), {
     route: "implicit",
-    mode: "research",
+    mode: "image_generation",
     text: "generate an image of Iris in glass style"
   });
 });

@@ -569,6 +569,10 @@ async function handleMemoryCommand(text) {
   }
 
   if (hermesRoute.route !== "none") {
+    if (hermesRoute.mode === "image_generation") {
+      await runImageGeneration(hermesRoute.text);
+      return true;
+    }
     await runHermesTask(
       hermesRoute.mode,
       hermesRoute.text,
@@ -669,6 +673,46 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
   elements.hudOutput.textContent = route === "implicit" ? `Iris found this:\n\n${responseText}${staged}` : `${responseText}${staged}`;
 }
 
+async function runImageGeneration(text) {
+  const clean = String(text || "").trim();
+  if (!clean) {
+    elements.hudOutput.textContent = "Type an image request first.";
+    return;
+  }
+  const approved = await showAgenticApproval({
+    requestId: `image-generation-${Date.now()}`,
+    riskClass: "image_generation",
+    summary: `Generate an image with the configured Iris image provider.\n\nPrompt: ${clean}`,
+    requiresSeparateConfirmation: true
+  });
+  if (!approved) {
+    elements.hudOutput.textContent = "Image generation canceled.";
+    return;
+  }
+  if (!elements.browserPanel.hidden) {
+    await hideBrowserPreview();
+  }
+  thinking = true;
+  setInputsDisabled(true);
+  elements.hudOutput.textContent = "Iris is generating the image.";
+  try {
+    const response = await call("hermes_generate_image", {
+      request: {
+        prompt: clean,
+        approved: true
+      }
+    });
+    elements.hudOutput.textContent = formatImageGenerationResult(response);
+    await showGeneratedImagePreview(response);
+  } catch (error) {
+    elements.hudOutput.textContent = `Image generation failed: ${error}`;
+  } finally {
+    hideAgenticApproval(false);
+    thinking = false;
+    setInputsDisabled(false);
+  }
+}
+
 async function runAgenticTaskWithApprovals(text) {
   let settled = false;
   let taskResult;
@@ -736,6 +780,7 @@ function formatRiskClass(value) {
     credentials: "Credential or secret access",
     consequential_browser_submission: "Consequential browser submission",
     executable_download: "Executable download",
+    image_generation: "Image generation provider",
     payment: "Payment action",
     sensitive_files: "Sensitive file access",
     scope_expansion: "Outside selected workspace",
@@ -755,6 +800,19 @@ function formatAgenticTaskResult(response) {
   return `Tool activity:\n${activity.join("\n\n")}\n\nResult:\n${response.text}`;
 }
 
+function formatImageGenerationResult(response) {
+  const provenance = response?.provenance || {};
+  return [
+    String(response?.text || "Image generated."),
+    `Saved: ${response?.savedPath || "unknown"}`,
+    `Provider: ${provenance.provider || "configured provider"}`,
+    `Model: ${provenance.model || "configured model"}`,
+    `Size: ${provenance.size || "unknown"}`,
+    `Quality: ${provenance.quality || "unknown"}`,
+    `Provenance: ${provenance.route || "iris_background_hermes_provider"}`
+  ].join("\n");
+}
+
 async function showBrowserPreview(preview) {
   elements.browserUrl.textContent = preview.url || "Hermes browser";
   elements.browserPreviewImage.hidden = true;
@@ -768,6 +826,23 @@ async function showBrowserPreview(preview) {
     } catch (error) {
       logVoice("browser_preview_image_error", error);
     }
+  }
+  elements.browserPanel.hidden = false;
+  await resizeForBrowserPreview(true);
+}
+
+async function showGeneratedImagePreview(response) {
+  elements.browserUrl.textContent = response?.savedPath ? `Generated image: ${response.savedPath}` : "Generated image";
+  elements.browserPreviewImage.hidden = true;
+  elements.browserPreviewImage.removeAttribute("src");
+  if (response?.imageDataUrl) {
+    elements.browserPreviewImage.src = response.imageDataUrl;
+    elements.browserPreviewImage.hidden = false;
+  } else if (response?.savedPath) {
+    elements.browserPreviewImage.src = await call("generated_image_data_url", {
+      savedPath: response.savedPath
+    });
+    elements.browserPreviewImage.hidden = false;
   }
   elements.browserPanel.hidden = false;
   await resizeForBrowserPreview(true);
