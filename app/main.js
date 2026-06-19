@@ -25,6 +25,7 @@ import {
   shouldSubmitComposer
 } from "./composer-state.js";
 import { formatAgenticHermesPrompt } from "./hermes-agentic-prompt.js";
+import { formatAgenticTaskResult } from "./hermes-agentic-result.js";
 import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
@@ -795,17 +796,6 @@ function formatRiskClass(value) {
     ordinary: "Confirmation required"
   };
   return labels[String(value || "")] || "Confirmation required";
-}
-
-function formatAgenticTaskResult(response) {
-  const activity = (response?.events || [])
-    .filter((event) => event?.type === "tool_activity")
-    .map((event) => String(event.payload || "").trim())
-    .filter(Boolean);
-  if (activity.length === 0) {
-    return String(response?.text || "");
-  }
-  return `Tool activity:\n${activity.join("\n\n")}\n\nResult:\n${response.text}`;
 }
 
 function formatImageGenerationResult(response) {
