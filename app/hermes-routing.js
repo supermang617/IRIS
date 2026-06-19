@@ -5,6 +5,7 @@ const onlineIntentPattern = /\b(?:look\s+(?:it\s+)?up|look\s+online|google\s+(?:
 const codeIntentPattern = /\b(?:review|debug|fix|explain|suggest)\b.*\b(?:code|error|test|build|clippy|cargo|npm|rust|javascript|typescript)\b/i;
 
 const memoryIntentPattern = /\b(?:what\s+do\s+you\s+(?:know|remember)\s+(?:from\s+memory|about\s+me)|summari[sz]e\s+(?:what\s+you\s+know\s+)?(?:from\s+)?memory|memory\s+summary|what(?:'s| is)\s+my\s+(?:age|name)|how\s+old\s+am\s+i)\b/i;
+const memoryStageIntentPattern = /\b(?:remember|save|store)\s+(?:that|this|my|the)\b/i;
 
 export function classifyHermesRoute(text) {
   const clean = String(text || "").trim();
@@ -36,6 +37,10 @@ export function classifyHermesRoute(text) {
   }
 
   if (memoryIntentPattern.test(clean)) {
+    return { route: "implicit", mode: "reason", text: clean };
+  }
+
+  if (memoryStageIntentPattern.test(clean)) {
     return { route: "implicit", mode: "reason", text: clean };
   }
 

@@ -586,7 +586,7 @@ async function handleMemoryCommand(text) {
     return true;
   }
 
-  const addMatch = clean.match(/^(?:remember|memory\s+add)\s*[:,-]?\s+(.+)$/i);
+  const addMatch = clean.match(/^(?:remember\s*:|memory\s+add\s*[:,-]?)\s+(.+)$/i);
   if (addMatch) {
     const memories = await call("add_memory", { text: addMatch[1] });
     elements.hudOutput.textContent = `Memory added.\n\n${formatMemories(memories)}`;

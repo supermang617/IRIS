@@ -48,6 +48,19 @@ test("natural memory questions route to Hermes memory reasoning", () => {
   });
 });
 
+test("natural memory storage requests route to Hermes staging", () => {
+  assert.deepEqual(classifyHermesRoute("Remember that Iris v1 acceptance test memory is cobalt."), {
+    route: "implicit",
+    mode: "reason",
+    text: "Remember that Iris v1 acceptance test memory is cobalt."
+  });
+  assert.deepEqual(classifyHermesRoute("save my preferred voice style"), {
+    route: "implicit",
+    mode: "reason",
+    text: "save my preferred voice style"
+  });
+});
+
 test("natural image generation request routes to the image provider", () => {
   assert.deepEqual(classifyHermesRoute("generate an image of Iris in glass style"), {
     route: "implicit",
