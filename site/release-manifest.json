@@ -6,17 +6,17 @@
     {
       "name": "iris-windows-installer.zip",
       "url": "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip",
-      "sha256": "f0094b36f5f0aea831882f47d2691aa621e84c3631fdb849a8d7de58a0b4a597"
+      "sha256": "b2cfe96f58ba60b0b9d9304b3620e452d2f981b98e64fc487dce534ae352037f"
     },
     {
       "name": "iris-windows.zip",
       "url": "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows.zip",
-      "sha256": "6aa14a3ee822efb0c434c2d0d99dbbe1982c4084daad7110eb5b126918ca9d20"
+      "sha256": "82314870c33193b43bfb3d37b771cc8d219d7316deb88e85d5895d0db1c5d30e"
     },
     {
       "name": "install-iris-windows.ps1",
       "url": "https://github.com/supermang617/IRIS/releases/download/v1/install-iris-windows.ps1",
-      "sha256": "e9a610e8b8616a4d0f4ac8e0554a40e238bc6cb85c46d2e055ba39b5cfe1a9da"
+      "sha256": "9ec2016adfa53e2bbd9035c2b55d149f8017f499d9e5b1550cd5191dc49f4038"
     }
   ]
 }
