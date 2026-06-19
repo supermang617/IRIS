@@ -24,7 +24,10 @@ import {
   responseMinHeight,
   shouldSubmitComposer
 } from "./composer-state.js";
-import { formatAgenticHermesPrompt } from "./hermes-agentic-prompt.js";
+import {
+  formatAgenticHermesPrompt,
+  isAgenticMemoryStageRequest
+} from "./hermes-agentic-prompt.js";
 import { formatAgenticTaskResult } from "./hermes-agentic-result.js";
 import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
@@ -657,7 +660,15 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
       const response = await runAgenticTaskWithApprovals(
         formatAgenticHermesPrompt(mode, clean, route)
       );
-      elements.hudOutput.textContent = formatAgenticTaskResult(response);
+      let output = formatAgenticTaskResult(response);
+      if (mode === "reason" && isAgenticMemoryStageRequest(clean)) {
+        const staged = await call("hermes_staging_list");
+        const stagedSection = formatHermesTaskStagedSection(staged);
+        if (stagedSection) {
+          output = `${formatHermesMemoryTaskText(output, staged, clean)}${stagedSection}`;
+        }
+      }
+      elements.hudOutput.textContent = output;
       const preview = latestBrowserPreview(response?.events);
       if (preview) {
         await showBrowserPreview(preview);

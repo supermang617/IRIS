@@ -9,6 +9,16 @@ function primarySourceHintFor(text) {
   return "";
 }
 
+export function isAgenticMemoryStageRequest(text) {
+  return /\b(?:remember|save|store)\s+(?:that|this|my|the)\b/i.test(String(text || ""));
+}
+
+export function isAgenticMemoryQueryRequest(text) {
+  return /\b(?:what\s+do\s+you\s+(?:know|remember)\s+(?:from\s+memory|about\s+me)|summari[sz]e\s+(?:what\s+you\s+know\s+)?(?:from\s+)?memory|memory\s+summary|what(?:'s| is)\s+my\s+(?:age|name)|how\s+old\s+am\s+i)\b/i.test(
+    String(text || "")
+  );
+}
+
 export function formatAgenticHermesPrompt(mode, text, route = "explicit") {
   const clean = String(text || "").trim();
   const normalizedMode = String(mode || "").trim();
@@ -33,6 +43,22 @@ export function formatAgenticHermesPrompt(mode, text, route = "explicit") {
       "IRIS_AGENTIC_TASK_MODE: code_suggestion",
       "Use local file/search/read tools when needed, but keep the answer focused on the user's requested code issue.",
       highRiskConfirmationText,
+      `User request: ${clean}`
+    ].join("\n");
+  }
+  if (normalizedMode === "reason" && isAgenticMemoryStageRequest(clean)) {
+    return [
+      "IRIS_AGENTIC_TASK_MODE: memory_stage",
+      "Use iris_propose_memory for this request. Do not directly update durable memory and do not claim the memory was saved, updated, or remembered.",
+      "After the tool returns, say that Iris staged the memory for user approval and that it still requires accept/reject.",
+      `User request: ${clean}`
+    ].join("\n");
+  }
+  if (normalizedMode === "reason" && isAgenticMemoryQueryRequest(clean)) {
+    return [
+      "IRIS_AGENTIC_TASK_MODE: memory_query",
+      "Use iris_query_memory before answering. If memory is empty, say there is no approved memory for that answer.",
+      "Do not invent memory facts.",
       `User request: ${clean}`
     ].join("\n");
   }
