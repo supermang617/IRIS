@@ -69,6 +69,8 @@ try {
         "SelfCheckTimeoutSeconds",
         "Installed Iris self-check timed out",
         "Invoke-InstallerProbe",
+        "iris-windows.zip",
+        "iris-windows.zip.sha256",
         'timed out after $TimeoutSeconds seconds',
         "Stop-ProcessTree",
         "installer-self-check.log"

@@ -385,6 +385,18 @@ if (-not $InstallRoot) {
 }
 $installRootResolved = Assert-ManagedInstallPath -Path $InstallRoot
 
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $SourceZip) {
+    $siblingSourceZip = Join-Path $scriptRoot "iris-windows.zip"
+    $siblingSha256Path = Join-Path $scriptRoot "iris-windows.zip.sha256"
+    if ((Test-Path -LiteralPath $siblingSourceZip -PathType Leaf) -and (Test-Path -LiteralPath $siblingSha256Path -PathType Leaf)) {
+        $SourceZip = $siblingSourceZip
+        if (-not $Sha256Path) {
+            $Sha256Path = $siblingSha256Path
+        }
+    }
+}
+
 $temporaryExtract = $null
 if ($SourceZip) {
     Require-File -Path $SourceZip
@@ -401,7 +413,7 @@ if ($SourceZip) {
     Expand-Archive -LiteralPath $SourceZip -DestinationPath $temporaryExtract -Force
     $sourceRoot = $temporaryExtract
 } else {
-    $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $sourceRoot = $scriptRoot
     if ((Split-Path -Leaf $sourceRoot) -ieq "scripts") {
         $sourceRoot = (Resolve-Path -LiteralPath (Join-Path $sourceRoot "..\release\staging\iris-windows")).Path
     }
