@@ -43,6 +43,7 @@ const MAX_IMAGE_GENERATION_PROMPT_CHARS: usize = 2_000;
 const MAX_GENERATED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_SCREEN_CAPTURE_WIDTH: u32 = 1280;
 const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
+const SCREEN_CAPTURE_HIDE_SETTLE_MS: u64 = 350;
 const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
 const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
 const TTS_NATIVE_PREROLL_MS: u64 = 350;
@@ -76,6 +77,75 @@ struct HudCommandResponse {
 struct ImageProbeResponse {
     text: String,
     model_elapsed_ms: u128,
+    diagnostic_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScreenRegionCapture {
+    png_bytes: Vec<u8>,
+    capture_x: i32,
+    capture_y: i32,
+    capture_width: u32,
+    capture_height: u32,
+    submitted_width: u32,
+    submitted_height: u32,
+    virtual_screen_x: i32,
+    virtual_screen_y: i32,
+    virtual_screen_width: i32,
+    virtual_screen_height: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClampedScreenRegion {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    virtual_screen_x: i32,
+    virtual_screen_y: i32,
+    virtual_screen_width: i32,
+    virtual_screen_height: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScreenCaptureDiagnostic {
+    timestamp_ms: u128,
+    window_x: i32,
+    window_y: i32,
+    requested_width: u32,
+    requested_height: u32,
+    capture_x: i32,
+    capture_y: i32,
+    capture_width: u32,
+    capture_height: u32,
+    submitted_width: u32,
+    submitted_height: u32,
+    virtual_screen_x: i32,
+    virtual_screen_y: i32,
+    virtual_screen_width: i32,
+    virtual_screen_height: i32,
+    scale_factor: f64,
+    image_bytes: usize,
+    image_path: String,
+    json_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct ScreenAreaCapture {
+    region: ScreenRegionCapture,
+    diagnostic_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraSnapshotDiagnostic {
+    timestamp_ms: u128,
+    width: u32,
+    height: u32,
+    image_bytes: usize,
+    image_path: String,
+    json_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -918,6 +988,7 @@ async fn submit_image_probe(
     .unwrap_or_else(|err| ImageProbeResponse {
         text: format!("Local image probe unavailable: {err}"),
         model_elapsed_ms: 0,
+        diagnostic_path: None,
     })
 }
 
@@ -928,6 +999,7 @@ async fn submit_screen_area_probe(window: IrisWindow, prompt: String) -> ImagePr
         .unwrap_or_else(|err| ImageProbeResponse {
             text: format!("Local screen probe unavailable: {err}"),
             model_elapsed_ms: 0,
+            diagnostic_path: None,
         })
 }
 
@@ -954,6 +1026,7 @@ fn submit_image_probe_blocking(
     ImageProbeResponse {
         text: response.text,
         model_elapsed_ms: started.elapsed().as_millis(),
+        diagnostic_path: None,
     }
 }
 
@@ -961,16 +1034,21 @@ fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> Imag
     let started = Instant::now();
     let now = timestamp_ms_u64().unwrap_or(0);
     let dynamic_context = dynamic_context_instruction(now);
-    let response = match screen_area_probe_response(&window, &prompt, dynamic_context.as_deref()) {
-        Ok(response) => response,
-        Err(error) => iris_core_types::AssistantResponse::text_only(format!(
-            "Local screen probe unavailable: {error}"
-        )),
-    };
+    let (response, diagnostic_path) =
+        match screen_area_probe_response(&window, &prompt, dynamic_context.as_deref()) {
+            Ok((response, diagnostic_path)) => (response, Some(diagnostic_path)),
+            Err(error) => (
+                iris_core_types::AssistantResponse::text_only(format!(
+                    "Local screen probe unavailable: {error}"
+                )),
+                None,
+            ),
+        };
     observe_dynamic_context_nonfatal(&prompt, now);
     ImageProbeResponse {
         text: response.text,
         model_elapsed_ms: started.elapsed().as_millis(),
+        diagnostic_path,
     }
 }
 
@@ -2962,6 +3040,53 @@ fn generated_images_dir(workspace_root: &std::path::Path) -> Result<std::path::P
     Ok(dir)
 }
 
+#[tauri::command]
+fn save_camera_snapshot_diagnostic(
+    image_bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<CameraSnapshotDiagnostic, String> {
+    if image_bytes.is_empty() {
+        return Err("camera snapshot diagnostic is empty".to_string());
+    }
+    if image_bytes.len() > MAX_IMAGE_PROBE_BYTES {
+        return Err(format!(
+            "camera snapshot diagnostic is too large: {} bytes; limit is {} bytes",
+            image_bytes.len(),
+            MAX_IMAGE_PROBE_BYTES
+        ));
+    }
+    let diagnostics_root = workspace_root()?.join("diagnostics");
+    write_camera_snapshot_diagnostic(&diagnostics_root, &image_bytes, width, height)
+}
+
+fn write_camera_snapshot_diagnostic(
+    diagnostics_root: &Path,
+    image_bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<CameraSnapshotDiagnostic, String> {
+    let camera_dir = diagnostics_root.join("camera");
+    fs::create_dir_all(&camera_dir).map_err(|err| err.to_string())?;
+    let image_path = camera_dir.join("latest-camera-snapshot.jpg");
+    let json_path = camera_dir.join("latest-camera-snapshot.json");
+    fs::write(&image_path, image_bytes)
+        .map_err(|err| format!("failed to write camera diagnostic image: {err}"))?;
+    let diagnostic = CameraSnapshotDiagnostic {
+        timestamp_ms: timestamp_ms()?,
+        width,
+        height,
+        image_bytes: image_bytes.len(),
+        image_path: image_path.display().to_string(),
+        json_path: json_path.display().to_string(),
+    };
+    let json = serde_json::to_vec_pretty(&diagnostic)
+        .map_err(|err| format!("failed to encode camera diagnostic json: {err}"))?;
+    fs::write(&json_path, json)
+        .map_err(|err| format!("failed to write camera diagnostic json: {err}"))?;
+    Ok(diagnostic)
+}
+
 fn normalize_image_generation_prompt(prompt: &str) -> Result<String, String> {
     let clean = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     if clean.is_empty() {
@@ -3246,12 +3371,13 @@ fn screen_area_probe_response(
     window: &IrisWindow,
     prompt: &str,
     dynamic_context: Option<&str>,
-) -> Result<iris_core_types::AssistantResponse, String> {
+) -> Result<(iris_core_types::AssistantResponse, String), String> {
     let clean_prompt = prompt.trim();
     if clean_prompt.is_empty() {
         return Err("screen probe requires a direct user prompt".to_string());
     }
-    let image_bytes = capture_screen_area_under_window(window)?;
+    let capture = capture_screen_area_under_window(window)?;
+    let image_bytes = capture.region.png_bytes;
     if image_bytes.len() > MAX_IMAGE_PROBE_BYTES {
         return Err(format!(
             "screen probe image is too large: {} bytes; limit is {} bytes",
@@ -3264,25 +3390,47 @@ fn screen_area_probe_response(
     let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
-    Ok(client.respond_to_screen_area_bytes_with_context(
-        &image_bytes,
-        clean_prompt,
-        dynamic_context,
+    Ok((
+        client.respond_to_screen_area_bytes_with_context(
+            &image_bytes,
+            clean_prompt,
+            dynamic_context,
+        ),
+        capture.diagnostic_path,
     ))
 }
 
-fn capture_screen_area_under_window(window: &IrisWindow) -> Result<Vec<u8>, String> {
+fn capture_screen_area_under_window(window: &IrisWindow) -> Result<ScreenAreaCapture, String> {
     let position = window.outer_position().map_err(|err| err.to_string())?;
     let size = window.outer_size().map_err(|err| err.to_string())?;
-    let width = size.width.clamp(1, MAX_SCREEN_CAPTURE_WIDTH);
-    let height = size.height.clamp(1, MAX_SCREEN_CAPTURE_HEIGHT);
+    let width = size.width.max(1);
+    let height = size.height.max(1);
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
 
-    let _ = window.hide();
-    thread::sleep(std::time::Duration::from_millis(120));
+    window
+        .hide()
+        .map_err(|err| format!("failed to hide Iris for screen capture: {err}"))?;
+    thread::sleep(std::time::Duration::from_millis(
+        SCREEN_CAPTURE_HIDE_SETTLE_MS,
+    ));
     let result = capture_screen_region_png(position.x, position.y, width, height);
     let _ = window.show();
     let _ = window.set_focus();
-    result
+    let region = result?;
+    let diagnostics_root = workspace_root()?.join("diagnostics");
+    let diagnostic_path = write_screen_capture_diagnostic(
+        &diagnostics_root,
+        position.x,
+        position.y,
+        width,
+        height,
+        scale_factor,
+        &region,
+    )?;
+    Ok(ScreenAreaCapture {
+        region,
+        diagnostic_path,
+    })
 }
 
 #[cfg(not(windows))]
@@ -3291,13 +3439,18 @@ fn capture_screen_region_png(
     _y: i32,
     _width: u32,
     _height: u32,
-) -> Result<Vec<u8>, String> {
+) -> Result<ScreenRegionCapture, String> {
     Err("screen area capture is only available on Windows".to_string())
 }
 
 #[cfg(windows)]
-fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, String> {
-    use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
+fn capture_screen_region_png(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<ScreenRegionCapture, String> {
+    use image::{ColorType, ImageEncoder, RgbaImage, codecs::png::PngEncoder};
     use windows::Win32::Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
         DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HBITMAP, HDC, ReleaseDC, SRCCOPY,
@@ -3313,7 +3466,7 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
         y: i32,
         width: u32,
         height: u32,
-    ) -> Result<(i32, i32, i32, i32), String> {
+    ) -> Result<ClampedScreenRegion, String> {
         let virtual_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
         let virtual_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
         let virtual_w = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
@@ -3326,7 +3479,16 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
         let top = y.clamp(virtual_y, virtual_y + virtual_h - 1);
         let right = (x + width as i32).clamp(left + 1, virtual_x + virtual_w);
         let bottom = (y + height as i32).clamp(top + 1, virtual_y + virtual_h);
-        Ok((left, top, right - left, bottom - top))
+        Ok(ClampedScreenRegion {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+            virtual_screen_x: virtual_x,
+            virtual_screen_y: virtual_y,
+            virtual_screen_width: virtual_w,
+            virtual_screen_height: virtual_h,
+        })
     }
 
     struct ScreenDc(HDC);
@@ -3356,7 +3518,7 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
         }
     }
 
-    let (x, y, width, height) = clamp_region(x, y, width, height)?;
+    let region = clamp_region(x, y, width, height)?;
     let screen_dc = unsafe { GetDC(None) };
     if screen_dc.is_invalid() {
         return Err("failed to get screen device context".to_string());
@@ -3369,7 +3531,7 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
     }
     let memory_dc = MemoryDc(memory_dc);
 
-    let bitmap = unsafe { CreateCompatibleBitmap(screen_dc.0, width, height) };
+    let bitmap = unsafe { CreateCompatibleBitmap(screen_dc.0, region.width, region.height) };
     if bitmap.is_invalid() {
         return Err("failed to create screen capture bitmap".to_string());
     }
@@ -3385,11 +3547,11 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
             memory_dc.0,
             0,
             0,
-            width,
-            height,
+            region.width,
+            region.height,
             Some(screen_dc.0),
-            x,
-            y,
+            region.x,
+            region.y,
             SRCCOPY,
         )
     };
@@ -3403,8 +3565,8 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
     let mut info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -height,
+            biWidth: region.width,
+            biHeight: -region.height,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
@@ -3412,13 +3574,13 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
         },
         ..Default::default()
     };
-    let mut bgra = vec![0_u8; width as usize * height as usize * 4];
+    let mut bgra = vec![0_u8; region.width as usize * region.height as usize * 4];
     let rows = unsafe {
         GetDIBits(
             memory_dc.0,
             bitmap.0,
             0,
-            height as u32,
+            region.height as u32,
             Some(bgra.as_mut_ptr().cast()),
             &mut info,
             DIB_RGB_COLORS,
@@ -3433,11 +3595,94 @@ fn capture_screen_region_png(x: i32, y: i32, width: u32, height: u32) -> Result<
         pixel[3] = 255;
     }
 
+    let mut submitted_width = region.width as u32;
+    let mut submitted_height = region.height as u32;
+    let rgba = if submitted_width > MAX_SCREEN_CAPTURE_WIDTH
+        || submitted_height > MAX_SCREEN_CAPTURE_HEIGHT
+    {
+        let image = RgbaImage::from_raw(submitted_width, submitted_height, bgra)
+            .ok_or_else(|| "failed to build screen capture image buffer".to_string())?;
+        let scale = (MAX_SCREEN_CAPTURE_WIDTH as f64 / submitted_width as f64)
+            .min(MAX_SCREEN_CAPTURE_HEIGHT as f64 / submitted_height as f64)
+            .min(1.0);
+        submitted_width = ((submitted_width as f64 * scale).round() as u32).max(1);
+        submitted_height = ((submitted_height as f64 * scale).round() as u32).max(1);
+        image::imageops::resize(
+            &image,
+            submitted_width,
+            submitted_height,
+            image::imageops::FilterType::Triangle,
+        )
+        .into_raw()
+    } else {
+        bgra
+    };
+
     let mut png = Vec::new();
     PngEncoder::new(&mut png)
-        .write_image(&bgra, width as u32, height as u32, ColorType::Rgba8.into())
+        .write_image(
+            &rgba,
+            submitted_width,
+            submitted_height,
+            ColorType::Rgba8.into(),
+        )
         .map_err(|err| format!("failed to encode screen capture png: {err}"))?;
-    Ok(png)
+    Ok(ScreenRegionCapture {
+        png_bytes: png,
+        capture_x: region.x,
+        capture_y: region.y,
+        capture_width: region.width as u32,
+        capture_height: region.height as u32,
+        submitted_width,
+        submitted_height,
+        virtual_screen_x: region.virtual_screen_x,
+        virtual_screen_y: region.virtual_screen_y,
+        virtual_screen_width: region.virtual_screen_width,
+        virtual_screen_height: region.virtual_screen_height,
+    })
+}
+
+fn write_screen_capture_diagnostic(
+    diagnostics_root: &Path,
+    window_x: i32,
+    window_y: i32,
+    requested_width: u32,
+    requested_height: u32,
+    scale_factor: f64,
+    region: &ScreenRegionCapture,
+) -> Result<String, String> {
+    let screen_dir = diagnostics_root.join("screen");
+    fs::create_dir_all(&screen_dir).map_err(|err| err.to_string())?;
+    let image_path = screen_dir.join("latest-screen-capture.png");
+    let json_path = screen_dir.join("latest-screen-capture.json");
+    fs::write(&image_path, &region.png_bytes)
+        .map_err(|err| format!("failed to write screen diagnostic image: {err}"))?;
+    let diagnostic = ScreenCaptureDiagnostic {
+        timestamp_ms: timestamp_ms()?,
+        window_x,
+        window_y,
+        requested_width,
+        requested_height,
+        capture_x: region.capture_x,
+        capture_y: region.capture_y,
+        capture_width: region.capture_width,
+        capture_height: region.capture_height,
+        submitted_width: region.submitted_width,
+        submitted_height: region.submitted_height,
+        virtual_screen_x: region.virtual_screen_x,
+        virtual_screen_y: region.virtual_screen_y,
+        virtual_screen_width: region.virtual_screen_width,
+        virtual_screen_height: region.virtual_screen_height,
+        scale_factor,
+        image_bytes: region.png_bytes.len(),
+        image_path: image_path.display().to_string(),
+        json_path: json_path.display().to_string(),
+    };
+    let json = serde_json::to_vec_pretty(&diagnostic)
+        .map_err(|err| format!("failed to encode screen diagnostic json: {err}"))?;
+    fs::write(&json_path, json)
+        .map_err(|err| format!("failed to write screen diagnostic json: {err}"))?;
+    Ok(json_path.display().to_string())
 }
 
 fn is_supported_image_name(image_name: &str) -> bool {
@@ -4317,6 +4562,7 @@ pub fn run() {
             native_asr_listen_once,
             cancel_native_asr,
             prepare_local_runtime,
+            save_camera_snapshot_diagnostic,
             submit_image_probe,
             submit_screen_area_probe,
             submit_typed_hud,
@@ -4521,6 +4767,76 @@ mod tests {
         assert!(root.join("voice-events.jsonl.5").exists());
         assert!(!root.join("voice-events.jsonl.6").exists());
         fs::remove_dir_all(root).expect("remove temp directory");
+    }
+
+    #[test]
+    fn screen_capture_diagnostic_writes_latest_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-screen-diagnostic-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        let diagnostics_root = root.join("diagnostics");
+        let region = ScreenRegionCapture {
+            png_bytes: b"fake-png".to_vec(),
+            capture_x: -1200,
+            capture_y: 50,
+            capture_width: 640,
+            capture_height: 360,
+            submitted_width: 640,
+            submitted_height: 360,
+            virtual_screen_x: -1920,
+            virtual_screen_y: 0,
+            virtual_screen_width: 3840,
+            virtual_screen_height: 1080,
+        };
+
+        let json_path =
+            write_screen_capture_diagnostic(&diagnostics_root, -1200, 50, 640, 360, 1.25, &region)
+                .expect("write screen diagnostic");
+
+        let image_path = diagnostics_root
+            .join("screen")
+            .join("latest-screen-capture.png");
+        assert_eq!(
+            fs::read(&image_path).expect("screen diagnostic image"),
+            b"fake-png"
+        );
+        let json = fs::read_to_string(json_path).expect("screen diagnostic json");
+        assert!(json.contains("\"captureX\": -1200"));
+        assert!(json.contains("\"submittedWidth\": 640"));
+        assert!(json.contains("\"virtualScreenX\": -1920"));
+        assert!(json.contains("\"scaleFactor\": 1.25"));
+
+        fs::remove_dir_all(root).expect("remove screen diagnostic test directory");
+    }
+
+    #[test]
+    fn camera_snapshot_diagnostic_writes_latest_preview() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-camera-diagnostic-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        let diagnostics_root = root.join("diagnostics");
+
+        let diagnostic =
+            write_camera_snapshot_diagnostic(&diagnostics_root, b"fake-jpeg", 800, 450)
+                .expect("write camera diagnostic");
+
+        let image_path = diagnostics_root
+            .join("camera")
+            .join("latest-camera-snapshot.jpg");
+        assert_eq!(
+            fs::read(&image_path).expect("camera diagnostic image"),
+            b"fake-jpeg"
+        );
+        assert_eq!(diagnostic.width, 800);
+        assert_eq!(diagnostic.height, 450);
+        assert_eq!(diagnostic.image_bytes, 9);
+        assert!(Path::new(&diagnostic.json_path).exists());
+
+        fs::remove_dir_all(root).expect("remove camera diagnostic test directory");
     }
 
     #[test]

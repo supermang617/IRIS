@@ -1446,6 +1446,9 @@ fn assert_forbidden_api_absence(root: &Path) -> Result<(), String> {
             if is_approved_live_self_check_process_probe(&file, &content, pattern)? {
                 continue;
             }
+            if is_approved_local_ocr_process_probe(&file, &content, pattern)? {
+                continue;
+            }
             if content.contains(pattern) {
                 return Err(format!(
                     "forbidden API pattern `{pattern}` found in {}",
@@ -1488,6 +1491,47 @@ fn is_approved_live_self_check_process_probe(
             "iris-runtime self-check may launch only the four audited prerequisite probes"
                 .to_string(),
         );
+    }
+    Ok(true)
+}
+
+fn is_approved_local_ocr_process_probe(
+    file: &Path,
+    content: &str,
+    pattern: &str,
+) -> Result<bool, String> {
+    let is_ollama = file
+        .components()
+        .any(|component| component.as_os_str() == "iris-ollama");
+    if !is_ollama || !matches!(pattern, "process::Command" | "Command::new") {
+        return Ok(false);
+    }
+    for required in [
+        "fn run_tesseract_ocr",
+        "fn find_tesseract_executable",
+        "IRIS_TESSERACT_EXE",
+        "OCR_TIMEOUT",
+        "CREATE_NO_WINDOW",
+        ".arg(\"stdout\")",
+        ".arg(\"--psm\")",
+        ".stdout(Stdio::piped())",
+        ".stderr(Stdio::piped())",
+    ] {
+        if !content.contains(required) {
+            return Err(format!(
+                "local OCR process helper missing audited marker `{required}`"
+            ));
+        }
+    }
+    if content.matches("Command::new(").count() != 1 {
+        return Err("local OCR may launch only one audited Tesseract process".to_string());
+    }
+    for forbidden in ["cmd.exe", "powershell", "shell", "/C", "-Command"] {
+        if content.contains(forbidden) {
+            return Err(format!(
+                "local OCR process helper contains forbidden shell marker `{forbidden}`"
+            ));
+        }
     }
     Ok(true)
 }

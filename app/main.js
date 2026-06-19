@@ -11,6 +11,7 @@ import {
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { latestBrowserPreview } from "./browser-preview.js";
+import { cameraErrorMessage } from "./camera-state.js";
 import {
   formatDynamicContextStatus,
   parseDynamicContextCommand
@@ -442,6 +443,9 @@ async function submitScreenAreaMessage() {
   if (thinking || speaking) {
     return;
   }
+  await cancelActiveAsr();
+  wakeCommandArmed = false;
+  voiceLoop = false;
   const latencyTrace = new VoiceLatencyTrace();
   const prompt = elements.hudInput.value.trim() || defaultScreenPrompt;
   const turnStarted = performance.now();
@@ -457,6 +461,9 @@ async function submitScreenAreaMessage() {
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", `[screen] ${prompt}`);
     rememberTurn("iris", response.text);
+    if (response.diagnostic_path) {
+      logVoice("screen_probe_diagnostic", response.diagnostic_path);
+    }
     logVoice(
       "screen_probe_complete",
       `model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`
@@ -1506,7 +1513,9 @@ elements.visionButton.addEventListener("click", () => {
     return;
   }
   lookWithCamera().catch((error) => {
-    elements.hudOutput.textContent = String(error);
+    logVoice("camera_snapshot_error", String(error));
+    elements.hudOutput.textContent = cameraErrorMessage(error);
+    restartListeningIfReady();
   });
 });
 
@@ -1657,6 +1666,9 @@ async function readDocumentAttachment(file) {
 
 async function lookWithCamera() {
   const prompt = elements.hudInput.value.trim() || defaultCameraPrompt;
+  await cancelActiveAsr();
+  wakeCommandArmed = false;
+  voiceLoop = false;
   await captureCameraSnapshot();
   elements.hudInput.value = "";
   resizeComposerInput();
@@ -1681,10 +1693,9 @@ async function captureCameraSnapshot() {
         frameRate: { ideal: 5, max: 10 }
       }
     });
-    setImageAttachment(
-      await snapshotFromStream(stream),
-      "Camera snapshot attached. Type what you want Iris to inspect."
-    );
+    const snapshot = await snapshotFromStream(stream);
+    await saveCameraSnapshotDiagnostic(snapshot);
+    setImageAttachment(snapshot, "Camera snapshot captured. Thinking locally...");
   } finally {
     if (stream) {
       for (const track of stream.getTracks()) {
@@ -1725,9 +1736,28 @@ async function snapshotFromStream(stream) {
   return {
     name: "camera-snapshot.jpg",
     bytes: Array.from(new Uint8Array(buffer)),
+    width,
+    height,
     previewUrl: createTrustedAttachmentObjectUrl(blob),
     kindLabel: "Camera"
   };
+}
+
+async function saveCameraSnapshotDiagnostic(snapshot) {
+  try {
+    const diagnostic = await call("save_camera_snapshot_diagnostic", {
+      imageBytes: snapshot.bytes,
+      width: snapshot.width,
+      height: snapshot.height
+    });
+    const imagePath = diagnostic.imagePath || diagnostic.image_path || "";
+    logVoice(
+      "camera_snapshot_diagnostic",
+      `bytes=${snapshot.bytes.length}; width=${snapshot.width}; height=${snapshot.height}; path=${imagePath}`
+    );
+  } catch (error) {
+    logVoice("camera_snapshot_diagnostic_error", String(error));
+  }
 }
 
 async function snapshotFromVideoFile(file) {
