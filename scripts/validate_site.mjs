@@ -30,7 +30,7 @@ const sitemap = readFileSync(join(siteDir, "sitemap.xml"), "utf8");
 const llms = readFileSync(join(siteDir, "llms.txt"), "utf8");
 
 const expectedHashes = new Map([
-  ["iris-windows-installer.zip", "8f29528757f51fd22865c9ed8e08180080dee6b30eae2b359ebe7bbab9ce4e15"],
+  ["iris-windows-installer.zip", "08edfdcda2da7f57b4bf934b7d65ffd9571d3c4301bc0316e6a26637cd8e0cdd"],
   ["iris-windows.zip", "6aa14a3ee822efb0c434c2d0d99dbbe1982c4084daad7110eb5b126918ca9d20"],
   ["install-iris-windows.ps1", "e9a610e8b8616a4d0f4ac8e0554a40e238bc6cb85c46d2e055ba39b5cfe1a9da"],
 ]);
