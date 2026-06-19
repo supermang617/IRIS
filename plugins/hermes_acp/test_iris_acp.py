@@ -57,6 +57,30 @@ class IrisAcpBridgeTests(unittest.TestCase):
             {"terminal", "process"},
         )
 
+    def test_authorized_research_prompt_selects_browser_without_interactive_tools(self):
+        allowed = iris_acp.tool_names_for_prompt(
+            [{
+                "type": "text",
+                "text": (
+                    "IRIS_RESEARCH_AUTHORIZED_BY_USER: true\n"
+                    "Use Brave Search for the latest Ollama release."
+                ),
+            }]
+        )
+
+        self.assertIn("browser_open", allowed)
+        self.assertIn("browser_snapshot", allowed)
+        self.assertNotIn("browser_fill", allowed)
+        self.assertNotIn("browser_download", allowed)
+
+    def test_natural_memory_prompt_selects_memory_query(self):
+        self.assertEqual(
+            iris_acp.tool_names_for_prompt(
+                [{"type": "text", "text": "What do you remember about me?"}]
+            ),
+            {"iris_query_memory"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

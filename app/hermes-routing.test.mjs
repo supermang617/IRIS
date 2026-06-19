@@ -27,6 +27,27 @@ test("natural browser request routes without requiring the Hermes name", () => {
   });
 });
 
+test("simple google-style request routes to background research", () => {
+  assert.deepEqual(classifyHermesRoute("Google this simple thing for me"), {
+    route: "implicit",
+    mode: "research",
+    text: "Google this simple thing for me"
+  });
+});
+
+test("natural memory questions route to Hermes memory reasoning", () => {
+  assert.deepEqual(classifyHermesRoute("what do you remember about me?"), {
+    route: "implicit",
+    mode: "reason",
+    text: "what do you remember about me?"
+  });
+  assert.deepEqual(classifyHermesRoute("how old am I?"), {
+    route: "implicit",
+    mode: "reason",
+    text: "how old am I?"
+  });
+});
+
 test("natural image generation request routes to the image provider", () => {
   assert.deepEqual(classifyHermesRoute("generate an image of Iris in glass style"), {
     route: "implicit",

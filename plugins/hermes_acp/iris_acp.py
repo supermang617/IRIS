@@ -234,11 +234,45 @@ def tool_names_for_prompt(prompt) -> set[str]:
             allowed.add(name)
     if any(marker in allowed for marker in TOOL_GROUPS["browser_interactive"]):
         allowed.update(TOOL_GROUPS["browser"])
-    if any(word in text for word in ("http://", "https://", "web", "online", "research", "browser")):
+    if any(
+        word in text
+        for word in (
+            "http://",
+            "https://",
+            "web",
+            "online",
+            "research",
+            "browser",
+            "search",
+            "google",
+            "brave",
+            "look up",
+            "lookup",
+            "current",
+            "latest",
+            "today",
+            "who won",
+            "iris_research_authorized_by_user",
+        )
+    ):
         allowed.update(TOOL_GROUPS["browser"])
     if any(name in text for name in ("browser_click", "browser_fill", "browser_press", "browser_upload", "browser_download")):
         allowed.update(TOOL_GROUPS["browser_interactive"])
-    if "iris_query_memory" in text or "query memory" in text or "from memory" in text:
+    if any(
+        phrase in text
+        for phrase in (
+            "iris_query_memory",
+            "query memory",
+            "from memory",
+            "memory summary",
+            "what do you remember",
+            "what do you know about me",
+            "how old am i",
+            "what's my age",
+            "what is my age",
+            "my age",
+        )
+    ):
         allowed.update(TOOL_GROUPS["memory_query"])
     if "iris_propose_memory" in text or "propose memory" in text or "stage memory" in text:
         allowed.update(TOOL_GROUPS["memory_propose"])

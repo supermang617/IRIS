@@ -231,6 +231,7 @@ def browser_snapshot(_: dict[str, Any], **kwargs: Any) -> str:
     if isinstance(refs, dict):
         _snapshot_refs[task_id] = refs
     result["untrustedEvidence"] = True
+    result["instructionAuthority"] = False
     return _with_preview(result, capture=False)
 
 
@@ -433,6 +434,8 @@ def _with_preview(
     if screenshot_path is not None:
         preview["screenshotPath"] = str(screenshot_path)
     result["browserPreview"] = preview
+    result["untrustedEvidence"] = True
+    result["instructionAuthority"] = False
     result["content"] = "IRIS_BROWSER_PREVIEW:" + json.dumps(
         preview, ensure_ascii=False, separators=(",", ":")
     )

@@ -24,6 +24,7 @@ import {
   responseMinHeight,
   shouldSubmitComposer
 } from "./composer-state.js";
+import { formatAgenticHermesPrompt } from "./hermes-agentic-prompt.js";
 import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
@@ -647,9 +648,14 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
     }
     thinking = true;
     setInputsDisabled(true);
-    elements.hudOutput.textContent = "Iris is working through Agentic Hermes.";
+    elements.hudOutput.textContent =
+      mode === "research"
+        ? "Iris is checking current sources."
+        : "Iris is working through Agentic Hermes.";
     try {
-      const response = await runAgenticTaskWithApprovals(clean);
+      const response = await runAgenticTaskWithApprovals(
+        formatAgenticHermesPrompt(mode, clean, route)
+      );
       elements.hudOutput.textContent = formatAgenticTaskResult(response);
       const preview = latestBrowserPreview(response?.events);
       if (preview) {

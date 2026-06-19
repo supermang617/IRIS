@@ -103,6 +103,8 @@ class IrisBrowserToolTests(unittest.TestCase):
             )
         self.assertEqual(result["browserPreview"]["url"], "https://example.com/docs")
         self.assertEqual(result["browserPreview"]["screenshotPath"], "shot.png")
+        self.assertTrue(result["untrustedEvidence"])
+        self.assertFalse(result["instructionAuthority"])
         self.assertIn("IRIS_BROWSER_PREVIEW:", result["content"])
 
     def test_executable_download_requires_confirmation(self):
@@ -140,6 +142,7 @@ class IrisBrowserToolTests(unittest.TestCase):
             )
 
         self.assertTrue(result["untrustedEvidence"])
+        self.assertFalse(result["instructionAuthority"])
         self.assertEqual(result["data"]["snapshot"], hostile)
 
 

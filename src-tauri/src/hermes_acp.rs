@@ -1743,6 +1743,32 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_browser_research_uses_session_approval() {
+        let request = json!({
+            "id": 18,
+            "params": {
+                "toolCall": {
+                    "title": "browser_open: Brave Search",
+                    "rawInput": {
+                        "tool": "browser_open",
+                        "arguments": {
+                            "url": "https://search.brave.com/search?q=ollama"
+                        }
+                    }
+                },
+                "options": [{
+                    "optionId": "allow_once"
+                }]
+            }
+        });
+
+        let approval = approval_from_request(&request, Some("C:\\work"));
+        assert_eq!(approval.request.risk_class, RiskClass::Ordinary);
+        assert!(!approval.request.requires_separate_confirmation);
+        assert_eq!(approval.allow_once_option.as_deref(), Some("allow_once"));
+    }
+
+    #[test]
     fn action_audit_redacts_sensitive_values() {
         assert_eq!(
             redact_and_truncate("command\nAuthorization: Bearer private", 500),
