@@ -1163,9 +1163,9 @@ fn asr_capture_profile(mode: Option<&str>) -> AsrCaptureProfile {
             min_ms: 250,
         },
         _ => AsrCaptureProfile {
-            duration_ms: 3_500,
-            start_timeout_ms: 1_200,
-            trailing_silence_ms: 420,
+            duration_ms: 30_000,
+            start_timeout_ms: 30_000,
+            trailing_silence_ms: 450,
             min_ms: 250,
         },
     }
@@ -5674,9 +5674,9 @@ mod tests {
         assert_eq!(
             asr_capture_profile(Some("wake")),
             AsrCaptureProfile {
-                duration_ms: 3_500,
-                start_timeout_ms: 1_200,
-                trailing_silence_ms: 420,
+                duration_ms: 30_000,
+                start_timeout_ms: 30_000,
+                trailing_silence_ms: 450,
                 min_ms: 250,
             }
         );
