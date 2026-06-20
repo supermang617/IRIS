@@ -11,7 +11,12 @@ import {
 } from "./attachment-state.js";
 import { requireTrustedBlobUrl } from "./attachment-url.js";
 import { latestBrowserPreview } from "./browser-preview.js";
-import { cameraErrorMessage } from "./camera-state.js";
+import {
+  buildCameraCapturePlan,
+  cameraAttemptDiagnostic,
+  cameraErrorMessage,
+  createCameraUnavailableError
+} from "./camera-state.js";
 import {
   formatDynamicContextStatus,
   parseDynamicContextCommand
@@ -1893,27 +1898,65 @@ async function captureCameraSnapshot() {
   cameraCaptureInProgress = true;
   elements.visionButton.disabled = true;
   elements.hudOutput.textContent = "Camera starting.";
-  let stream = null;
+  const videoConstraints = {
+    width: { ideal: cameraSnapshotWidth, max: cameraSnapshotWidth },
+    height: { ideal: cameraSnapshotHeight, max: cameraSnapshotHeight },
+    frameRate: { ideal: 5, max: 10 }
+  };
+  const devices = await enumerateCameraDevices();
+  const capturePlan = buildCameraCapturePlan(devices, videoConstraints);
+  const attempts = [];
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        width: { ideal: cameraSnapshotWidth, max: cameraSnapshotWidth },
-        height: { ideal: cameraSnapshotHeight, max: cameraSnapshotHeight },
-        frameRate: { ideal: 5, max: 10 }
-      }
-    });
-    const snapshot = await snapshotFromStream(stream);
-    await saveCameraSnapshotDiagnostic(snapshot);
-    return snapshot;
-  } finally {
-    if (stream) {
-      for (const track of stream.getTracks()) {
-        track.stop();
+    for (const attempt of capturePlan) {
+      let stream = null;
+      try {
+        elements.hudOutput.textContent =
+          attempt.attemptId === "default"
+            ? "Camera starting."
+            : `Trying ${attempt.label}.`;
+        stream = await navigator.mediaDevices.getUserMedia(attempt.constraints);
+        const snapshot = await snapshotFromStream(stream);
+        await saveCameraSnapshotDiagnostic(snapshot, attempt, attempts.length + 1);
+        return snapshot;
+      } catch (error) {
+        attempts.push(cameraAttemptDiagnostic(attempt, error));
+      } finally {
+        if (stream) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+        }
       }
     }
+
+    const error =
+      capturePlan.length > 1
+        ? createCameraUnavailableError()
+        : cameraErrorFromAttemptDiagnostic(attempts[0]);
+    await saveCameraCaptureErrorDiagnostic(error.message, attempts);
+    throw error;
+  } finally {
     cameraCaptureInProgress = false;
     elements.visionButton.disabled = false;
+  }
+}
+
+function cameraErrorFromAttemptDiagnostic(attempt) {
+  const error = new Error(attempt?.errorMessage || "Camera snapshot failed.");
+  error.name = attempt?.errorName || "Error";
+  return error;
+}
+
+async function enumerateCameraDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    return [];
+  }
+
+  try {
+    return await navigator.mediaDevices.enumerateDevices();
+  } catch (error) {
+    logVoice("camera_enumerate_error", String(error));
+    return [];
   }
 }
 
@@ -1953,20 +1996,35 @@ async function snapshotFromStream(stream) {
   };
 }
 
-async function saveCameraSnapshotDiagnostic(snapshot) {
+async function saveCameraSnapshotDiagnostic(snapshot, selectedAttempt, attemptCount) {
   try {
     const diagnostic = await call("save_camera_snapshot_diagnostic", {
       imageBytes: snapshot.bytes,
       width: snapshot.width,
-      height: snapshot.height
+      height: snapshot.height,
+      selectedDeviceLabel: selectedAttempt?.label || null,
+      attemptCount
     });
     const imagePath = diagnostic.imagePath || diagnostic.image_path || "";
     logVoice(
       "camera_snapshot_diagnostic",
-      `bytes=${snapshot.bytes.length}; width=${snapshot.width}; height=${snapshot.height}; path=${imagePath}`
+      `bytes=${snapshot.bytes.length}; width=${snapshot.width}; height=${snapshot.height}; device=${selectedAttempt?.label || "unknown"}; attempts=${attemptCount}; path=${imagePath}`
     );
   } catch (error) {
     logVoice("camera_snapshot_diagnostic_error", String(error));
+  }
+}
+
+async function saveCameraCaptureErrorDiagnostic(message, attempts) {
+  try {
+    const diagnostic = await call("save_camera_capture_error_diagnostic", {
+      message,
+      attempts
+    });
+    const jsonPath = diagnostic.jsonPath || diagnostic.json_path || "";
+    logVoice("camera_capture_error_diagnostic", `attempts=${attempts.length}; path=${jsonPath}`);
+  } catch (error) {
+    logVoice("camera_capture_error_diagnostic_error", String(error));
   }
 }
 

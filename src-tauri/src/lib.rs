@@ -94,6 +94,24 @@ struct ScreenRegionCapture {
     virtual_screen_y: i32,
     virtual_screen_width: i32,
     virtual_screen_height: i32,
+    mean_luma: f64,
+    non_dark_pixel_count: usize,
+    total_pixel_count: usize,
+    blank: bool,
+}
+
+impl ScreenRegionCapture {
+    fn is_effectively_blank(&self) -> bool {
+        self.blank
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScreenCapturePixelStats {
+    mean_luma: f64,
+    non_dark_pixel_count: usize,
+    total_pixel_count: usize,
+    blank: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,6 +145,10 @@ struct ScreenCaptureDiagnostic {
     virtual_screen_width: i32,
     virtual_screen_height: i32,
     scale_factor: f64,
+    mean_luma: f64,
+    non_dark_pixel_count: usize,
+    total_pixel_count: usize,
+    blank: bool,
     image_bytes: usize,
     image_path: String,
     json_path: String,
@@ -145,7 +167,27 @@ struct CameraSnapshotDiagnostic {
     width: u32,
     height: u32,
     image_bytes: usize,
+    selected_device_label: Option<String>,
+    attempt_count: usize,
     image_path: String,
+    json_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraDeviceAttemptDiagnostic {
+    attempt_id: String,
+    label: String,
+    error_name: String,
+    error_message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CameraCaptureErrorDiagnostic {
+    timestamp_ms: u128,
+    message: String,
+    attempts: Vec<CameraDeviceAttemptDiagnostic>,
     json_path: String,
 }
 
@@ -3154,6 +3196,8 @@ fn save_camera_snapshot_diagnostic(
     image_bytes: Vec<u8>,
     width: u32,
     height: u32,
+    selected_device_label: Option<String>,
+    attempt_count: Option<usize>,
 ) -> Result<CameraSnapshotDiagnostic, String> {
     if image_bytes.is_empty() {
         return Err("camera snapshot diagnostic is empty".to_string());
@@ -3166,7 +3210,23 @@ fn save_camera_snapshot_diagnostic(
         ));
     }
     let diagnostics_root = workspace_root()?.join("diagnostics");
-    write_camera_snapshot_diagnostic(&diagnostics_root, &image_bytes, width, height)
+    write_camera_snapshot_diagnostic(
+        &diagnostics_root,
+        &image_bytes,
+        width,
+        height,
+        selected_device_label,
+        attempt_count.unwrap_or(1),
+    )
+}
+
+#[tauri::command]
+fn save_camera_capture_error_diagnostic(
+    message: String,
+    attempts: Vec<CameraDeviceAttemptDiagnostic>,
+) -> Result<CameraCaptureErrorDiagnostic, String> {
+    let diagnostics_root = workspace_root()?.join("diagnostics");
+    write_camera_capture_error_diagnostic(&diagnostics_root, message, attempts)
 }
 
 fn write_camera_snapshot_diagnostic(
@@ -3174,6 +3234,8 @@ fn write_camera_snapshot_diagnostic(
     image_bytes: &[u8],
     width: u32,
     height: u32,
+    selected_device_label: Option<String>,
+    attempt_count: usize,
 ) -> Result<CameraSnapshotDiagnostic, String> {
     let camera_dir = diagnostics_root.join("camera");
     fs::create_dir_all(&camera_dir).map_err(|err| err.to_string())?;
@@ -3186,6 +3248,8 @@ fn write_camera_snapshot_diagnostic(
         width,
         height,
         image_bytes: image_bytes.len(),
+        selected_device_label,
+        attempt_count,
         image_path: image_path.display().to_string(),
         json_path: json_path.display().to_string(),
     };
@@ -3193,6 +3257,27 @@ fn write_camera_snapshot_diagnostic(
         .map_err(|err| format!("failed to encode camera diagnostic json: {err}"))?;
     fs::write(&json_path, json)
         .map_err(|err| format!("failed to write camera diagnostic json: {err}"))?;
+    Ok(diagnostic)
+}
+
+fn write_camera_capture_error_diagnostic(
+    diagnostics_root: &Path,
+    message: String,
+    attempts: Vec<CameraDeviceAttemptDiagnostic>,
+) -> Result<CameraCaptureErrorDiagnostic, String> {
+    let camera_dir = diagnostics_root.join("camera");
+    fs::create_dir_all(&camera_dir).map_err(|err| err.to_string())?;
+    let json_path = camera_dir.join("latest-camera-error.json");
+    let diagnostic = CameraCaptureErrorDiagnostic {
+        timestamp_ms: timestamp_ms()?,
+        message,
+        attempts,
+        json_path: json_path.display().to_string(),
+    };
+    let json = serde_json::to_vec_pretty(&diagnostic)
+        .map_err(|err| format!("failed to encode camera error diagnostic json: {err}"))?;
+    fs::write(&json_path, json)
+        .map_err(|err| format!("failed to write camera error diagnostic json: {err}"))?;
     Ok(diagnostic)
 }
 
@@ -3486,6 +3571,15 @@ fn screen_area_probe_response(
         return Err("screen probe requires a direct user prompt".to_string());
     }
     let capture = capture_screen_area_under_window(window)?;
+    if capture.region.is_effectively_blank() {
+        return Ok((
+            iris_core_types::AssistantResponse::text_only(format!(
+                "Iris could not use that screen look because Windows returned a blank capture. Diagnostic saved at {}.",
+                capture.diagnostic_path
+            )),
+            capture.diagnostic_path,
+        ));
+    }
     let image_bytes = capture.region.png_bytes;
     if image_bytes.len() > MAX_IMAGE_PROBE_BYTES {
         return Err(format!(
@@ -3561,9 +3655,9 @@ fn capture_screen_region_png(
 ) -> Result<ScreenRegionCapture, String> {
     use image::{ColorType, ImageEncoder, RgbaImage, codecs::png::PngEncoder};
     use windows::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
-        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HBITMAP, HDC, ReleaseDC, SRCCOPY,
-        SelectObject,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap,
+        CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HBITMAP, HDC,
+        ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -3661,7 +3755,7 @@ fn capture_screen_region_png(
             Some(screen_dc.0),
             region.x,
             region.y,
-            SRCCOPY,
+            ROP_CODE(SRCCOPY.0 | CAPTUREBLT.0),
         )
     };
     unsafe {
@@ -3726,6 +3820,7 @@ fn capture_screen_region_png(
     } else {
         bgra
     };
+    let stats = screen_capture_pixel_stats(&rgba);
 
     let mut png = Vec::new();
     PngEncoder::new(&mut png)
@@ -3748,7 +3843,48 @@ fn capture_screen_region_png(
         virtual_screen_y: region.virtual_screen_y,
         virtual_screen_width: region.virtual_screen_width,
         virtual_screen_height: region.virtual_screen_height,
+        mean_luma: stats.mean_luma,
+        non_dark_pixel_count: stats.non_dark_pixel_count,
+        total_pixel_count: stats.total_pixel_count,
+        blank: stats.blank,
     })
+}
+
+fn screen_capture_pixel_stats(rgba: &[u8]) -> ScreenCapturePixelStats {
+    let mut total_luma = 0.0_f64;
+    let mut total_pixel_count = 0_usize;
+    let mut non_dark_pixel_count = 0_usize;
+
+    for pixel in rgba.chunks_exact(4) {
+        let r = pixel[0] as f64;
+        let g = pixel[1] as f64;
+        let b = pixel[2] as f64;
+        let luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+        total_luma += luma;
+        total_pixel_count += 1;
+        if luma >= 8.0 {
+            non_dark_pixel_count += 1;
+        }
+    }
+
+    let mean_luma = if total_pixel_count == 0 {
+        0.0
+    } else {
+        total_luma / total_pixel_count as f64
+    };
+    let non_dark_ratio = if total_pixel_count == 0 {
+        0.0
+    } else {
+        non_dark_pixel_count as f64 / total_pixel_count as f64
+    };
+    let blank = total_pixel_count == 0 || (mean_luma < 3.0 && non_dark_ratio < 0.001);
+
+    ScreenCapturePixelStats {
+        mean_luma,
+        non_dark_pixel_count,
+        total_pixel_count,
+        blank,
+    }
 }
 
 fn write_screen_capture_diagnostic(
@@ -3783,6 +3919,10 @@ fn write_screen_capture_diagnostic(
         virtual_screen_width: region.virtual_screen_width,
         virtual_screen_height: region.virtual_screen_height,
         scale_factor,
+        mean_luma: region.mean_luma,
+        non_dark_pixel_count: region.non_dark_pixel_count,
+        total_pixel_count: region.total_pixel_count,
+        blank: region.blank,
         image_bytes: region.png_bytes.len(),
         image_path: image_path.display().to_string(),
         json_path: json_path.display().to_string(),
@@ -4674,6 +4814,7 @@ pub fn run() {
             cancel_native_asr,
             prepare_local_runtime,
             record_feedback,
+            save_camera_capture_error_diagnostic,
             save_camera_snapshot_diagnostic,
             submit_image_probe,
             submit_screen_area_probe,
@@ -4901,6 +5042,10 @@ mod tests {
             virtual_screen_y: 0,
             virtual_screen_width: 3840,
             virtual_screen_height: 1080,
+            mean_luma: 42.5,
+            non_dark_pixel_count: 300,
+            total_pixel_count: 640 * 360,
+            blank: false,
         };
 
         let json_path =
@@ -4919,8 +5064,36 @@ mod tests {
         assert!(json.contains("\"submittedWidth\": 640"));
         assert!(json.contains("\"virtualScreenX\": -1920"));
         assert!(json.contains("\"scaleFactor\": 1.25"));
+        assert!(json.contains("\"meanLuma\": 42.5"));
+        assert!(json.contains("\"nonDarkPixelCount\": 300"));
+        assert!(json.contains("\"blank\": false"));
 
         fs::remove_dir_all(root).expect("remove screen diagnostic test directory");
+    }
+
+    #[test]
+    fn screen_capture_pixel_stats_marks_black_frames_blank() {
+        let rgba = vec![0_u8; 16 * 4];
+        let stats = screen_capture_pixel_stats(&rgba);
+
+        assert!(stats.blank);
+        assert_eq!(stats.non_dark_pixel_count, 0);
+        assert_eq!(stats.total_pixel_count, 16);
+    }
+
+    #[test]
+    fn screen_capture_pixel_stats_keeps_visible_frames() {
+        let mut rgba = vec![0_u8; 16 * 4];
+        for pixel in rgba.chunks_exact_mut(4).take(2) {
+            pixel[0] = 255;
+            pixel[1] = 255;
+            pixel[2] = 255;
+            pixel[3] = 255;
+        }
+
+        let stats = screen_capture_pixel_stats(&rgba);
+        assert!(!stats.blank);
+        assert_eq!(stats.non_dark_pixel_count, 2);
     }
 
     #[test]
@@ -4932,9 +5105,15 @@ mod tests {
         ));
         let diagnostics_root = root.join("diagnostics");
 
-        let diagnostic =
-            write_camera_snapshot_diagnostic(&diagnostics_root, b"fake-jpeg", 800, 450)
-                .expect("write camera diagnostic");
+        let diagnostic = write_camera_snapshot_diagnostic(
+            &diagnostics_root,
+            b"fake-jpeg",
+            800,
+            450,
+            Some("Windows Studio Effects Camera".to_string()),
+            2,
+        )
+        .expect("write camera diagnostic");
 
         let image_path = diagnostics_root
             .join("camera")
@@ -4946,9 +5125,42 @@ mod tests {
         assert_eq!(diagnostic.width, 800);
         assert_eq!(diagnostic.height, 450);
         assert_eq!(diagnostic.image_bytes, 9);
+        assert_eq!(
+            diagnostic.selected_device_label.as_deref(),
+            Some("Windows Studio Effects Camera")
+        );
+        assert_eq!(diagnostic.attempt_count, 2);
         assert!(Path::new(&diagnostic.json_path).exists());
 
         fs::remove_dir_all(root).expect("remove camera diagnostic test directory");
+    }
+
+    #[test]
+    fn camera_error_diagnostic_writes_attempts_without_images() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-camera-error-diagnostic-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        let diagnostics_root = root.join("diagnostics");
+        let diagnostic = write_camera_capture_error_diagnostic(
+            &diagnostics_root,
+            "Camera devices were found, but Iris could not open a usable camera.".to_string(),
+            vec![CameraDeviceAttemptDiagnostic {
+                attempt_id: "device-1".to_string(),
+                label: "Surface Camera Front".to_string(),
+                error_name: "NotReadableError".to_string(),
+                error_message: "Could not start video source".to_string(),
+            }],
+        )
+        .expect("write camera error diagnostic");
+
+        let json = fs::read_to_string(&diagnostic.json_path).expect("camera error json");
+        assert!(json.contains("\"attemptId\": \"device-1\""));
+        assert!(json.contains("\"label\": \"Surface Camera Front\""));
+        assert!(json.contains("\"errorName\": \"NotReadableError\""));
+
+        fs::remove_dir_all(root).expect("remove camera error diagnostic test directory");
     }
 
     #[test]
