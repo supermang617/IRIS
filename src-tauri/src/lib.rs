@@ -1,3 +1,4 @@
+mod feedback;
 mod hermes_acp;
 mod hermes_policy;
 
@@ -312,6 +313,17 @@ struct MemoryProposalResponse {
     reason: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FeedbackStatusResponse {
+    total_events: usize,
+    up_count: usize,
+    down_count: usize,
+    correction_count: usize,
+    preference_summary: String,
+    instruction_active: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct StagingDecisionRequest {
     id: u64,
@@ -618,6 +630,35 @@ fn dynamic_context_reset() -> Result<iris_dynamic_context::DynamicContextSummary
     profile.updated_ms = now;
     save_dynamic_context_profile(&profile, &policy)?;
     Ok(profile.summary(now, policy.half_life_days))
+}
+
+#[tauri::command]
+fn record_feedback(capture: feedback::FeedbackCapture) -> Result<feedback::FeedbackEvent, String> {
+    let root = workspace_root()?;
+    feedback::capture_feedback(&root, capture, timestamp_ms()?)
+}
+
+#[tauri::command]
+fn feedback_status() -> Result<FeedbackStatusResponse, String> {
+    let root = workspace_root()?;
+    let events = feedback::load_events(&root)?;
+    let summary = feedback::summarize(&events);
+    let instruction_active = feedback::instruction_block(&events).is_some();
+    Ok(FeedbackStatusResponse {
+        total_events: summary.total_events,
+        up_count: summary.up_count,
+        down_count: summary.down_count,
+        correction_count: summary.correction_count,
+        preference_summary: summary.preference_summary,
+        instruction_active,
+    })
+}
+
+#[tauri::command]
+fn export_feedback_preference_pairs() -> Result<feedback::PreferenceExport, String> {
+    let root = workspace_root()?;
+    let events = feedback::load_events(&root)?;
+    feedback::export_preference_pairs(&root, &events)
 }
 
 #[tauri::command]
@@ -1884,10 +1925,30 @@ fn save_dynamic_context_profile(
 }
 
 fn dynamic_context_instruction(now_ms: u64) -> Option<String> {
-    match load_dynamic_context_profile_or_default() {
+    let dynamic = match load_dynamic_context_profile_or_default() {
         Ok((profile, policy)) => profile.instruction_block(now_ms, policy.half_life_days),
         Err(error) => {
             eprintln!("Iris dynamic context unavailable: {error}");
+            None
+        }
+    };
+    let feedback = feedback_instruction_nonfatal();
+    match (dynamic, feedback) {
+        (Some(dynamic), Some(feedback)) => Some(format!("{dynamic}\n\n{feedback}")),
+        (Some(dynamic), None) => Some(dynamic),
+        (None, Some(feedback)) => Some(feedback),
+        (None, None) => None,
+    }
+}
+
+fn feedback_instruction_nonfatal() -> Option<String> {
+    match workspace_root()
+        .and_then(|root| feedback::load_events(&root))
+        .map(|events| feedback::instruction_block(&events))
+    {
+        Ok(instruction) => instruction,
+        Err(error) => {
+            eprintln!("Iris feedback context unavailable: {error}");
             None
         }
     }
@@ -4531,6 +4592,8 @@ pub fn run() {
             dynamic_context_set_enabled,
             dynamic_context_status,
             edit_memory,
+            export_feedback_preference_pairs,
+            feedback_status,
             generated_image_data_url,
             hermes_accept_staged_memory,
             hermes_agentic_runtime_status,
@@ -4562,6 +4625,7 @@ pub fn run() {
             native_asr_listen_once,
             cancel_native_asr,
             prepare_local_runtime,
+            record_feedback,
             save_camera_snapshot_diagnostic,
             submit_image_probe,
             submit_screen_area_probe,

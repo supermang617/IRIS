@@ -181,6 +181,67 @@ button {
   white-space: pre-wrap;
 }
 
+.feedback-panel {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(221, 233, 244, 0.08);
+  background: rgba(255, 255, 255, 0.032);
+}
+
+.feedback-panel[hidden],
+.feedback-panel input[hidden],
+.feedback-panel textarea[hidden],
+.feedback-panel button[hidden] {
+  display: none;
+}
+
+.feedback-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.feedback-button.active {
+  border-color: rgba(112, 168, 255, 0.68);
+  background: rgba(112, 168, 255, 0.16);
+  color: var(--accent-strong);
+}
+
+.feedback-panel input,
+.feedback-panel textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(220, 233, 244, 0.16);
+  border-radius: 8px;
+  outline: 0;
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--text-primary);
+}
+
+.feedback-panel input {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.feedback-panel textarea {
+  min-height: 38px;
+  max-height: 92px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.feedback-save {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(112, 168, 255, 0.42);
+  border-radius: 8px;
+  background: rgba(112, 168, 255, 0.14);
+  color: var(--text-primary);
+}
+
 .response-resize-handle {
   position: relative;
   display: flex;

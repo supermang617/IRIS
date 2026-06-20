@@ -17,6 +17,12 @@ import {
   parseDynamicContextCommand
 } from "./dynamic-context-state.js";
 import {
+  buildFeedbackCapture,
+  createFeedbackTurn,
+  feedbackFieldsVisible,
+  formatFeedbackStatus
+} from "./feedback-state.js";
+import {
   clampResponseHeight,
   composerHeightFor,
   responseDefaultHeight,
@@ -68,6 +74,13 @@ const elements = {
   browserPreviewClose: document.querySelector("#browser-preview-close"),
   browserPreviewImage: document.querySelector("#browser-preview-image"),
   browserUrl: document.querySelector("#browser-url"),
+  feedbackCorrection: document.querySelector("#feedback-correction"),
+  feedbackDown: document.querySelector("#feedback-down"),
+  feedbackExport: document.querySelector("#feedback-export"),
+  feedbackPanel: document.querySelector("#feedback-panel"),
+  feedbackReason: document.querySelector("#feedback-reason"),
+  feedbackSave: document.querySelector("#feedback-save"),
+  feedbackUp: document.querySelector("#feedback-up"),
   hudForm: document.querySelector("#hud-form"),
   hudInput: document.querySelector("#hud-input"),
   hudOutput: document.querySelector("#hud-output"),
@@ -113,8 +126,12 @@ let memoryPanelOpen = false;
 let cameraCaptureInProgress = false;
 let activeApprovalResolver = null;
 let browserPreviewRestoreHeight = null;
+let lastFeedbackTurn = null;
+let selectedFeedbackRating = null;
 const conversationHistory = [];
 const maxHistoryTurns = 8;
+const feedbackModelId = "huihui_ai/gemma-4-abliterated:e2b";
+const feedbackProvider = "ollama_local";
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
 const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
@@ -274,6 +291,71 @@ async function warmModel() {
   }
 }
 
+function showFeedbackForTurn(turn) {
+  lastFeedbackTurn = turn;
+  selectedFeedbackRating = null;
+  elements.feedbackUp.classList.remove("active");
+  elements.feedbackDown.classList.remove("active");
+  elements.feedbackReason.value = "";
+  elements.feedbackCorrection.value = "";
+  elements.feedbackReason.hidden = true;
+  elements.feedbackCorrection.hidden = true;
+  elements.feedbackSave.hidden = true;
+  elements.feedbackPanel.hidden = !turn;
+}
+
+function hideFeedbackPanel() {
+  lastFeedbackTurn = null;
+  selectedFeedbackRating = null;
+  elements.feedbackPanel.hidden = true;
+}
+
+function setFeedbackRating(rating) {
+  if (!lastFeedbackTurn) {
+    return;
+  }
+  selectedFeedbackRating = rating;
+  elements.feedbackUp.classList.toggle("active", rating === "up");
+  elements.feedbackDown.classList.toggle("active", rating === "down");
+  const showFields = feedbackFieldsVisible(rating);
+  elements.feedbackReason.hidden = !showFields;
+  elements.feedbackCorrection.hidden = !showFields;
+  elements.feedbackSave.hidden = false;
+  if (!showFields) {
+    elements.feedbackReason.value = "";
+    elements.feedbackCorrection.value = "";
+  }
+}
+
+async function saveSelectedFeedback() {
+  const capture = buildFeedbackCapture(
+    lastFeedbackTurn,
+    selectedFeedbackRating,
+    elements.feedbackReason.value,
+    elements.feedbackCorrection.value
+  );
+  if (!capture) {
+    return;
+  }
+  try {
+    await call("record_feedback", { capture });
+    const status = await call("feedback_status");
+    elements.hudOutput.textContent = formatFeedbackStatus(status);
+    showFeedbackForTurn(null);
+  } catch (error) {
+    elements.hudOutput.textContent = `Feedback was not saved: ${error}`;
+  }
+}
+
+async function exportFeedbackPairs() {
+  try {
+    const result = await call("export_feedback_preference_pairs");
+    elements.hudOutput.textContent = `Preference-pair export complete.\nPairs: ${result.pairCount}\nSaved: ${result.path}`;
+  } catch (error) {
+    elements.hudOutput.textContent = `Preference-pair export failed: ${error}`;
+  }
+}
+
 async function warmRuntimeBeforeListening() {
   elements.hudOutput.textContent = "Iris is starting.";
   let runtimeReady = false;
@@ -316,6 +398,7 @@ async function submitMessage(text, source = "typed") {
     resizeComposerInput();
   }
   const latencyTrace = new VoiceLatencyTrace();
+  hideFeedbackPanel();
   if (pendingVoiceLatency) {
     latencyTrace.applyAsr(pendingVoiceLatency);
     pendingVoiceLatency = null;
@@ -366,6 +449,15 @@ async function submitMessage(text, source = "typed") {
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", documentAttached ? `[document] ${originalText}` : originalText);
     rememberTurn("iris", response.text);
+    showFeedbackForTurn(createFeedbackTurn({
+      source: documentAttached ? "document" : source,
+      userText: documentAttached ? `[document] ${originalText}` : originalText,
+      assistantText: response.text,
+      modelId: feedbackModelId,
+      provider: feedbackProvider,
+      tools: documentAttached ? ["attachment"] : [],
+      latencyMs: response.model_elapsed_ms
+    }));
     logVoice(
       "turn_complete",
       `${source}; model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`
@@ -399,6 +491,7 @@ async function submitImageMessage(prompt, latencyTrace) {
 
   const turnStarted = performance.now();
   thinking = true;
+  hideFeedbackPanel();
   logVoice("image_probe_start", `bytes=${image.bytes.length}`);
   setInputsDisabled(true);
   elements.hudOutput.textContent = `Image selected.\n\nThinking locally...`;
@@ -412,6 +505,15 @@ async function submitImageMessage(prompt, latencyTrace) {
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", `[image] ${prompt}`);
     rememberTurn("iris", response.text);
+    showFeedbackForTurn(createFeedbackTurn({
+      source: "image",
+      userText: `[image] ${prompt}`,
+      assistantText: response.text,
+      modelId: feedbackModelId,
+      provider: feedbackProvider,
+      tools: ["vision"],
+      latencyMs: response.model_elapsed_ms
+    }));
     logVoice(
       "image_probe_complete",
       `model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`
@@ -450,6 +552,7 @@ async function submitScreenAreaMessage() {
   const prompt = elements.hudInput.value.trim() || defaultScreenPrompt;
   const turnStarted = performance.now();
   thinking = true;
+  hideFeedbackPanel();
   logVoice("screen_probe_start", "area-under-iris");
   setInputsDisabled(true);
   elements.hudInput.value = "";
@@ -461,6 +564,15 @@ async function submitScreenAreaMessage() {
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", `[screen] ${prompt}`);
     rememberTurn("iris", response.text);
+    showFeedbackForTurn(createFeedbackTurn({
+      source: "screen",
+      userText: `[screen] ${prompt}`,
+      assistantText: response.text,
+      modelId: feedbackModelId,
+      provider: feedbackProvider,
+      tools: ["screen"],
+      latencyMs: response.model_elapsed_ms
+    }));
     if (response.diagnostic_path) {
       logVoice("screen_probe_diagnostic", response.diagnostic_path);
     }
@@ -505,6 +617,17 @@ async function handleMemoryCommand(text) {
   }
   const clean = String(text || "").trim();
   const dynamicContextCommand = parseDynamicContextCommand(clean);
+  if (/^feedback\s+status$/i.test(clean)) {
+    const status = await call("feedback_status");
+    elements.hudOutput.textContent = formatFeedbackStatus(status);
+    hideFeedbackPanel();
+    return true;
+  }
+  if (/^feedback\s+export$/i.test(clean)) {
+    await exportFeedbackPairs();
+    hideFeedbackPanel();
+    return true;
+  }
   if (dynamicContextCommand.action === "status") {
     const status = await call("dynamic_context_status");
     elements.hudOutput.textContent = formatDynamicContextStatus(status);
@@ -628,7 +751,7 @@ async function handleMemoryCommand(text) {
 
   if (/^memory\s+help$/i.test(clean)) {
     elements.hudOutput.textContent =
-      "Memory and context commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\ndynamic context\ndynamic context on\ndynamic context off\ndynamic context reset\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Dynamic context stores only decaying aggregate communication metrics. Online, browser, and research requests can be asked directly through Iris.";
+      "Memory and context commands:\nremember: <text>\nmemory list\nmemory edit <number>: <text>\nmemory delete <number>\ndynamic context\ndynamic context on\ndynamic context off\ndynamic context reset\nfeedback status\nfeedback export\nhermes: <task>\nhermes research: <task>\nhermes code: <task>\nhermes status\nhermes mode off\nhermes mode safe\nhermes agentic C:\\path\\to\\workspace\nhermes session end\nhermes staging\nhermes accept <number>\nhermes reject <number>\n\nIris stores up to 40 short memories. Dynamic context stores only decaying aggregate communication metrics. Feedback stores local ratings and corrections for preference summaries and export only. Online, browser, and research requests can be asked directly through Iris.";
     return true;
   }
 
@@ -658,6 +781,7 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
       await hideBrowserPreview();
     }
     thinking = true;
+    hideFeedbackPanel();
     setInputsDisabled(true);
     elements.hudOutput.textContent =
       mode === "research"
@@ -676,6 +800,14 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
         }
       }
       elements.hudOutput.textContent = output;
+      showFeedbackForTurn(createFeedbackTurn({
+        source: `hermes-agentic-${mode}`,
+        userText: clean,
+        assistantText: output,
+        modelId: feedbackModelId,
+        provider: "hermes_acp",
+        tools: ["hermes", "agentic"]
+      }));
       const preview = latestBrowserPreview(response?.events);
       if (preview) {
         await showBrowserPreview(preview);
@@ -687,6 +819,7 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
     }
     return;
   }
+  hideFeedbackPanel();
   elements.hudOutput.textContent = route === "implicit" ? "Iris is checking current sources." : "Hermes thinking locally.";
   const response = await call("hermes_submit_task", {
     request: {
@@ -697,7 +830,16 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
   });
   const responseText = formatHermesMemoryTaskText(response.text, response.memoryProposals, clean);
   const staged = formatHermesTaskStagedSection(response.memoryProposals);
-  elements.hudOutput.textContent = route === "implicit" ? `Iris found this:\n\n${responseText}${staged}` : `${responseText}${staged}`;
+  const output = route === "implicit" ? `Iris found this:\n\n${responseText}${staged}` : `${responseText}${staged}`;
+  elements.hudOutput.textContent = output;
+  showFeedbackForTurn(createFeedbackTurn({
+    source: `hermes-safe-${mode}`,
+    userText: clean,
+    assistantText: output,
+    modelId: feedbackModelId,
+    provider: "hermes_sidecar",
+    tools: ["hermes", mode]
+  }));
 }
 
 async function runImageGeneration(text) {
@@ -720,6 +862,7 @@ async function runImageGeneration(text) {
     await hideBrowserPreview();
   }
   thinking = true;
+  hideFeedbackPanel();
   setInputsDisabled(true);
   elements.hudOutput.textContent = "Iris is generating the image.";
   try {
@@ -731,6 +874,14 @@ async function runImageGeneration(text) {
     });
     elements.hudOutput.textContent = formatImageGenerationResult(response);
     await showGeneratedImagePreview(response);
+    showFeedbackForTurn(createFeedbackTurn({
+      source: "image-generation",
+      userText: clean,
+      assistantText: formatImageGenerationResult(response),
+      modelId: response?.provenance?.model || feedbackModelId,
+      provider: response?.provenance?.provider || "image_provider",
+      tools: ["image_generation"]
+    }));
   } catch (error) {
     elements.hudOutput.textContent = `Image generation failed: ${error}`;
   } finally {
@@ -1205,6 +1356,12 @@ function setInputsDisabled(disabled) {
   elements.memoryButton.disabled = gatedDisabled;
   elements.memoryAddButton.disabled = gatedDisabled;
   elements.memoryAddInput.disabled = gatedDisabled;
+  elements.feedbackUp.disabled = gatedDisabled;
+  elements.feedbackDown.disabled = gatedDisabled;
+  elements.feedbackSave.disabled = gatedDisabled;
+  elements.feedbackExport.disabled = gatedDisabled;
+  elements.feedbackReason.disabled = gatedDisabled;
+  elements.feedbackCorrection.disabled = gatedDisabled;
 }
 
 function renderPanicStop() {
@@ -1257,6 +1414,14 @@ elements.approvalAllow.addEventListener("click", () => hideAgenticApproval(true)
 elements.approvalDeny.addEventListener("click", () => hideAgenticApproval(false));
 elements.browserPreviewClose.addEventListener("click", () => {
   void hideBrowserPreview();
+});
+elements.feedbackUp.addEventListener("click", () => setFeedbackRating("up"));
+elements.feedbackDown.addEventListener("click", () => setFeedbackRating("down"));
+elements.feedbackSave.addEventListener("click", () => {
+  void saveSelectedFeedback();
+});
+elements.feedbackExport.addEventListener("click", () => {
+  void exportFeedbackPairs();
 });
 
 function setListening(nextListening) {

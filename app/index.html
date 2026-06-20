@@ -24,6 +24,35 @@
           <output id="hud-output" class="hud-output" aria-live="polite">Waiting for input.</output>
         </section>
 
+        <section id="feedback-panel" class="feedback-panel" aria-label="Response feedback" hidden>
+          <div class="feedback-actions" role="group" aria-label="Rate Iris response">
+            <button id="feedback-up" class="icon-button feedback-button" type="button" title="Good response" aria-label="Good response">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 11v9" />
+                <path d="M11 11 13 4a2 2 0 0 1 3 2l-1 5h4a2 2 0 0 1 2 2.4l-1 5A2 2 0 0 1 18 20H7" />
+                <path d="M3 11h4v9H3Z" />
+              </svg>
+            </button>
+            <button id="feedback-down" class="icon-button feedback-button" type="button" title="Bad response" aria-label="Bad response">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 13V4" />
+                <path d="M11 13 13 20a2 2 0 0 0 3-2l-1-5h4a2 2 0 0 0 2-2.4l-1-5A2 2 0 0 0 18 4H7" />
+                <path d="M3 4h4v9H3Z" />
+              </svg>
+            </button>
+            <button id="feedback-export" class="icon-button feedback-button" type="button" title="Export preference pairs" aria-label="Export preference pairs">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3v12" />
+                <path d="m7 10 5 5 5-5" />
+                <path d="M5 21h14" />
+              </svg>
+            </button>
+          </div>
+          <input id="feedback-reason" maxlength="280" autocomplete="off" placeholder="Optional reason" hidden />
+          <textarea id="feedback-correction" maxlength="2000" rows="2" placeholder="Optional correction: what should Iris have said?" hidden></textarea>
+          <button id="feedback-save" class="feedback-save" type="button" hidden>Save</button>
+        </section>
+
         <div
           id="response-resize-handle"
           class="response-resize-handle"
