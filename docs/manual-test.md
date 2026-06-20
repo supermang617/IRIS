@@ -96,13 +96,13 @@ Expected:
 - Natural Iris requests such as `generate an image of Iris as an electric blue logo` open an approval request, call the configured provider only after approval, save the file under `.iris-data\generated-images`, and show the generated preview.
 - Hermes can propose staged memory, and Iris can transfer it into active memory only after explicit `hermes accept <number>`.
 - Hermes cannot access raw memory files.
-- Hermes cannot access OneDrive.
+- Hermes cannot access cloud-sync storage.
 - Hermes cannot run commands, edit files, control browsers/windows, use clipboard, or operate the computer.
 - Memory search is enabled for local approved memory by default.
 - Memory proposals go to staging and require Iris/user approval before promotion.
-- OneDrive archive export remains unavailable until real encryption is implemented.
-- OneDrive paths are cold archive only and must end with `.iris-memory-archive.enc`.
-- Live memory JSON/SQLite stores must not be placed under OneDrive.
+- Memory archive export remains unavailable until real local encryption is implemented.
+- Archive paths must be local Iris-owned paths and must end with `.iris-memory-archive.enc`.
+- Live memory JSON/SQLite stores must not be placed under cloud-sync folders.
 
 ## If Wake Word Fails
 

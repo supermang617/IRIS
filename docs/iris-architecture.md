@@ -39,7 +39,7 @@ This boundary is the prompt-injection defense: a malicious image, document, or
 webpage can be described by Iris, but it should not become an instruction to
 Iris.
 
-## Iris, Hermes, And OneDrive
+## Iris, Hermes, And Local Memory
 
 The architecture separates responsibility:
 
@@ -48,11 +48,11 @@ The architecture separates responsibility:
 - Safe Hermes is a restricted text-only sidecar foundation. It can query approved
   memory through a local broker, perform explicit user-requested web research,
   and propose memory into staging. It cannot write
-  active memory, access raw memory files, access OneDrive, run commands, edit
+  active memory, access raw memory files, access cloud-sync storage, run commands, edit
   files, browse, use the clipboard, or control the computer.
-- OneDrive is currently a policy target for encrypted cold archive only. Active
-  memory is local and Iris-owned. Live SQLite or JSON memory stores must not be
-  placed under OneDrive.
+- Active memory is local and Iris-owned. Live SQLite or JSON memory stores must
+  not be placed in cloud-sync folders. Future archive files should be local,
+  encrypted Iris-owned exports with explicit import reconciliation.
 
 Hermes has three explicit process-local modes:
 
@@ -72,10 +72,10 @@ uses the session approval; high-risk work requires separate confirmation. Every
 result returns source and provenance to Iris; only Iris can accept a staged
 proposal into durable memory.
 
-The future goal is clear: a user should be able to install Iris, authenticate to
-their own storage, restore an encrypted user-approved memory archive, and pick up
-where they left off. That is not fully active in v1. The current release has
-the safety scaffolding and policy checks needed to build toward it without
+The future goal is clear: a user should be able to install Iris, restore an
+encrypted user-approved memory archive from local storage, and pick up where
+they left off. That is not fully active in v1. The current release has the
+safety scaffolding and policy checks needed to build toward it without
 pretending private memory roaming is already complete.
 
 ## Why The Architecture Is Careful

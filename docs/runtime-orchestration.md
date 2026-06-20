@@ -150,7 +150,7 @@ Do not enable:
 - shell/process execution outside an explicitly approved Agentic Session;
 - fallback models or model auto-selection;
 - parallel Hermes inference streams;
-- live memory databases inside OneDrive.
+- live memory databases inside cloud-sync folders.
 
 Those changes would weaken the local-only safety model and make manual testing
 harder to trust.

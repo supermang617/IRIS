@@ -38,7 +38,7 @@ Hermes has Off, Safe, and Agentic Session modes. Safe is the startup default.
   reviewed local tools after explicit session activation; sensitive,
   destructive, install/admin, credential, and scope-expanding work requires
   separate approval.
-- General window automation, clipboard access, OneDrive access, and arbitrary
+- General window automation, clipboard access, cloud-sync storage access, and arbitrary
   plugin loading remain unavailable. Agentic browser automation uses only the
   pinned isolated browser runtime and dedicated profile.
 
@@ -48,10 +48,9 @@ Hermes memory proposals go to staging. Iris/user approval is required before pro
 
 - Active memory is local and Iris-owned.
 - Hermes staging memory is local and Iris-owned.
-- OneDrive sync is disabled by default.
-- OneDrive is cold archive only.
+- Cloud-sync memory storage is not part of v1.
 - Archive targets must use `.iris-memory-archive.enc`.
-- Live SQLite/JSON memory stores must not be placed under OneDrive.
+- Live SQLite/JSON memory stores must not be placed under cloud-sync folders.
 - Archive export is unavailable until real encryption is implemented.
 - Import requires Iris reconciliation.
 

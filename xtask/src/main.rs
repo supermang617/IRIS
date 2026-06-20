@@ -424,7 +424,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "enabled for local memory query/proposal by default",
         "iris_query_memory",
         "iris_propose_memory",
-        "OneDrive",
+        "Cloud-sync storage is not part of v1",
         ".iris-memory-archive.enc",
     ] {
         if !readme.contains(required) {
@@ -457,7 +457,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         }
     }
     if !security.contains("Hermes raw memory database/file access")
-        || !security.contains("Hermes OneDrive access")
+        || !security.contains("Hermes cloud-sync storage access")
     {
         return Err("SECURITY.md missing Hermes boundary notes".to_string());
     }
@@ -535,9 +535,9 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !architecture.contains("That is not fully active in v1")
         || !architecture.contains("prompt-injection defense")
-        || !architecture.contains("OneDrive is currently a policy target")
+        || !architecture.contains("Active memory is local and Iris-owned")
     {
-        return Err("architecture doc must distinguish current Iris/Hermes/OneDrive capability from future memory roaming".to_string());
+        return Err("architecture doc must distinguish current Iris/Hermes/local-memory capability from future memory roaming".to_string());
     }
     if !installer.contains("Iris Setup Wizard.bat")
         || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
@@ -869,15 +869,15 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "\"fail_closed\": true",
         "\"direct_database_access\": false",
         "\"active_memory_write\": false",
-        "\"onedrive_sync_enabled_by_default\": false",
+        "\"cloud_sync_enabled_by_default\": false",
         "\"active_memory_location\": \"local_iris_owned_only\"",
-        "\"cold_archive_location\": \"onedrive_encrypted_only\"",
+        "\"archive_location\": \"local_iris_owned_only\"",
         "\"archive_extension\": \".iris-memory-archive.enc\"",
         "\"export_requires_encryption\": true",
         "\"import_requires_iris_reconciliation\": true",
-        "\"hermes_onedrive_access\": false",
-        "\"live_sqlite_on_onedrive\": false",
-        "\"live_json_memory_on_onedrive\": false",
+        "\"hermes_cloud_storage_access\": false",
+        "\"live_sqlite_on_cloud_sync\": false",
+        "\"live_json_memory_on_cloud_sync\": false",
         "\"export_available\": false",
         "\"acting_tools\": []",
         "\"external_network\": true",
@@ -1699,18 +1699,18 @@ mod tests {
     }
 
     #[test]
-    fn hermes_profile_declares_phase6_onedrive_archive_boundary() {
+    fn hermes_profile_declares_local_archive_boundary() {
         let profile = read(test_root().join("profiles/iris_restricted.json")).unwrap();
 
-        assert!(profile.contains("\"onedrive_sync_enabled_by_default\": false"));
+        assert!(profile.contains("\"cloud_sync_enabled_by_default\": false"));
         assert!(profile.contains("\"active_memory_location\": \"local_iris_owned_only\""));
-        assert!(profile.contains("\"cold_archive_location\": \"onedrive_encrypted_only\""));
+        assert!(profile.contains("\"archive_location\": \"local_iris_owned_only\""));
         assert!(profile.contains("\"archive_extension\": \".iris-memory-archive.enc\""));
         assert!(profile.contains("\"export_requires_encryption\": true"));
         assert!(profile.contains("\"import_requires_iris_reconciliation\": true"));
-        assert!(profile.contains("\"hermes_onedrive_access\": false"));
-        assert!(profile.contains("\"live_sqlite_on_onedrive\": false"));
-        assert!(profile.contains("\"live_json_memory_on_onedrive\": false"));
+        assert!(profile.contains("\"hermes_cloud_storage_access\": false"));
+        assert!(profile.contains("\"live_sqlite_on_cloud_sync\": false"));
+        assert!(profile.contains("\"live_json_memory_on_cloud_sync\": false"));
         assert!(profile.contains("\"export_available\": false"));
     }
 

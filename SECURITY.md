@@ -18,7 +18,7 @@ Forbidden by default:
 - Writes outside Iris-owned directories.
 - Hermes active-memory writes.
 - Hermes raw memory database/file access.
-- Hermes OneDrive access.
+- Hermes cloud-sync storage access.
 
 Allowed local boundaries:
 

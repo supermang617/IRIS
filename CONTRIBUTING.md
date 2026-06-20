@@ -27,7 +27,7 @@ IRIS is currently open for bug fixes, diagnostics fixes, documentation fixes, co
 - UI redesigns.
 - Feature expansions beyond the current safety envelope.
 - Changes that weaken Hermes restrictions.
-- Live memory storage under OneDrive.
+- Live memory storage under cloud-sync folders.
 
 ## Validation Before a PR
 

@@ -10,7 +10,7 @@ The current public baseline is intentionally narrower than a full memory product
 - Hermes can query approved memory only through the loopback Iris broker.
 - Hermes can propose memory only into staging.
 - Iris/user approval is required before any staged proposal becomes active memory.
-- OneDrive is cold archive only, disabled by default, and requires `.iris-memory-archive.enc` archive names.
+- Cloud-sync storage is not part of Iris memory; future local archives require `.iris-memory-archive.enc` archive names.
 - Archive export remains unavailable until real encryption is implemented.
 
 Do not add UI panels, settings, SQLite, Postgres, Redis, Docker, Honcho, pgvector, embeddings, background agents, cloud, telemetry, dependencies, unrelated abstractions, unrelated refactors, or unrelated cleanup for memory unless Alejandro explicitly approves the new scope.

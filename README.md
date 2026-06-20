@@ -24,7 +24,7 @@ This repository is public and source-first so people can inspect, test, and subm
   adapt response presentation with a 30-day decay and explicit on/off/reset controls.
 - Hermes: Safe mode uses the restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal by default. Agentic Session uses pinned Hermes Agent 0.16.0 through an Iris-supervised local ACP bridge.
 - Hermes modes: Off, Safe, and Agentic Session are implemented. Safe is the startup default. Agentic supports supervised local text, file, PowerShell, process, and isolated browser tasks plus Iris-owned RAG and staged memory proposals.
-- OneDrive archive: cold, encrypted archive names must end with `.iris-memory-archive.enc`.
+- Local archive policy: Iris memory stays in Iris-owned local storage. Future archive files must use `.iris-memory-archive.enc` and must not live in cloud-sync folders.
 
 ## Future of IRIS
 
@@ -35,14 +35,14 @@ release separates user instructions from untrusted evidence such
 as images, documents, screen text, memory search results, Hermes output, and
 model output. The boundary keeps prompt injection from becoming permissive.
 
-Iris, Hermes, and RAG/OneDrive have separate roles. Iris owns your local memory and
+Iris, Hermes, and RAG have separate roles. Iris owns your local memory and
 the final response path. Safe Hermes is a restricted text-only helper that can query
 approved memory and propose staged memory. Agentic Hermes provides supervised local ACP
 reasoning and approval-gated file, PowerShell, process, and isolated browser work through the same
 Iris-owned RAG and staging authority.
-OneDrive is limited to an encrypted cold-archive;
-future releases should build toward user-approved memory restore across machines
-without putting live memory databases directly in OneDrive.
+Cloud-sync storage is not part of v1. Future archive or restore work should use
+explicit local Iris-owned exports first, with user-reviewed import reconciliation
+instead of putting live memory databases in sync folders.
 
 ## Project Map
 

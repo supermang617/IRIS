@@ -217,13 +217,13 @@ Bug fixes, compatibility repairs, diagnostics fixes, documentation corrections, 
 
 ## Architecture Notes
 
-See `docs/iris-architecture.md` for the current Iris/Hermes/OneDrive boundary.
+See `docs/iris-architecture.md` for the current Iris/Hermes/local-memory boundary.
 See `docs/windows-installer.md` for installer, shortcut, upgrade, and uninstall
 behavior.
 See `docs/signed-installer-decision.md` for the MSIX/App Installer signing
 decision and current toolchain blockers.
 See `docs/runtime-orchestration.md` for how Iris, Ollama, and Hermes should run
 together during manual testing.
-In v1, Iris can use local memory and restricted Hermes staging. OneDrive is
-not an active live-memory sync feature yet; it is a future encrypted cold-archive
-and restore direction.
+In v1, Iris can use local memory and restricted Hermes staging. Cloud-sync
+storage is not part of Iris memory or archive behavior; memory remains
+Iris-owned and local.

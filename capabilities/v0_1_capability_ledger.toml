@@ -136,7 +136,7 @@ may_write_logs = false
 may_call_model_inference = false
 
 [crate.iris-tauri]
-allowed = ["dashboard_command_bridge", "typed_hud_command_bridge", "local_dynamic_context_profile", "native_microphone_asr", "kokoro_tts_helper_process", "iris_owned_tts_temp_wav", "user_provided_image_probe", "one_shot_camera_probe", "one_shot_screen_area_probe", "restricted_local_memory_broker", "hermes_sidecar_lifecycle", "hermes_memory_staging", "agentic_acp_stdio_bridge", "agentic_session_file_tools", "agentic_session_powershell", "agentic_process_supervision", "agentic_action_audit", "onedrive_cold_archive_policy", "diagnostic_logs"]
+allowed = ["dashboard_command_bridge", "typed_hud_command_bridge", "local_dynamic_context_profile", "native_microphone_asr", "kokoro_tts_helper_process", "iris_owned_tts_temp_wav", "user_provided_image_probe", "one_shot_camera_probe", "one_shot_screen_area_probe", "restricted_local_memory_broker", "hermes_sidecar_lifecycle", "hermes_memory_staging", "agentic_acp_stdio_bridge", "agentic_session_file_tools", "agentic_session_powershell", "agentic_process_supervision", "agentic_action_audit", "local_memory_archive_policy", "diagnostic_logs"]
 forbidden = ["input_simulation", "clipboard_read", "clipboard_write", "browser_automation", "window_control", "automation_tools", "runtime_network_background", "plugin_loading", "model_loading", "model_pulling", "model_switching", "fallback_models"]
 allowed_roots = ["iris_owned"]
 may_depend_on = ["iris-config", "iris-dynamic-context", "iris-hardware", "iris-ollama", "iris-status", "iris-ui"]

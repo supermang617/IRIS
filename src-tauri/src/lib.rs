@@ -345,7 +345,7 @@ struct HermesStatusResponse {
     tools: Vec<String>,
     acting_tools: Vec<String>,
     search_enabled: bool,
-    onedrive_sync_enabled: bool,
+    cloud_sync_enabled: bool,
     sequential_tasks_only: bool,
     runtime_tool_audit_passed: bool,
 }
@@ -376,12 +376,13 @@ struct HermesSafetyAuditResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MemoryArchivePolicyResponse {
-    onedrive_sync_enabled: bool,
+    cloud_sync_enabled: bool,
     active_memory_local_only: bool,
+    local_archive_only: bool,
     encrypted_archive_required: bool,
-    hermes_onedrive_access_allowed: bool,
+    hermes_cloud_storage_access_allowed: bool,
     import_requires_iris_reconciliation: bool,
-    live_sqlite_on_onedrive_allowed: bool,
+    live_sqlite_on_cloud_sync_allowed: bool,
     export_available: bool,
     allowed_archive_extension: &'static str,
 }
@@ -685,7 +686,7 @@ fn hermes_status() -> HermesStatusResponse {
         tools: Vec::new(),
         acting_tools: Vec::new(),
         search_enabled: false,
-        onedrive_sync_enabled: false,
+        cloud_sync_enabled: false,
         sequential_tasks_only: true,
         runtime_tool_audit_passed: false,
     })
@@ -943,7 +944,7 @@ fn validate_memory_archive_destination(
     match validate_cold_archive_destination(&request.path) {
         Ok(()) => MemoryArchiveDestinationResponse {
             ok: true,
-            reason: "archive destination is an encrypted OneDrive cold archive path".to_string(),
+            reason: "archive destination is an encrypted local Iris archive path".to_string(),
         },
         Err(reason) => MemoryArchiveDestinationResponse { ok: false, reason },
     }
@@ -2031,12 +2032,13 @@ fn staging_memory_file_path() -> Result<std::path::PathBuf, String> {
 
 fn memory_archive_policy_snapshot() -> MemoryArchivePolicyResponse {
     MemoryArchivePolicyResponse {
-        onedrive_sync_enabled: env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
+        cloud_sync_enabled: false,
         active_memory_local_only: true,
+        local_archive_only: true,
         encrypted_archive_required: true,
-        hermes_onedrive_access_allowed: false,
+        hermes_cloud_storage_access_allowed: false,
         import_requires_iris_reconciliation: true,
-        live_sqlite_on_onedrive_allowed: false,
+        live_sqlite_on_cloud_sync_allowed: false,
         export_available: false,
         allowed_archive_extension: ".iris-memory-archive.enc",
     }
@@ -2048,8 +2050,11 @@ fn validate_cold_archive_destination(path: &str) -> Result<(), String> {
         return Err("archive destination cannot be empty".to_string());
     }
     let lower = clean.to_ascii_lowercase();
-    if !lower.contains("onedrive") {
-        return Err("archive destination must be a OneDrive cold archive path".to_string());
+    if is_cloud_sync_path(&lower) {
+        return Err(
+            "archive destination must be local Iris-owned storage, not a cloud sync path"
+                .to_string(),
+        );
     }
     if !lower.ends_with(".iris-memory-archive.enc") {
         return Err("archive destination must use .iris-memory-archive.enc".to_string());
@@ -2066,10 +2071,26 @@ fn validate_cold_archive_destination(path: &str) -> Result<(), String> {
         ".db",
     ] {
         if lower.contains(forbidden) {
-            return Err("live memory stores must not be placed in OneDrive".to_string());
+            return Err(
+                "live memory stores must not be archived from active Iris data files".to_string(),
+            );
         }
     }
     Ok(())
+}
+
+fn is_cloud_sync_path(lower_path: &str) -> bool {
+    [
+        "google drive",
+        "googledrive",
+        "cloudsync",
+        "cloud sync",
+        "dropbox",
+        "icloud",
+        "box sync",
+    ]
+    .iter()
+    .any(|needle| lower_path.contains(needle))
 }
 
 fn load_staged_memory_proposals() -> Result<Vec<StagedMemoryProposal>, String> {
@@ -2454,12 +2475,6 @@ fn start_hermes_memory_broker_if_enabled() {
     });
 }
 
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-}
-
 fn env_flag_default(name: &str, default: bool) -> bool {
     std::env::var(name)
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
@@ -2632,7 +2647,7 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
                 "hermesMode": policy.mode,
                 "panicStopActive": policy.panic_stop_active,
                 "searchEnabled": hermes_memory_search_enabled(),
-                "onedriveSyncEnabled": env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
+                "cloudSyncEnabled": false,
                 "inferenceProvider": hermes_inference_provider()
             }))
         }
@@ -2781,7 +2796,7 @@ fn hermes_status_snapshot() -> Result<HermesStatusResponse, String> {
         tools,
         acting_tools,
         search_enabled: hermes_memory_search_enabled(),
-        onedrive_sync_enabled: env_flag("IRIS_ONEDRIVE_MEMORY_SYNC"),
+        cloud_sync_enabled: false,
         sequential_tasks_only: true,
         runtime_tool_audit_passed: !hermes_sidecar_running()
             || audit_hermes_runtime_tool_registry().is_ok(),
@@ -5545,34 +5560,35 @@ mod tests {
     fn memory_archive_policy_is_disabled_encrypted_and_iris_owned() {
         let policy = memory_archive_policy_snapshot();
 
-        assert!(!policy.onedrive_sync_enabled);
+        assert!(!policy.cloud_sync_enabled);
         assert!(policy.active_memory_local_only);
+        assert!(policy.local_archive_only);
         assert!(policy.encrypted_archive_required);
-        assert!(!policy.hermes_onedrive_access_allowed);
+        assert!(!policy.hermes_cloud_storage_access_allowed);
         assert!(policy.import_requires_iris_reconciliation);
-        assert!(!policy.live_sqlite_on_onedrive_allowed);
+        assert!(!policy.live_sqlite_on_cloud_sync_allowed);
         assert!(!policy.export_available);
         assert_eq!(policy.allowed_archive_extension, ".iris-memory-archive.enc");
     }
 
     #[test]
-    fn memory_archive_destination_requires_encrypted_onedrive_cold_archive() {
+    fn memory_archive_destination_requires_encrypted_local_archive() {
         assert!(
             validate_cold_archive_destination(
-                "C:/Users/Alejandro/OneDrive/Iris/archive-2026.iris-memory-archive.enc"
+                "C:/Users/Alejandro/Iris/archive-2026.iris-memory-archive.enc"
             )
             .is_ok()
         );
         assert!(
-            validate_cold_archive_destination("C:/tmp/archive.iris-memory-archive.enc").is_err()
+            validate_cold_archive_destination(
+                "C:/Users/Alejandro/CloudSync/Iris/archive-2026.iris-memory-archive.enc"
+            )
+            .is_err()
         );
-        assert!(
-            validate_cold_archive_destination("C:/Users/Alejandro/OneDrive/Iris/archive.json")
-                .is_err()
-        );
+        assert!(validate_cold_archive_destination("C:/Users/Alejandro/Iris/archive.json").is_err());
         assert!(
             validate_cold_archive_destination(
-                "C:/Users/Alejandro/OneDrive/Iris/iris_active.db.iris-memory-archive.enc"
+                "C:/Users/Alejandro/Iris/iris_active.db.iris-memory-archive.enc"
             )
             .is_err()
         );

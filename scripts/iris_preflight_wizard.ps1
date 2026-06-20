@@ -332,7 +332,7 @@ foreach ($result in $results) {
     $lines.Add("  Next: $($result.Repair)") | Out-Null
 }
 $lines.Add("") | Out-Null
-$lines.Add("This preflight is read-only. It does not install, download, pull models, change services, edit PATH, or modify OneDrive.") | Out-Null
+$lines.Add("This preflight is read-only. It does not install, download, pull models, change services, edit PATH, or modify cloud-sync storage.") | Out-Null
 Set-Content -LiteralPath $reportPath -Value $lines -Encoding utf8
 
 $jsonChecks = @($results | ForEach-Object {

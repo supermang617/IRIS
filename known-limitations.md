@@ -24,7 +24,7 @@ This repository is a Windows-only v1 local-first release.
 - Safe Hermes is enabled by default for restricted local reasoning, RAG, staged memory proposals, and explicit web research. It is not an acting plugin system.
 - Off/Safe/Agentic Session policy, expiry, and the pinned Hermes Agent 0.16.0 ACP bridge are implemented. Agentic performs supervised local text, file, PowerShell, process, and isolated browser tasks, queries Iris-owned approved memory, and stages memory proposals with provenance.
 - Agentic workspace containment is advisory rather than an OS sandbox. Scope-expanding and high-risk actions require separate approval and are recorded in a redacted audit.
-- OneDrive archive export is policy-gated and unavailable until real encryption is implemented.
+- Memory archive export is policy-gated and unavailable until real local encryption is implemented.
 - The preflight wizard is read-only. The setup wizard can run allowlisted installs/downloads only when the user explicitly approves them.
 - No system control in Safe mode. Agentic control is limited to the reviewed
   file, PowerShell, process, and isolated browser tools.

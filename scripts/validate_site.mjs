@@ -30,14 +30,14 @@ const sitemap = readFileSync(join(siteDir, "sitemap.xml"), "utf8");
 const llms = readFileSync(join(siteDir, "llms.txt"), "utf8");
 
 const expectedHashes = new Map([
-  ["iris-windows-installer.zip", "b2cfe96f58ba60b0b9d9304b3620e452d2f981b98e64fc487dce534ae352037f"],
-  ["iris-windows.zip", "82314870c33193b43bfb3d37b771cc8d219d7316deb88e85d5895d0db1c5d30e"],
-  ["install-iris-windows.ps1", "9ec2016adfa53e2bbd9035c2b55d149f8017f499d9e5b1550cd5191dc49f4038"],
+  ["iris-windows-installer.zip", "5c034d0044ef37d01e16ee0dae65559da629523a93ee3001d1919904ddbf282e"],
+  ["iris-windows.zip", "115bbc494c1f025d383a7ecbb5f06ecf8d6f2fc9a25f7140b4c573dd15b8e787"],
+  ["install-iris-windows.ps1", "a17c96b685c11416f6510891bad3b0c201d4ddfd014be0ea91c52b8e13f0f9cc"],
 ]);
 
 const requiredFragments = [
   "Iris v1",
-  "Local-First Windows AI Assistant",
+  "Free Local AI Assistant for Windows",
   "application/ld+json",
   "Download beginner bundle",
   "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip",
@@ -92,7 +92,7 @@ for (const asset of manifest.assets) {
 }
 
 const requiredMeta = [
-  /<title>Iris v1 \| Local-First Windows AI Assistant<\/title>/,
+  /<title>Iris v1 \| Free Local AI Assistant for Windows Voice, Vision, Memory, and Research<\/title>/,
   /<link rel="canonical" href="https:\/\/supermang617\.github\.io\/IRIS\/" \/>/,
   /<meta property="og:url" content="https:\/\/supermang617\.github\.io\/IRIS\/" \/>/,
   /<meta property="og:type" content="website" \/>/,

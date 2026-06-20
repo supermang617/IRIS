@@ -84,7 +84,7 @@ Run it from the portable release folder:
 
 - Preflight never installs or downloads Iris, Ollama, models, Python packages,
   or WebView2.
-- It does not enable OneDrive sync.
+- It does not enable cloud-sync memory storage.
 - It does not move memory files.
 - It does not run shell commands from model output.
 - It does not grant Iris computer-control permissions.

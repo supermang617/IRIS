@@ -31,15 +31,15 @@
     "active_memory_write": false
   },
   "archive_policy": {
-    "onedrive_sync_enabled_by_default": false,
+    "cloud_sync_enabled_by_default": false,
     "active_memory_location": "local_iris_owned_only",
-    "cold_archive_location": "onedrive_encrypted_only",
+    "archive_location": "local_iris_owned_only",
     "archive_extension": ".iris-memory-archive.enc",
     "export_requires_encryption": true,
     "import_requires_iris_reconciliation": true,
-    "hermes_onedrive_access": false,
-    "live_sqlite_on_onedrive": false,
-    "live_json_memory_on_onedrive": false,
+    "hermes_cloud_storage_access": false,
+    "live_sqlite_on_cloud_sync": false,
+    "live_json_memory_on_cloud_sync": false,
     "export_available": false
   },
   "sidecar": {
