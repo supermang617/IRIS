@@ -8,6 +8,7 @@ import {
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   voiceButtonAction,
+  voiceTranscriptStateForMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -258,6 +259,20 @@ test("push-to-talk can override an active wake listener", () => {
     voiceButtonAction({ listening: false, activeListenMode: "idle" }),
     "start-push"
   );
+});
+
+test("push-to-talk mode submits without requiring the wake word", () => {
+  const state = voiceTranscriptStateForMode("push", {
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false
+  });
+
+  const decision = classifyVoiceTranscript("tell me a short answer", state);
+
+  assert.equal(decision.action, "submit");
+  assert.equal(decision.prompt, "tell me a short answer");
+  assert.equal(decision.source, "voice");
 });
 
 test("wake silence keeps armed status instead of showing a failure", () => {

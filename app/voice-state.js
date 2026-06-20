@@ -49,6 +49,18 @@ export function classifyVoiceTranscript(transcript, state) {
   return { action: "wait-for-wake", prompt: "", source: "wake-word", status: "Waiting for wake word: Iris." };
 }
 
+export function voiceTranscriptStateForMode(mode, state) {
+  const normalizedMode = String(mode || "").trim().toLowerCase();
+  if (normalizedMode === "push") {
+    return {
+      ...state,
+      wakeWord: false,
+      wakeCommandArmed: false
+    };
+  }
+  return state;
+}
+
 export function classifyAsrError(error) {
   const message = String(error || "").trim();
   const normalized = message.toLowerCase();

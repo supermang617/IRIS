@@ -55,6 +55,7 @@ import {
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   voiceButtonAction,
+  voiceTranscriptStateForMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -1518,7 +1519,7 @@ async function listenOnce(mode) {
       restartDelayMs = wakeRestartDelayMs(mode, transcript, "ignore", wakeMissStreak);
       return;
     }
-    const decision = handleVoiceTranscript(transcript);
+    const decision = handleVoiceTranscript(transcript, mode);
     if (shouldDisplayVoiceTranscript(decision)) {
       elements.hudOutput.textContent = transcript;
     }
@@ -1548,13 +1549,16 @@ async function listenOnce(mode) {
   }
 }
 
-function handleVoiceTranscript(transcript) {
-  const decision = classifyVoiceTranscript(transcript, {
-    voiceLoop,
-    wakeWord,
-    wakeCommandArmed,
-    interruptionOnly: false
-  });
+function handleVoiceTranscript(transcript, mode = activeListenMode) {
+  const decision = classifyVoiceTranscript(
+    transcript,
+    voiceTranscriptStateForMode(mode, {
+      voiceLoop,
+      wakeWord,
+      wakeCommandArmed,
+      interruptionOnly: false
+    })
+  );
   elements.voiceStatus.textContent = decision.status;
   logVoice("voice_decision", `${decision.action}:${decision.source}:${decision.prompt}`);
 
