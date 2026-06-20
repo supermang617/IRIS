@@ -51,8 +51,10 @@ import {
   classifyAsrError,
   classifyVoiceTranscript,
   nextVoiceListenMode,
+  noSpeechStatusForMode,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
+  voiceButtonAction,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -488,13 +490,25 @@ async function submitImageMessage(prompt, latencyTrace) {
   }
   const image = selectedVisionImage;
   clearAttachment();
+  await submitVisualProbeMessage(image, prompt, latencyTrace, {
+    source: "image",
+    userPrefix: "[image]",
+    tools: ["vision"],
+    statusText: "Image selected.\n\nThinking locally...",
+    startEvent: "image_probe_start",
+    endEvent: "image_probe_complete",
+    errorEvent: "image_probe_error",
+    submitEndSource: "image-probe"
+  });
+}
 
+async function submitVisualProbeMessage(image, prompt, latencyTrace, options) {
   const turnStarted = performance.now();
   thinking = true;
   hideFeedbackPanel();
-  logVoice("image_probe_start", `bytes=${image.bytes.length}`);
+  logVoice(options.startEvent, `bytes=${image.bytes.length}; source=${options.source}`);
   setInputsDisabled(true);
-  elements.hudOutput.textContent = `Image selected.\n\nThinking locally...`;
+  elements.hudOutput.textContent = options.statusText;
   try {
     const response = await call("submit_image_probe", {
       imageName: image.name,
@@ -503,20 +517,20 @@ async function submitImageMessage(prompt, latencyTrace) {
     });
     latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
     elements.hudOutput.textContent = response.text;
-    rememberTurn("user", `[image] ${prompt}`);
+    rememberTurn("user", `${options.userPrefix} ${prompt}`);
     rememberTurn("iris", response.text);
     showFeedbackForTurn(createFeedbackTurn({
-      source: "image",
-      userText: `[image] ${prompt}`,
+      source: options.source,
+      userText: `${options.userPrefix} ${prompt}`,
       assistantText: response.text,
       modelId: feedbackModelId,
       provider: feedbackProvider,
-      tools: ["vision"],
+      tools: options.tools,
       latencyMs: response.model_elapsed_ms
     }));
     logVoice(
-      "image_probe_complete",
-      `model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}`
+      options.endEvent,
+      `model_ms=${response.model_elapsed_ms}; total_ms=${Math.round(performance.now() - turnStarted)}; source=${options.source}`
     );
     thinking = false;
     setInputsDisabled(false);
@@ -524,15 +538,15 @@ async function submitImageMessage(prompt, latencyTrace) {
   } catch (error) {
     elements.hudOutput.textContent = String(error);
     logVoice(
-      "image_probe_error",
-      `total_ms=${Math.round(performance.now() - turnStarted)}; ${String(error)}`
+      options.errorEvent,
+      `total_ms=${Math.round(performance.now() - turnStarted)}; source=${options.source}; ${String(error)}`
     );
   } finally {
     latencyTrace.finishTotal();
     await logVoiceLatencyReport(latencyTrace);
     thinking = false;
     setInputsDisabled(false);
-    logVoice("submit_end", "image-probe");
+    logVoice("submit_end", options.submitEndSource);
     restartListeningIfReady();
   }
 }
@@ -1497,7 +1511,7 @@ async function listenOnce(mode) {
     };
     if (!isUsableTranscript(transcript)) {
       pendingVoiceLatency = null;
-      elements.voiceStatus.textContent = "No speech transcript captured.";
+      elements.voiceStatus.textContent = noSpeechStatusForMode(mode);
       if (mode === "wake") {
         wakeMissStreak += 1;
       }
@@ -1525,8 +1539,10 @@ async function listenOnce(mode) {
     }
     logVoice(asrError.event, String(error));
   } finally {
-    setListening(false);
-    if (mode !== "push") {
+    if (generation === listenGeneration) {
+      setListening(false);
+    }
+    if (generation === listenGeneration && mode !== "push") {
       restartListeningIfReady(restartDelayMs);
     }
   }
@@ -1613,12 +1629,17 @@ elements.voiceButton.addEventListener("click", () => {
     elements.hudOutput.textContent = panicStatusText(true);
     return;
   }
-  if (listening && activeListenMode === "push") {
+  const action = voiceButtonAction({ listening, activeListenMode });
+  if (action === "stop-push") {
     stopListeningRequested = true;
+    void cancelActiveAsr();
     return;
   }
-
   stopListeningRequested = false;
+  if (action === "switch-to-push") {
+    void switchToPushToTalk();
+    return;
+  }
   listenOnce("push");
 });
 
@@ -1793,6 +1814,8 @@ async function attachFile(file) {
 
 async function cancelActiveAsr() {
   listenGeneration += 1;
+  setListening(false);
+  activeListenMode = "idle";
   if (!invoke) {
     return;
   }
@@ -1801,6 +1824,14 @@ async function cancelActiveAsr() {
   } catch (error) {
     logVoice("native_asr_cancel_error", String(error));
   }
+}
+
+async function switchToPushToTalk() {
+  stopListeningRequested = true;
+  await cancelActiveAsr();
+  await new Promise((resolve) => window.setTimeout(resolve, 80));
+  stopListeningRequested = false;
+  listenOnce("push");
 }
 
 async function readVisionImage(file) {
@@ -1834,10 +1865,20 @@ async function lookWithCamera() {
   await cancelActiveAsr();
   wakeCommandArmed = false;
   voiceLoop = false;
-  await captureCameraSnapshot();
+  const snapshot = await captureCameraSnapshot();
   elements.hudInput.value = "";
   resizeComposerInput();
-  await submitMessage(prompt, "camera-look");
+  const latencyTrace = new VoiceLatencyTrace();
+  await submitVisualProbeMessage(snapshot, prompt, latencyTrace, {
+    source: "camera",
+    userPrefix: "[camera]",
+    tools: ["camera"],
+    statusText: "Camera snapshot captured.\n\nThinking locally...",
+    startEvent: "camera_probe_start",
+    endEvent: "camera_probe_complete",
+    errorEvent: "camera_probe_error",
+    submitEndSource: "camera-probe"
+  });
 }
 
 async function captureCameraSnapshot() {
@@ -1860,7 +1901,7 @@ async function captureCameraSnapshot() {
     });
     const snapshot = await snapshotFromStream(stream);
     await saveCameraSnapshotDiagnostic(snapshot);
-    setImageAttachment(snapshot, "Camera snapshot captured. Thinking locally...");
+    return snapshot;
   } finally {
     if (stream) {
       for (const track of stream.getTracks()) {

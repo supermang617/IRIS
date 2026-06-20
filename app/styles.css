@@ -644,12 +644,12 @@ button {
 @keyframes listening-pulse {
   0%,
   100% {
-    opacity: 0.7;
-    transform: scale(0.9);
+    opacity: 0.72;
+    box-shadow: 0 0 8px rgba(112, 168, 255, 0.42);
   }
   50% {
     opacity: 1;
-    transform: scale(1.08);
+    box-shadow: 0 0 16px rgba(112, 168, 255, 0.74);
   }
 }
 

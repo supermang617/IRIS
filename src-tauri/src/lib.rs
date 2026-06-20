@@ -461,6 +461,14 @@ struct AsrCommandResponse {
     stt_elapsed_ms: Option<u128>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AsrCaptureProfile {
+    duration_ms: u64,
+    start_timeout_ms: u64,
+    trailing_silence_ms: u64,
+    min_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalRuntimePreparation {
@@ -1098,17 +1106,13 @@ async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandRespon
     let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let transcription_hint = whisper_initial_prompt(mode.as_deref());
-        let (duration_ms, start_timeout_ms, trailing_silence_ms) = match mode.as_deref() {
-            Some("push" | "command") => (15_000, 6_000, 700),
-            Some("loop") => (12_000, 4_000, 650),
-            _ => (4_000, 1_600, 600),
-        };
+        let profile = asr_capture_profile(mode.as_deref());
         native_asr_listen_for(
-            duration_ms,
+            profile.duration_ms,
             CaptureEndpoint::Speech {
-                min_ms: 350,
-                trailing_silence_ms,
-                start_timeout_ms,
+                min_ms: profile.min_ms,
+                trailing_silence_ms: profile.trailing_silence_ms,
+                start_timeout_ms: profile.start_timeout_ms,
             },
             capture_epoch,
             transcription_hint,
@@ -1136,6 +1140,35 @@ async fn native_asr_listen_interrupt() -> Result<AsrCommandResponse, String> {
 #[tauri::command]
 fn cancel_native_asr() {
     ASR_CAPTURE_EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+
+fn asr_capture_profile(mode: Option<&str>) -> AsrCaptureProfile {
+    match mode {
+        Some("push") => AsrCaptureProfile {
+            duration_ms: 15_000,
+            start_timeout_ms: 4_000,
+            trailing_silence_ms: 450,
+            min_ms: 250,
+        },
+        Some("command") => AsrCaptureProfile {
+            duration_ms: 10_000,
+            start_timeout_ms: 3_000,
+            trailing_silence_ms: 420,
+            min_ms: 250,
+        },
+        Some("loop") => AsrCaptureProfile {
+            duration_ms: 10_000,
+            start_timeout_ms: 3_000,
+            trailing_silence_ms: 420,
+            min_ms: 250,
+        },
+        _ => AsrCaptureProfile {
+            duration_ms: 3_500,
+            start_timeout_ms: 1_200,
+            trailing_silence_ms: 420,
+            min_ms: 250,
+        },
+    }
 }
 
 fn native_asr_listen_for(
@@ -4061,9 +4094,9 @@ fn adaptive_speech_threshold(noise_floor_rms: f32) -> f32 {
 
 fn conversational_trailing_silence_ms(base_ms: u64, utterance_ms: u64) -> u64 {
     if utterance_ms < 900 {
-        base_ms.saturating_add(150)
+        base_ms.saturating_add(80)
     } else if utterance_ms > 6_000 {
-        base_ms.saturating_sub(100).max(450)
+        base_ms.saturating_sub(80).max(320)
     } else {
         base_ms
     }
@@ -5631,8 +5664,24 @@ mod tests {
 
     #[test]
     fn short_utterances_receive_extra_trailing_silence() {
-        assert_eq!(conversational_trailing_silence_ms(650, 700), 800);
-        assert_eq!(conversational_trailing_silence_ms(650, 2_000), 650);
-        assert_eq!(conversational_trailing_silence_ms(650, 7_000), 550);
+        assert_eq!(conversational_trailing_silence_ms(420, 700), 500);
+        assert_eq!(conversational_trailing_silence_ms(420, 2_000), 420);
+        assert_eq!(conversational_trailing_silence_ms(420, 7_000), 340);
+    }
+
+    #[test]
+    fn asr_capture_profiles_are_tuned_for_interactive_turns() {
+        assert_eq!(
+            asr_capture_profile(Some("wake")),
+            AsrCaptureProfile {
+                duration_ms: 3_500,
+                start_timeout_ms: 1_200,
+                trailing_silence_ms: 420,
+                min_ms: 250,
+            }
+        );
+        assert_eq!(asr_capture_profile(Some("command")).start_timeout_ms, 3_000);
+        assert_eq!(asr_capture_profile(Some("loop")).trailing_silence_ms, 420);
+        assert_eq!(asr_capture_profile(Some("push")).trailing_silence_ms, 450);
     }
 }

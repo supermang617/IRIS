@@ -64,22 +64,26 @@ export function classifyAsrError(error) {
 
 export function wakeRestartDelayMs(mode, transcript, action, consecutiveMisses = 0) {
   if (mode !== "wake") {
-    return 650;
+    return 300;
   }
-  const misses = Math.max(0, Number(consecutiveMisses) || 0);
-  if (misses >= 6) {
-    return 10000;
+  if (action === "wait-for-wake" || action === "ignore" || !String(transcript || "").trim()) {
+    return 300;
   }
-  if (misses >= 3) {
-    return 5000;
+  return 300;
+}
+
+export function voiceButtonAction({ listening, activeListenMode }) {
+  if (listening && activeListenMode === "push") {
+    return "stop-push";
   }
-  if (!String(transcript || "").trim()) {
-    return 1200;
+  if (listening) {
+    return "switch-to-push";
   }
-  if (action === "wait-for-wake" || action === "ignore") {
-    return 2500;
-  }
-  return 650;
+  return "start-push";
+}
+
+export function noSpeechStatusForMode(mode) {
+  return mode === "wake" ? "Wake word armed. Say Iris." : "No speech transcript captured.";
 }
 
 export function shouldDisplayVoiceTranscript(decision) {

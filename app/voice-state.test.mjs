@@ -4,8 +4,10 @@ import {
   classifyAsrError,
   classifyVoiceTranscript,
   nextVoiceListenMode,
+  noSpeechStatusForMode,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
+  voiceButtonAction,
   wakeRestartDelayMs
 } from "./voice-state.js";
 
@@ -232,15 +234,35 @@ test("unexpected ASR failures remain errors", () => {
 });
 
 test("wake listener backs off after empty or ambient captures", () => {
-  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 1200);
+  assert.equal(wakeRestartDelayMs("wake", "", "ignore"), 300);
   assert.equal(
     wakeRestartDelayMs("wake", "background television", "wait-for-wake"),
-    2500
+    300
   );
-  assert.equal(wakeRestartDelayMs("wake", "", "ignore", 3), 5000);
-  assert.equal(wakeRestartDelayMs("wake", "background television", "wait-for-wake", 6), 10000);
-  assert.equal(wakeRestartDelayMs("wake", "Iris hello", "submit"), 650);
-  assert.equal(wakeRestartDelayMs("push", "", "ignore"), 650);
+  assert.equal(wakeRestartDelayMs("wake", "", "ignore", 3), 300);
+  assert.equal(wakeRestartDelayMs("wake", "background television", "wait-for-wake", 6), 300);
+  assert.equal(wakeRestartDelayMs("wake", "Iris hello", "submit"), 300);
+  assert.equal(wakeRestartDelayMs("push", "", "ignore"), 300);
+});
+
+test("push-to-talk can override an active wake listener", () => {
+  assert.equal(
+    voiceButtonAction({ listening: true, activeListenMode: "wake" }),
+    "switch-to-push"
+  );
+  assert.equal(
+    voiceButtonAction({ listening: true, activeListenMode: "push" }),
+    "stop-push"
+  );
+  assert.equal(
+    voiceButtonAction({ listening: false, activeListenMode: "idle" }),
+    "start-push"
+  );
+});
+
+test("wake silence keeps armed status instead of showing a failure", () => {
+  assert.equal(noSpeechStatusForMode("wake"), "Wake word armed. Say Iris.");
+  assert.equal(noSpeechStatusForMode("push"), "No speech transcript captured.");
 });
 
 test("raw wake transcripts are hidden until a decision owns the UI", () => {

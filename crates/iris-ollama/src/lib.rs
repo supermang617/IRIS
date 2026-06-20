@@ -1077,6 +1077,8 @@ mod tests {
 
         assert!(prompt.contains("local Kokoro speech output"));
         assert!(prompt.contains("Do not claim that you cannot speak"));
+        assert!(prompt.contains("local native speech-to-text transcript path"));
+        assert!(prompt.contains("Do not claim that you cannot hear"));
         assert!(prompt.contains("Iris will speak it when voice output is enabled"));
     }
 
