@@ -399,13 +399,14 @@ function Start-OllamaForIris {
         throw "Ollama is not available on PATH. Run Iris Setup Wizard or install Ollama for Windows."
     }
     Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
-    for ($attempt = 1; $attempt -le 20; $attempt++) {
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         if (Test-OllamaReady) {
             return
         }
     }
-    throw "Ollama did not become ready on 127.0.0.1:11434 after launch."
+    throw "Ollama did not become ready on 127.0.0.1:11434 within 60 seconds after launch."
 }
 
 function Test-IrisAlreadyRunning {

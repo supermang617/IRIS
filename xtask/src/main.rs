@@ -1187,6 +1187,8 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "Install Iris.bat",
         "-RunSetup",
         "-LaunchAfterInstall",
+        "AddSeconds(60)",
+        "within 60 seconds after launch",
     ] {
         if !package.contains(required) {
             return Err(format!(
