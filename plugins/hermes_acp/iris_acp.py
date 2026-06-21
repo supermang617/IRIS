@@ -191,8 +191,12 @@ class IrisACPAgent(HermesACPAgent):
             for tool in original_tools
             if tool.get("function", {}).get("name") in allowed
         ]
+        exact_tool_choice = exact_tool_choice_for_prompt(prompt, allowed)
         if allowed:
-            agent.request_overrides = {**original_overrides, "tool_choice": "auto"}
+            agent.request_overrides = {
+                **original_overrides,
+                "tool_choice": exact_tool_choice or "auto",
+            }
         else:
             agent.request_overrides = {
                 key: value
@@ -283,6 +287,37 @@ def tool_names_for_prompt(prompt) -> set[str]:
     if "terminal" in text or "powershell" in text or "process" in text:
         allowed.update(TOOL_GROUPS["shell"])
     return allowed
+
+
+def exact_tool_choice_for_prompt(prompt, allowed: set[str]):
+    text = prompt_text(prompt).lower()
+    exact_names = sorted(
+        name
+        for name in (
+            "browser_click",
+            "browser_close",
+            "browser_download",
+            "browser_fill",
+            "browser_get_url",
+            "browser_open",
+            "browser_press",
+            "browser_screenshot",
+            "browser_snapshot",
+            "browser_upload",
+            "iris_propose_memory",
+            "iris_query_memory",
+            "patch",
+            "process",
+            "read_file",
+            "search_files",
+            "terminal",
+            "write_file",
+        )
+        if name in allowed and (f"call {name}" in text or f"use {name}" in text)
+    )
+    if len(exact_names) != 1:
+        return None
+    return {"type": "function", "function": {"name": exact_names[0]}}
 
 
 def prompt_text(prompt) -> str:

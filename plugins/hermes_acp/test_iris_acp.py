@@ -81,6 +81,23 @@ class IrisAcpBridgeTests(unittest.TestCase):
             {"iris_query_memory"},
         )
 
+    def test_explicit_single_tool_prompt_forces_exact_tool_choice(self):
+        prompt = [{"type": "text", "text": "Call read_file on seed.txt now."}]
+        allowed = iris_acp.tool_names_for_prompt(prompt)
+
+        self.assertIn("read_file", allowed)
+        self.assertEqual(
+            iris_acp.exact_tool_choice_for_prompt(prompt, allowed),
+            {"type": "function", "function": {"name": "read_file"}},
+        )
+
+    def test_natural_browser_prompt_keeps_auto_tool_choice(self):
+        prompt = [{"type": "text", "text": "Look online for the latest Ollama release."}]
+        allowed = iris_acp.tool_names_for_prompt(prompt)
+
+        self.assertIn("browser_open", allowed)
+        self.assertIsNone(iris_acp.exact_tool_choice_for_prompt(prompt, allowed))
+
 
 if __name__ == "__main__":
     unittest.main()
