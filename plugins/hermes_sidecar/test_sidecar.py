@@ -60,6 +60,50 @@ class SidecarBehaviorTests(unittest.TestCase):
         self.assertEqual(pending[0]["status"], "pending")
         self.assertEqual(pending[0]["id"], 12)
 
+    def test_memory_proposal_response_does_not_claim_storage_on_failure(self):
+        original_propose = sidecar.iris_broker.iris_propose_memory
+        original_generate = sidecar.iris_broker.iris_generate_text
+        try:
+            sidecar.iris_broker.iris_propose_memory = lambda text, source: (_ for _ in ()).throw(
+                RuntimeError("broker unavailable")
+            )
+            sidecar.iris_broker.iris_generate_text = lambda prompt: self.fail("model should not rewrite tool failure")
+            response = sidecar.handle_request({
+                "type": "task",
+                "mode": "reason",
+                "text": "remember that acceptance memory color is cobalt",
+                "explicitUserResearchRequest": False,
+            })
+        finally:
+            sidecar.iris_broker.iris_propose_memory = original_propose
+            sidecar.iris_broker.iris_generate_text = original_generate
+        self.assertIn("Hermes memory proposal failed: broker unavailable", response["text"])
+        self.assertNotIn("remembered", response["text"].lower())
+        self.assertEqual(response["memoryProposals"][0]["status"], "rejected")
+
+    def test_memory_proposal_response_reports_pending_without_generation(self):
+        original_propose = sidecar.iris_broker.iris_propose_memory
+        original_generate = sidecar.iris_broker.iris_generate_text
+        try:
+            sidecar.iris_broker.iris_propose_memory = lambda text, source: {
+                "ok": True,
+                "verdict": "staged",
+                "staging_id": 24,
+                "reason": "proposal written to staging only",
+            }
+            sidecar.iris_broker.iris_generate_text = lambda prompt: self.fail("model should not rewrite tool success")
+            response = sidecar.handle_request({
+                "type": "task",
+                "mode": "reason",
+                "text": "save to memory acceptance memory color is cobalt",
+                "explicitUserResearchRequest": False,
+            })
+        finally:
+            sidecar.iris_broker.iris_propose_memory = original_propose
+            sidecar.iris_broker.iris_generate_text = original_generate
+        self.assertEqual(response["text"], "Hermes staged a memory proposal for your approval.")
+        self.assertEqual(response["memoryProposals"][0]["status"], "pending")
+
     def test_web_query_strips_iris_intent_words(self):
         self.assertEqual(
             sidecar.web_query_from_task("Iris, look online for the latest Ollama release and summarize the useful sources"),

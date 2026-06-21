@@ -13,6 +13,13 @@ MAX_TASK_CHARS = 2000
 ALLOWED_MODES = {"reason", "research", "code_suggestion"}
 EXPOSED_TOOLS = ["iris_query_memory", "iris_propose_memory", "iris_web_research"]
 ACTING_TOOLS: list[str] = []
+MEMORY_PROPOSAL_PREFIXES = (
+    "remember that ",
+    "save to memory ",
+    "save this to memory ",
+    "propose memory ",
+    "stage memory ",
+)
 MEMORY_SUMMARY_TRIGGERS = (
     "what you know from memory",
     "what do you know from memory",
@@ -82,6 +89,13 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
             web_error = str(error)
 
     proposals = propose_memory_if_requested(text)
+    if proposals:
+        return {
+            "ok": True,
+            "mode": mode,
+            "text": memory_proposal_response(proposals),
+            "memoryProposals": proposals,
+        }
     if mode == "reason" and should_summarize_memory(text) and not memory and not memory_error:
         response_text = "I do not have any approved Iris memory to summarize yet."
         return {
@@ -184,15 +198,8 @@ def web_query_from_task(text: str) -> str:
 
 def propose_memory_if_requested(text: str) -> list[dict[str, Any]]:
     lowered = text.lower()
-    prefixes = (
-        "remember that ",
-        "save to memory ",
-        "save this to memory ",
-        "propose memory ",
-        "stage memory ",
-    )
     proposal = ""
-    for prefix in prefixes:
+    for prefix in MEMORY_PROPOSAL_PREFIXES:
         if lowered.startswith(prefix):
             proposal = text[len(prefix) :].strip(" :-")
             break
@@ -220,6 +227,18 @@ def propose_memory_if_requested(text: str) -> list[dict[str, Any]]:
         "createdMs": 0,
         "updatedMs": 0,
     }]
+
+
+def memory_proposal_response(proposals: list[dict[str, Any]]) -> str:
+    pending = [proposal for proposal in proposals if proposal.get("status") == "pending"]
+    if pending:
+        return "Hermes staged a memory proposal for your approval."
+    first = proposals[0] if proposals else {}
+    reason = str(first.get("text", "")).strip()
+    if reason.startswith("Hermes memory proposal failed:"):
+        return reason
+    verdict = str(first.get("verdict", "rejected")).strip() or "rejected"
+    return f"Hermes could not stage that memory for approval: {verdict}."
 
 
 def model_response(

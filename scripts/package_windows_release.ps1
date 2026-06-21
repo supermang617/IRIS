@@ -52,6 +52,28 @@ function Copy-RequiredDirectory {
 
 Write-Host "Packaging Iris Windows portable release from $repoRoot"
 
+$portableWhisperFlags = @{
+    GGML_NATIVE = "OFF"
+    GGML_SSE42 = "OFF"
+    GGML_AVX = "OFF"
+    GGML_AVX2 = "OFF"
+    GGML_AVX_VNNI = "OFF"
+    GGML_BMI2 = "OFF"
+    GGML_AVX512 = "OFF"
+    GGML_AVX512_VBMI = "OFF"
+    GGML_AVX512_VNNI = "OFF"
+    GGML_AVX512_BF16 = "OFF"
+    GGML_FMA = "OFF"
+    GGML_F16C = "OFF"
+    GGML_AMX_TILE = "OFF"
+    GGML_AMX_INT8 = "OFF"
+    GGML_AMX_BF16 = "OFF"
+}
+foreach ($name in $portableWhisperFlags.Keys) {
+    Set-Item -Path "Env:$name" -Value $portableWhisperFlags[$name]
+}
+Write-Host "Portable Whisper/GGML CPU flags enabled for release packaging."
+
 Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $distRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $packageRoot, $distRoot | Out-Null

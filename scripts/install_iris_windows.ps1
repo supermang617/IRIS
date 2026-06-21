@@ -103,7 +103,13 @@ function Copy-ReleaseFiles {
         if (Test-Path -LiteralPath $source -PathType Container) {
             $destination = Join-Path $DestinationRoot $relative
             Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
-            Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+            if (Test-Path -LiteralPath $destination) {
+                throw "Failed to remove existing install directory before upgrade: $destination"
+            }
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            foreach ($child in @(Get-ChildItem -LiteralPath $source -Force)) {
+                Copy-Item -LiteralPath $child.FullName -Destination $destination -Recurse -Force
+            }
         }
     }
     foreach ($relative in @(

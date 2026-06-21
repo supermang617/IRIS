@@ -57,6 +57,7 @@ import {
   classifyVoiceTranscript,
   nextVoiceListenMode,
   noSpeechStatusForMode,
+  shouldDisarmWakeFollowupAfterMisses,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   voiceButtonAction,
@@ -117,6 +118,7 @@ let voiceLoop = false;
 let wakeWord = true;
 let wakeCommandArmed = false;
 let wakeMissStreak = 0;
+let wakeCommandMissStreak = 0;
 let thinking = false;
 let speaking = false;
 let speechRunId = 0;
@@ -400,6 +402,7 @@ async function submitMessage(text, source = "typed") {
   }
   await cancelActiveAsr();
   wakeCommandArmed = false;
+  wakeCommandMissStreak = 0;
   voiceLoop = false;
   if (shouldClearInputOnSubmit(text, thinking || speaking)) {
     elements.hudInput.value = "";
@@ -567,6 +570,7 @@ async function submitScreenAreaMessage() {
   }
   await cancelActiveAsr();
   wakeCommandArmed = false;
+  wakeCommandMissStreak = 0;
   voiceLoop = false;
   const latencyTrace = new VoiceLatencyTrace();
   const prompt = elements.hudInput.value.trim() || defaultScreenPrompt;
@@ -1347,6 +1351,7 @@ async function monitorSpeechInterruption(runId) {
         logVoice("speech_interruption_detected", transcript);
         cancelSpeech();
         wakeCommandArmed = false;
+        wakeCommandMissStreak = 0;
         voiceLoop = true;
         elements.hudOutput.textContent = "Stopped.";
         elements.voiceStatus.textContent = "Interrupted. Listening.";
@@ -1406,6 +1411,7 @@ async function togglePanicStop() {
     voiceLoop = false;
     wakeCommandArmed = false;
     wakeMissStreak = 0;
+    wakeCommandMissStreak = 0;
     pendingVoiceLatency = null;
     setListening(false);
     activeListenMode = "idle";
@@ -1422,6 +1428,7 @@ async function togglePanicStop() {
   } else {
     stopListeningRequested = false;
     wakeMissStreak = 0;
+    wakeCommandMissStreak = 0;
     elements.voiceStatus.textContent = "Wake word armed. Say Iris.";
     restartListeningIfReady(250);
   }
@@ -1520,6 +1527,14 @@ async function listenOnce(mode) {
       elements.voiceStatus.textContent = noSpeechStatusForMode(mode);
       if (mode === "wake") {
         wakeMissStreak += 1;
+      } else if (mode === "command" && wakeCommandArmed) {
+        wakeCommandMissStreak += 1;
+        if (shouldDisarmWakeFollowupAfterMisses(wakeCommandMissStreak)) {
+          wakeCommandArmed = false;
+          wakeCommandMissStreak = 0;
+          elements.voiceStatus.textContent = "Wake follow-up timed out. Say Iris.";
+          logVoice("wake_followup_timeout");
+        }
       }
       restartDelayMs = wakeRestartDelayMs(mode, transcript, "ignore", wakeMissStreak);
       return;
@@ -1571,6 +1586,7 @@ function handleVoiceTranscript(transcript, mode = activeListenMode) {
     pendingVoiceLatency = null;
     cancelSpeech();
     wakeCommandArmed = false;
+    wakeCommandMissStreak = 0;
     wakeMissStreak = 0;
     voiceLoop = false;
     elements.hudOutput.textContent = "Stopped.";
@@ -1580,6 +1596,7 @@ function handleVoiceTranscript(transcript, mode = activeListenMode) {
 
   if (decision.action === "submit") {
     wakeCommandArmed = false;
+    wakeCommandMissStreak = 0;
     wakeMissStreak = 0;
     voiceLoop = shouldContinueVoiceSession(decision);
     submitMessage(decision.prompt, decision.source);
@@ -1589,6 +1606,7 @@ function handleVoiceTranscript(transcript, mode = activeListenMode) {
   if (decision.action === "arm-wake-followup") {
     pendingVoiceLatency = null;
     wakeCommandArmed = true;
+    wakeCommandMissStreak = 0;
     wakeMissStreak = 0;
     voiceLoop = false;
     elements.hudOutput.textContent = "Listening.";
@@ -1604,6 +1622,7 @@ function handleVoiceTranscript(transcript, mode = activeListenMode) {
     }
     pendingVoiceLatency = null;
     wakeCommandArmed = false;
+    wakeCommandMissStreak = 0;
   }
   return decision;
 }
@@ -1873,6 +1892,7 @@ async function lookWithCamera() {
   const prompt = elements.hudInput.value.trim() || defaultCameraPrompt;
   await cancelActiveAsr();
   wakeCommandArmed = false;
+  wakeCommandMissStreak = 0;
   voiceLoop = false;
   const snapshot = await captureCameraSnapshot();
   elements.hudInput.value = "";

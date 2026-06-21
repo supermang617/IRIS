@@ -98,6 +98,10 @@ export function noSpeechStatusForMode(mode) {
   return mode === "wake" ? "Wake word armed. Say Iris." : "No speech transcript captured.";
 }
 
+export function shouldDisarmWakeFollowupAfterMisses(consecutiveMisses, limit = 3) {
+  return Number(consecutiveMisses || 0) >= limit;
+}
+
 export function shouldDisplayVoiceTranscript(decision) {
   return decision?.action === "preview-transcript";
 }

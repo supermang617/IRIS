@@ -1151,6 +1151,30 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
             return Err(format!("release package script missing `{required}`"));
         }
     }
+    for required in [
+        "GGML_NATIVE = \"OFF\"",
+        "GGML_SSE42 = \"OFF\"",
+        "GGML_AVX = \"OFF\"",
+        "GGML_AVX2 = \"OFF\"",
+        "GGML_AVX_VNNI = \"OFF\"",
+        "GGML_BMI2 = \"OFF\"",
+        "GGML_AVX512 = \"OFF\"",
+        "GGML_AVX512_VBMI = \"OFF\"",
+        "GGML_AVX512_VNNI = \"OFF\"",
+        "GGML_AVX512_BF16 = \"OFF\"",
+        "GGML_FMA = \"OFF\"",
+        "GGML_F16C = \"OFF\"",
+        "GGML_AMX_TILE = \"OFF\"",
+        "GGML_AMX_INT8 = \"OFF\"",
+        "GGML_AMX_BF16 = \"OFF\"",
+        "Portable Whisper/GGML CPU flags enabled for release packaging.",
+    ] {
+        if !package.contains(required) {
+            return Err(format!(
+                "release package script missing portable Whisper/GGML rule `{required}`"
+            ));
+        }
+    }
     for required in ["\".iris-runtime\"", ".iris-runtime\\runtime-manifest.json"] {
         if !installer.contains(required) {
             return Err(format!(
@@ -1206,6 +1230,8 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "timed out after $TimeoutSeconds seconds",
         "Stop-ProcessTree",
         "installer-self-check.log",
+        "Failed to remove existing install directory before upgrade",
+        "Get-ChildItem -LiteralPath $source -Force",
     ] {
         if !installer.contains(required) {
             return Err(format!(

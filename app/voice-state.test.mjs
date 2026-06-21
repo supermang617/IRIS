@@ -5,6 +5,7 @@ import {
   classifyVoiceTranscript,
   nextVoiceListenMode,
   noSpeechStatusForMode,
+  shouldDisarmWakeFollowupAfterMisses,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   voiceButtonAction,
@@ -278,6 +279,12 @@ test("push-to-talk mode submits without requiring the wake word", () => {
 test("wake silence keeps armed status instead of showing a failure", () => {
   assert.equal(noSpeechStatusForMode("wake"), "Wake word armed. Say Iris.");
   assert.equal(noSpeechStatusForMode("push"), "No speech transcript captured.");
+});
+
+test("armed wake follow-up disarms after repeated empty captures", () => {
+  assert.equal(shouldDisarmWakeFollowupAfterMisses(0), false);
+  assert.equal(shouldDisarmWakeFollowupAfterMisses(2), false);
+  assert.equal(shouldDisarmWakeFollowupAfterMisses(3), true);
 });
 
 test("raw wake transcripts are hidden until a decision owns the UI", () => {
