@@ -4,6 +4,7 @@ import {
   buildCameraCapturePlan,
   cameraAttemptDiagnostic,
   cameraErrorMessage,
+  createCameraPermissionPromptTimeoutError,
   createCameraUnavailableError,
   rankCameraDevice
 } from "./camera-state.js";
@@ -19,6 +20,13 @@ test("camera permission errors show permission recovery guidance", () => {
   assert.equal(
     cameraErrorMessage(new DOMException("Permission denied", "NotAllowedError")),
     "Camera permission was denied. Allow camera access for Iris, then try again."
+  );
+});
+
+test("unresolved camera permission prompts show visible recovery guidance", () => {
+  assert.equal(
+    cameraErrorMessage(createCameraPermissionPromptTimeoutError()),
+    "Camera permission is waiting. Choose Allow in the Iris camera prompt, then try the camera again."
   );
 });
 

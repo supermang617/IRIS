@@ -53,10 +53,12 @@ button {
 
 .iris-console {
   position: fixed;
+  top: 8px;
   right: 8px;
   bottom: 8px;
   left: 8px;
   display: flex;
+  height: calc(100vh - 16px);
   max-height: calc(100vh - 16px);
   min-height: 0;
   flex-direction: column;
@@ -158,10 +160,10 @@ button {
 }
 
 .response-pane {
-  min-height: 96px;
+  min-height: 72px;
   height: var(--response-height);
-  max-height: calc(100vh - 176px);
-  flex: 0 1 var(--response-height);
+  max-height: none;
+  flex: 1 1 var(--response-height);
   overflow: auto;
   background: rgba(5, 9, 14, 0.28);
   scrollbar-color: rgba(211, 226, 240, 0.22) transparent;
@@ -682,6 +684,67 @@ button {
 
   .approval-panel {
     grid-template-columns: minmax(0, 1fr) 72px 94px;
+  }
+}
+
+@media (max-height: 480px) {
+  .iris-console {
+    top: 5px;
+    right: 5px;
+    bottom: 5px;
+    left: 5px;
+    height: calc(100vh - 10px);
+    max-height: calc(100vh - 10px);
+  }
+
+  .titlebar {
+    min-height: 38px;
+    padding: 0 12px;
+  }
+
+  .response-pane {
+    min-height: 72px;
+  }
+
+  .hud-output {
+    padding: 14px 18px;
+    font-size: 0.96rem;
+    line-height: 1.45;
+  }
+
+  .response-resize-handle {
+    min-height: 10px;
+    flex-basis: 10px;
+  }
+
+  .hud-form {
+    min-height: 96px;
+    gap: 5px;
+    margin: 6px;
+    padding: 8px;
+  }
+
+  .hud-form textarea {
+    min-height: 38px;
+    max-height: 92px;
+    padding: 2px 4px;
+  }
+
+  .composer-footer {
+    min-height: 34px;
+    gap: 8px;
+  }
+
+  .icon-button {
+    width: 32px;
+    height: 32px;
+    flex-basis: 32px;
+  }
+
+  .send-button {
+    width: 34px;
+    height: 34px;
+    flex-basis: 34px;
   }
 }
 

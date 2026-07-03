@@ -30,7 +30,7 @@ from iris_memory_tools import IRIS_MEMORY_TOOLS, register_iris_memory_tools
 
 IRIS_TOOLSET = "iris-acp-bridge"
 IRIS_MAX_ITERATIONS = 8
-IRIS_MAX_TOKENS = 4096
+IRIS_MAX_TOKENS = 512
 DISABLED_TOOLSETS = [
     "web",
     "vision",

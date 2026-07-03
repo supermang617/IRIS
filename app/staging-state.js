@@ -13,7 +13,9 @@ export function formatStagedMemories(staged) {
   if (pending.length === 0) {
     return "No pending Hermes memories.";
   }
-  return pending.map((item) => `${item.id}. ${item.text}`).join("\n");
+  return pending
+    .map((item) => `${item.id}. ${item.text}\n   Accept: hermes accept ${item.id}\n   Reject: hermes reject ${item.id}`)
+    .join("\n");
 }
 
 export function formatHermesTaskStagedSection(staged) {

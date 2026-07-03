@@ -31,6 +31,7 @@ static HERMES_SIDECAR: OnceLock<Mutex<Option<HermesSidecar>>> = OnceLock::new();
 static HERMES_TASK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DIAGNOSTIC_SESSION: OnceLock<Mutex<Option<DiagnosticSessionSummary>>> = OnceLock::new();
 static INSTANCE_LOCK: OnceLock<TcpListener> = OnceLock::new();
+static WHISPER_CONTEXT: OnceLock<Mutex<Option<whisper_rs::WhisperContext>>> = OnceLock::new();
 static ASR_CAPTURE_EPOCH: AtomicU64 = AtomicU64::new(1);
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_STAGING_ITEMS: usize = 80;
@@ -1159,6 +1160,7 @@ async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandRespon
             },
             capture_epoch,
             transcription_hint,
+            mode.as_deref() == Some("wake"),
         )
     })
     .await
@@ -1174,6 +1176,7 @@ async fn native_asr_listen_interrupt() -> Result<AsrCommandResponse, String> {
             CaptureEndpoint::Fixed,
             capture_epoch,
             whisper_initial_prompt(Some("interrupt")),
+            false,
         )
     })
     .await
@@ -1205,11 +1208,17 @@ fn asr_capture_profile(mode: Option<&str>) -> AsrCaptureProfile {
             trailing_silence_ms: 420,
             min_ms: 250,
         },
+        Some("wake") => AsrCaptureProfile {
+            duration_ms: 1_800,
+            start_timeout_ms: 900,
+            trailing_silence_ms: 220,
+            min_ms: 100,
+        },
         _ => AsrCaptureProfile {
-            duration_ms: 30_000,
-            start_timeout_ms: 30_000,
-            trailing_silence_ms: 450,
-            min_ms: 250,
+            duration_ms: 1_800,
+            start_timeout_ms: 900,
+            trailing_silence_ms: 220,
+            min_ms: 100,
         },
     }
 }
@@ -1219,6 +1228,7 @@ fn native_asr_listen_for(
     endpoint: CaptureEndpoint,
     capture_epoch: u64,
     transcription_hint: Option<&'static str>,
+    skip_low_confidence_wake: bool,
 ) -> Result<AsrCommandResponse, String> {
     let started = Instant::now();
     let capture_started = Instant::now();
@@ -1232,8 +1242,21 @@ fn native_asr_listen_for(
             stt_elapsed_ms: Some(0),
         });
     }
+    if skip_low_confidence_wake && !wake_audio_should_transcribe(&audio) {
+        return Ok(AsrCommandResponse {
+            text: String::new(),
+            elapsed_ms: started.elapsed().as_millis(),
+            capture_elapsed_ms: Some(capture_elapsed_ms),
+            stt_elapsed_ms: Some(0),
+        });
+    }
     let stt_started = Instant::now();
-    let text = transcribe_local_whisper(&audio.samples, transcription_hint)?;
+    let wake_budget_ms = skip_low_confidence_wake.then_some(4_000);
+    let text = match transcribe_local_whisper(&audio.samples, transcription_hint, wake_budget_ms) {
+        Ok(text) => text,
+        Err(error) if skip_low_confidence_wake && is_whisper_abort_error(&error) => String::new(),
+        Err(error) => return Err(error),
+    };
     let stt_elapsed_ms = stt_started.elapsed().as_millis();
     Ok(AsrCommandResponse {
         text,
@@ -1883,11 +1906,27 @@ fn privacy_safe_diagnostic_detail(event: &str, detail: &str) -> String {
     let detail = detail.trim();
     match event {
         "native_asr_result" | "speech_interruption_result" => {
-            let (timing, transcript) = detail.split_once(';').unwrap_or((detail, ""));
+            let mut parts = detail.split(';').map(str::trim);
+            let timing = parts.next().unwrap_or_default();
+            let mut metrics = Vec::new();
+            let mut transcript_chars = 0_usize;
+            for part in parts {
+                if part.starts_with("capture_ms=") || part.starts_with("stt_ms=") {
+                    metrics.push(json_capped(part));
+                } else {
+                    transcript_chars += part.chars().count();
+                }
+            }
+            let metric_text = if metrics.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", metrics.join("; "))
+            };
             format!(
-                "{}; transcript_chars={}",
+                "{}{}; transcript_chars={}",
                 json_capped(timing.trim()),
-                transcript.trim().chars().count()
+                metric_text,
+                transcript_chars
             )
         }
         "speech_interruption_detected" => {
@@ -3954,6 +3993,9 @@ enum CaptureEndpoint {
 struct CapturedMicrophoneAudio {
     samples: Vec<f32>,
     speech_detected: bool,
+    rms: f32,
+    peak: f32,
+    speech_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4043,10 +4085,16 @@ fn record_microphone_mono_16khz(
     let start_sample = endpoint_result.start_sample.min(source.len());
     let end_sample = endpoint_result.end_sample.clamp(start_sample, source.len());
     let utterance = &source[start_sample..end_sample];
+    let speech_ms = samples_to_ms(utterance.len(), sample_rate);
+    let utterance_rms = rms(utterance);
+    let utterance_peak = peak_abs(utterance);
     let resampled = resample_linear(utterance, sample_rate, 16_000);
     Ok(CapturedMicrophoneAudio {
         samples: pad_audio_with_silence(&resampled, 16_000, 120),
         speech_detected: endpoint_result.speech_detected,
+        rms: utterance_rms,
+        peak: utterance_peak,
+        speech_ms,
     })
 }
 
@@ -4278,6 +4326,17 @@ fn rms(samples: &[f32]) -> f32 {
     (sum / samples.len() as f32).sqrt()
 }
 
+fn peak_abs(samples: &[f32]) -> f32 {
+    samples
+        .iter()
+        .map(|sample| sample.abs().clamp(0.0, 1.0))
+        .fold(0.0, f32::max)
+}
+
+fn wake_audio_should_transcribe(audio: &CapturedMicrophoneAudio) -> bool {
+    audio.speech_detected && audio.speech_ms >= 120 && audio.rms >= 0.006 && audio.peak >= 0.035
+}
+
 fn pad_audio_with_silence(audio: &[f32], sample_rate: u32, padding_ms: u64) -> Vec<f32> {
     if audio.is_empty() || sample_rate == 0 || padding_ms == 0 {
         return audio.to_vec();
@@ -4323,7 +4382,6 @@ fn resample_linear(input: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32
 
 fn whisper_initial_prompt(mode: Option<&str>) -> Option<&'static str> {
     match mode {
-        Some("wake") => Some("Iris. Hey Iris. Iris wake up."),
         Some("interrupt") => Some("Iris stop. Stop. Pause. Cancel."),
         _ => None,
     }
@@ -4605,7 +4663,11 @@ fn parse_pcm_wav(bytes: &[u8]) -> Result<PcmWav, String> {
     })
 }
 
-fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Result<String, String> {
+fn transcribe_local_whisper(
+    audio: &[f32],
+    initial_prompt: Option<&str>,
+    abort_after_ms: Option<u64>,
+) -> Result<String, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     let model_path = workspace_root()?.join("models/whisper/ggml-tiny.en.bin");
@@ -4613,13 +4675,20 @@ fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Resu
         return Err(format!("missing local ASR model: {}", model_path.display()));
     }
 
-    let context = WhisperContext::new_with_params(
-        model_path
-            .to_str()
-            .ok_or_else(|| "ASR model path is not valid UTF-8".to_string())?,
-        WhisperContextParameters::default(),
-    )
-    .map_err(|err| format!("failed to load Whisper model: {err}"))?;
+    let model_path_str = model_path
+        .to_str()
+        .ok_or_else(|| "ASR model path is not valid UTF-8".to_string())?;
+    let slot = WHISPER_CONTEXT.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().map_err(|err| err.to_string())?;
+    if guard.is_none() {
+        *guard = Some(
+            WhisperContext::new_with_params(model_path_str, WhisperContextParameters::default())
+                .map_err(|err| format!("failed to load Whisper model: {err}"))?,
+        );
+    }
+    let context = guard
+        .as_ref()
+        .ok_or_else(|| "ASR model did not initialize".to_string())?;
     let mut state = context
         .create_state()
         .map_err(|err| format!("failed to create Whisper state: {err}"))?;
@@ -4627,13 +4696,27 @@ fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Resu
     params.set_n_threads(4);
     params.set_language(Some("en"));
     params.set_translate(false);
+    params.set_no_context(true);
+    params.set_single_segment(true);
+    params.set_duration_ms(((audio.len() as u128 * 1_000) / 16_000).max(1) as i32);
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
+    if abort_after_ms.is_some() {
+        params.set_audio_ctx(128);
+        params.set_max_len(24);
+        params.set_max_tokens(24);
+    }
     if let Some(initial_prompt) = initial_prompt {
         params.set_initial_prompt(initial_prompt);
+    }
+    if let Some(abort_after_ms) = abort_after_ms {
+        let abort_started = Instant::now();
+        params.set_abort_callback_safe(move || {
+            abort_started.elapsed() >= Duration::from_millis(abort_after_ms)
+        });
     }
 
     state
@@ -4647,6 +4730,10 @@ fn transcribe_local_whisper(audio: &[f32], initial_prompt: Option<&str>) -> Resu
         .trim()
         .to_string();
     Ok(text)
+}
+
+fn is_whisper_abort_error(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("abort")
 }
 
 fn rect_intersection_area(window: WindowRect, monitor: MonitorRect) -> i64 {
@@ -4981,7 +5068,7 @@ mod tests {
             123,
             VoiceDiagnosticEvent {
                 event: "native_asr_result".to_string(),
-                detail: "812ms; my private spoken sentence".to_string(),
+                detail: "812ms; capture_ms=320; stt_ms=492; my private spoken sentence".to_string(),
                 mode: "push".to_string(),
                 listening: false,
                 thinking: false,
@@ -4994,7 +5081,10 @@ mod tests {
         .expect("voice diagnostic jsonl");
         let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
 
-        assert_eq!(parsed["detail"], "812ms; transcript_chars=26");
+        assert_eq!(
+            parsed["detail"],
+            "812ms; capture_ms=320; stt_ms=492; transcript_chars=26"
+        );
         assert!(!line.contains("private spoken sentence"));
     }
 
@@ -5239,11 +5329,8 @@ mod tests {
     }
 
     #[test]
-    fn whisper_prompts_bias_only_wake_and_interruption_captures() {
-        assert_eq!(
-            whisper_initial_prompt(Some("wake")),
-            Some("Iris. Hey Iris. Iris wake up.")
-        );
+    fn whisper_prompts_bias_only_interruption_captures() {
+        assert_eq!(whisper_initial_prompt(Some("wake")), None);
         assert_eq!(
             whisper_initial_prompt(Some("interrupt")),
             Some("Iris stop. Stop. Pause. Cancel.")
@@ -5902,14 +5989,40 @@ mod tests {
         assert_eq!(
             asr_capture_profile(Some("wake")),
             AsrCaptureProfile {
-                duration_ms: 30_000,
-                start_timeout_ms: 30_000,
-                trailing_silence_ms: 450,
-                min_ms: 250,
+                duration_ms: 1_800,
+                start_timeout_ms: 900,
+                trailing_silence_ms: 220,
+                min_ms: 100,
             }
         );
         assert_eq!(asr_capture_profile(Some("command")).start_timeout_ms, 3_000);
         assert_eq!(asr_capture_profile(Some("loop")).trailing_silence_ms, 420);
         assert_eq!(asr_capture_profile(Some("push")).trailing_silence_ms, 450);
+    }
+
+    #[test]
+    fn wake_audio_gate_skips_low_energy_ambient_captures() {
+        let audio = CapturedMicrophoneAudio {
+            samples: vec![0.0; 16_000],
+            speech_detected: true,
+            rms: 0.003,
+            peak: 0.020,
+            speech_ms: 600,
+        };
+
+        assert!(!wake_audio_should_transcribe(&audio));
+    }
+
+    #[test]
+    fn wake_audio_gate_keeps_clear_short_wake_speech() {
+        let audio = CapturedMicrophoneAudio {
+            samples: vec![0.0; 16_000],
+            speech_detected: true,
+            rms: 0.018,
+            peak: 0.090,
+            speech_ms: 220,
+        };
+
+        assert!(wake_audio_should_transcribe(&audio));
     }
 }

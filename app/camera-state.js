@@ -17,6 +17,13 @@ export function cameraErrorMessage(error) {
   }
 
   if (
+    name === "CameraPermissionPromptTimeoutError" ||
+    normalized.includes("camera permission prompt did not finish")
+  ) {
+    return "Camera permission is waiting. Choose Allow in the Iris camera prompt, then try the camera again.";
+  }
+
+  if (
     name === "NotAllowedError" ||
     name === "SecurityError" ||
     normalized.includes("permission denied") ||
@@ -110,5 +117,11 @@ export function cameraAttemptDiagnostic(attempt, error) {
 export function createCameraUnavailableError() {
   const error = new Error("Camera devices were found, but Iris could not open a usable camera.");
   error.name = "CameraDeviceUnavailableError";
+  return error;
+}
+
+export function createCameraPermissionPromptTimeoutError() {
+  const error = new Error("Camera permission prompt did not finish.");
+  error.name = "CameraPermissionPromptTimeoutError";
   return error;
 }

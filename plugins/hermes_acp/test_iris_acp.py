@@ -19,14 +19,14 @@ class IrisAcpBridgeTests(unittest.TestCase):
             self.assertEqual(iris_acp.audit_tools(), 0)
 
         audit = json.loads(buffer.getvalue())
-        self.assertEqual(audit["maxTokens"], 4096)
+        self.assertEqual(audit["maxTokens"], 512)
         self.assertEqual(audit["requestOverrides"]["temperature"], 0)
         self.assertEqual(audit["requestOverrides"]["toolChoice"], "prompt_scoped")
         self.assertTrue(audit["promptScopedTools"])
         self.assertFalse(audit["requestOverrides"]["extraBody"]["think"])
         self.assertEqual(
             audit["requestOverrides"]["extraBody"]["options"]["numPredict"],
-            4096,
+            512,
         )
 
     def test_prompt_scoped_tools_omit_tools_for_plain_answers(self):

@@ -166,8 +166,8 @@ fn assert_desktop_ui(root: &Path) -> Result<(), String> {
         }
     }
     if !package.contains("app/composer-state.test.mjs")
-        || !tauri.contains("\"height\": 410")
-        || !tauri.contains("\"minHeight\": 280")
+        || !tauri.contains("\"height\": 620")
+        || !tauri.contains("\"minHeight\": 430")
     {
         return Err(
             "desktop UI tests and production window dimensions must stay enabled".to_string(),
@@ -196,9 +196,9 @@ fn assert_conversational_voice_guards(root: &Path) -> Result<(), String> {
             "cancel_native_asr",
         ),
         (
-            "wake-word transcription bias",
+            "wake-word hallucination guard",
             tauri.as_str(),
-            "Iris. Hey Iris. Iris wake up.",
+            "whisper_prompts_bias_only_interruption_captures",
         ),
         (
             "stale listener cancellation",
@@ -1371,7 +1371,7 @@ fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
         "checkpoints_enabled=False",
         "os.environ[\"HERMES_DISABLE_LAZY_INSTALLS\"] = \"1\"",
         "IRIS_MAX_ITERATIONS = 8",
-        "IRIS_MAX_TOKENS = 4096",
+        "IRIS_MAX_TOKENS = 512",
         "max_iterations=IRIS_MAX_ITERATIONS",
         "max_tokens=IRIS_MAX_TOKENS",
         "reasoning_config={\"enabled\": False}",

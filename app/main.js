@@ -15,6 +15,7 @@ import {
   buildCameraCapturePlan,
   cameraAttemptDiagnostic,
   cameraErrorMessage,
+  createCameraPermissionPromptTimeoutError,
   createCameraUnavailableError
 } from "./camera-state.js";
 import {
@@ -33,6 +34,7 @@ import {
   responseDefaultHeight,
   responseHeightFromDrag,
   responseHeightFromKeyboard,
+  responseHeightLimitForViewport,
   responseMinHeight,
   shouldSubmitComposer
 } from "./composer-state.js";
@@ -127,6 +129,7 @@ let activeAudio = null;
 let activeSpeechResolve = null;
 let activeListenMode = "idle";
 let listenGeneration = 0;
+let wakeRestartTimer = null;
 let stopListeningRequested = false;
 let panicStopActive = false;
 let pendingVoiceLatency = null;
@@ -144,6 +147,7 @@ const feedbackModelId = "huihui_ai/gemma-4-abliterated:e2b";
 const feedbackProvider = "ollama_local";
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
+const cameraPermissionTimeoutMs = 12000;
 const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
 const defaultScreenPrompt = "Describe what is visible underneath the Iris window. Keep it brief and natural.";
 const trustedAttachmentObjectUrls = new Set();
@@ -1395,7 +1399,11 @@ function renderPanicStop() {
   elements.panicButton.setAttribute("aria-pressed", panicStopActive ? "true" : "false");
   elements.panicButton.setAttribute("title", panicStopActive ? "Resume Iris" : "Pause Iris");
   elements.panicButton.setAttribute("aria-label", panicStopActive ? "Resume Iris" : "Pause Iris");
-  setInputsDisabled(thinking || speaking || listening);
+  setInputsDisabled(inputBlockingWorkActive());
+}
+
+function inputBlockingWorkActive() {
+  return thinking || speaking || (listening && activeListenMode === "push");
 }
 
 async function togglePanicStop() {
@@ -1408,6 +1416,7 @@ async function togglePanicStop() {
     hideAgenticApproval(false);
     await hideBrowserPreview();
     stopListeningRequested = true;
+    clearWakeRestartTimer();
     voiceLoop = false;
     wakeCommandArmed = false;
     wakeMissStreak = 0;
@@ -1463,6 +1472,7 @@ function setListening(nextListening) {
     "title",
     listening && activeListenMode === "push" ? "Stop listening" : "Push to talk"
   );
+  setInputsDisabled(inputBlockingWorkActive());
 }
 
 function renderVoiceCapability() {
@@ -1476,11 +1486,13 @@ function startWindowDrag() {
 }
 
 function restartListeningIfReady(delayMs = 650) {
+  clearWakeRestartTimer();
   if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
     return;
   }
 
-  window.setTimeout(() => {
+  wakeRestartTimer = window.setTimeout(() => {
+    wakeRestartTimer = null;
     if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
       return;
     }
@@ -1489,6 +1501,13 @@ function restartListeningIfReady(delayMs = 650) {
       listenOnce(mode);
     }
   }, delayMs);
+}
+
+function clearWakeRestartTimer() {
+  if (wakeRestartTimer !== null) {
+    window.clearTimeout(wakeRestartTimer);
+    wakeRestartTimer = null;
+  }
 }
 
 async function listenOnce(mode) {
@@ -1517,10 +1536,15 @@ async function listenOnce(mode) {
       return;
     }
     const transcript = String(result.text || "").trim();
-    logVoice("native_asr_result", `${result.elapsed_ms}ms; ${transcript}`);
+    const captureElapsedMs = result.captureElapsedMs ?? result.capture_elapsed_ms;
+    const sttElapsedMs = result.sttElapsedMs ?? result.stt_elapsed_ms;
+    logVoice(
+      "native_asr_result",
+      `${result.elapsed_ms}ms; capture_ms=${captureElapsedMs ?? "unknown"}; stt_ms=${sttElapsedMs ?? "unknown"}; ${transcript}`
+    );
     pendingVoiceLatency = {
-      captureElapsedMs: result.captureElapsedMs ?? result.capture_elapsed_ms,
-      sttElapsedMs: result.sttElapsedMs ?? result.stt_elapsed_ms
+      captureElapsedMs,
+      sttElapsedMs
     };
     if (!isUsableTranscript(transcript)) {
       pendingVoiceLatency = null;
@@ -1842,6 +1866,7 @@ async function attachFile(file) {
 
 async function cancelActiveAsr() {
   listenGeneration += 1;
+  clearWakeRestartTimer();
   setListening(false);
   activeListenMode = "idle";
   if (!invoke) {
@@ -1934,12 +1959,16 @@ async function captureCameraSnapshot() {
           attempt.attemptId === "default"
             ? "Camera starting."
             : `Trying ${attempt.label}.`;
-        stream = await navigator.mediaDevices.getUserMedia(attempt.constraints);
+        stream = await getUserMediaWithTimeout(attempt.constraints, cameraPermissionTimeoutMs);
         const snapshot = await snapshotFromStream(stream);
         await saveCameraSnapshotDiagnostic(snapshot, attempt, attempts.length + 1);
         return snapshot;
       } catch (error) {
         attempts.push(cameraAttemptDiagnostic(attempt, error));
+        if (String(error?.name || "") === "CameraPermissionPromptTimeoutError") {
+          await saveCameraCaptureErrorDiagnostic(error.message, attempts);
+          throw error;
+        }
       } finally {
         if (stream) {
           for (const track of stream.getTracks()) {
@@ -1959,6 +1988,32 @@ async function captureCameraSnapshot() {
     cameraCaptureInProgress = false;
     elements.visionButton.disabled = false;
   }
+}
+
+function getUserMediaWithTimeout(constraints, timeoutMs) {
+  let timedOut = false;
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      reject(createCameraPermissionPromptTimeoutError());
+    }, timeoutMs);
+    navigator.mediaDevices.getUserMedia(constraints).then(
+      (stream) => {
+        window.clearTimeout(timeout);
+        if (timedOut) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+          return;
+        }
+        resolve(stream);
+      },
+      (error) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
 }
 
 function cameraErrorFromAttemptDiagnostic(attempt) {
@@ -2173,7 +2228,7 @@ function resizeComposerInput() {
 }
 
 function responseHeightLimit() {
-  return Math.max(responseMinHeight, window.innerHeight - 194);
+  return responseHeightLimitForViewport(window.innerHeight);
 }
 
 function setResponseHeight(requestedHeight) {

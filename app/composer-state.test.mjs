@@ -8,6 +8,8 @@ import {
   responseDefaultHeight,
   responseHeightFromDrag,
   responseHeightFromKeyboard,
+  responseHeightLimitForViewport,
+  responseLayoutReserveHeight,
   responseMinHeight,
   shouldSubmitComposer
 } from "./composer-state.js";
@@ -37,6 +39,13 @@ test("response height respects minimum, available space, and stable default", ()
   assert.equal(clampResponseHeight(40, 420), responseMinHeight);
   assert.equal(clampResponseHeight(260, 220), 220);
   assert.equal(clampResponseHeight("invalid", 420), responseDefaultHeight);
+});
+
+test("response height limit reserves visible composer and tool controls", () => {
+  assert.equal(responseLayoutReserveHeight, 278);
+  assert.equal(responseHeightLimitForViewport(620), 342);
+  assert.equal(responseHeightLimitForViewport(430), 152);
+  assert.equal(responseHeightLimitForViewport(320), responseMinHeight);
 });
 
 test("response resize grows upward because the pane sits above the handle", () => {

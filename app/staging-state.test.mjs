@@ -17,7 +17,10 @@ test("staging display only shows pending Hermes memories", () => {
   ];
 
   assert.deepEqual(pendingStagedMemories(staged).map((item) => item.id), [10]);
-  assert.equal(formatStagedMemories(staged), "10. Alejandro is 45 years old");
+  assert.equal(
+    formatStagedMemories(staged),
+    "10. Alejandro is 45 years old\n   Accept: hermes accept 10\n   Reject: hermes reject 10"
+  );
 });
 
 test("staging display names no pending items clearly", () => {
@@ -31,7 +34,7 @@ test("Hermes task staged section only renders pending proposals", () => {
       { id: 1, text: "old rejected", status: "rejected" },
       { id: 2, text: "pending detail", status: "pending" }
     ]),
-    "\n\nStaged memory:\n2. pending detail"
+    "\n\nStaged memory:\n2. pending detail\n   Accept: hermes accept 2\n   Reject: hermes reject 2"
   );
 });
 
