@@ -14,7 +14,7 @@ For v1, the best safe runtime shape is:
 - Iris runs as the Tauri desktop shell plus Rust command bridge.
 - Safe Hermes remains a restricted Iris-owned sidecar, started by Iris for
   local RAG and staged memory-transfer work.
-- Agentic Hermes uses pinned Hermes Agent 0.16.0 through a hidden Iris-owned ACP
+- Agentic Hermes uses provenance-pinned Hermes Agent 0.18.0 through a hidden Iris-owned ACP
   child process supervised by a Windows Job Object.
 - The Iris memory broker is loopback-only on `127.0.0.1:48731`.
 - Dynamic system context runs inline inside Iris with no background process or
@@ -51,7 +51,7 @@ target:
 - Hermes startup mode: Safe
 - Hermes modes: Off, Safe, Agentic Session
 - Agentic inactivity expiry: 30 minutes
-- Agentic runtime: pinned Hermes Agent 0.16.0 over stdio ACP
+- Agentic runtime: provenance-pinned Hermes Agent 0.18.0 over stdio ACP
 - Agentic memory tools: `iris_query_memory`, `iris_propose_memory`
 - Agentic action tools: `read_file`, `write_file`, `patch`, `search_files`,
   `terminal`, `process`

@@ -33,11 +33,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ACP_REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
 const MAX_CONSECUTIVE_MALFORMED_ACP_LINES: usize = 3;
 const MAX_ACP_LINE_BYTES: usize = 1_048_576;
-const HERMES_AGENT_VERSION: &str = "0.16.0";
+const HERMES_AGENT_VERSION: &str = "0.18.0";
+const ACP_PACKAGE_VERSION: &str = "0.9.0";
+const PYJWT_VERSION: &str = "2.13.0";
+const KOKORO_ONNX_VERSION: &str = "0.5.0";
+const SOUNDFILE_VERSION: &str = "0.14.0";
 const HERMES_WHEEL_SHA256: &str =
-    "accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2";
+    "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37";
 
 static ACP_BRIDGE: OnceLock<Mutex<Option<Arc<HermesAcpBridge>>>> = OnceLock::new();
+static HERMES_PYTHON: OnceLock<Option<PythonLaunch>> = OnceLock::new();
+static VOICE_PYTHON: OnceLock<Option<PythonLaunch>> = OnceLock::new();
 
 type AcpResponse = Result<Value, String>;
 type PendingRequestMap = HashMap<u64, mpsc::Sender<AcpResponse>>;
@@ -60,6 +66,21 @@ pub struct HermesAcpRuntimeStatus {
     pub action_tools_enabled: bool,
     pub browser_tools_enabled: bool,
     pub durable_memory_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PythonLaunch {
+    executable: PathBuf,
+    prefix_args: Vec<String>,
+}
+
+impl PythonLaunch {
+    fn display(&self) -> String {
+        std::iter::once(self.executable.to_string_lossy().to_string())
+            .chain(self.prefix_args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,26 +170,29 @@ impl Drop for WindowsJob {
     }
 }
 
-pub fn runtime_status(workspace_root: &Path) -> HermesAcpRuntimeStatus {
-    let paths = RuntimePaths::new(workspace_root);
-    let browser_exe = workspace_root
+pub fn runtime_status(resource_root: &Path, state_root: &Path) -> HermesAcpRuntimeStatus {
+    let paths = RuntimePaths::new(resource_root, state_root);
+    let python = hermes_python(&paths);
+    let browser_exe = resource_root
         .join(".iris-runtime/browser/node_modules/agent-browser/bin/agent-browser-win32-x64.exe");
-    let chrome_exe =
-        workspace_root.join(".iris-runtime/browser/browsers/chrome-149.0.7827.115/chrome.exe");
-    let browser_tools_enabled = browser_exe.is_file() && chrome_exe.is_file();
+    let browser_tools_enabled =
+        browser_exe.is_file() && browser_executable(resource_root).is_some();
     let running = ACP_BRIDGE
         .get()
         .and_then(|state| state.lock().ok())
         .and_then(|guard| guard.as_ref().cloned())
         .is_some_and(|bridge| bridge.is_running());
     HermesAcpRuntimeStatus {
-        installed: paths.python.exists() && paths.launcher.exists() && browser_tools_enabled,
+        installed: python.is_some()
+            && paths.site_packages.is_dir()
+            && paths.launcher.is_file()
+            && browser_tools_enabled,
         running,
         initialized: running,
         version: HERMES_AGENT_VERSION,
         wheel_sha256: HERMES_WHEEL_SHA256,
         launcher_path: paths.launcher.to_string_lossy().to_string(),
-        python_path: paths.python.to_string_lossy().to_string(),
+        python_path: python.map_or_else(String::new, |python| python.display()),
         stderr_log_path: paths.stderr_log.to_string_lossy().to_string(),
         exposed_tools: vec![
             "iris_query_memory",
@@ -197,8 +221,42 @@ pub fn runtime_status(workspace_root: &Path) -> HermesAcpRuntimeStatus {
     }
 }
 
+fn browser_executable(resource_root: &Path) -> Option<PathBuf> {
+    let configured = std::env::var_os("IRIS_BROWSER_EXECUTABLE_PATH").map(PathBuf::from);
+    let mut candidates = Vec::new();
+    for (variable, relative) in [
+        ("ProgramFiles(x86)", "Microsoft/Edge/Application/msedge.exe"),
+        ("ProgramFiles", "Microsoft/Edge/Application/msedge.exe"),
+        ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
+        ("ProgramFiles", "Google/Chrome/Application/chrome.exe"),
+        ("ProgramFiles(x86)", "Google/Chrome/Application/chrome.exe"),
+        ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
+    ] {
+        if let Some(root) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+            candidates.push(PathBuf::from(root).join(relative));
+        }
+    }
+    // Source checkouts may retain the pinned development browser. Production
+    // packages intentionally omit it and use the WinGet-managed system Edge.
+    candidates.push(
+        resource_root.join(".iris-runtime/browser/browsers/chrome-149.0.7827.115/chrome.exe"),
+    );
+    select_browser_executable(configured, candidates)
+}
+
+fn select_browser_executable(
+    configured: Option<PathBuf>,
+    candidates: impl IntoIterator<Item = PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(configured) = configured {
+        return (configured.is_absolute() && configured.is_file()).then_some(configured);
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
 pub fn submit_task(
-    workspace_root: &Path,
+    resource_root: &Path,
+    state_root: &Path,
     workspace_path: &str,
     model: &str,
     text: &str,
@@ -207,7 +265,7 @@ pub fn submit_task(
     if clean.is_empty() {
         return Err("Agentic Hermes task cannot be empty".to_string());
     }
-    let bridge = ensure_bridge(workspace_root, model)?;
+    let bridge = ensure_bridge(resource_root, state_root, model)?;
     let session_id = bridge.ensure_session(workspace_path)?;
     let (event_tx, event_rx) = mpsc::channel();
     {
@@ -269,7 +327,7 @@ pub fn submit_task(
     );
     text = assistant_text_from_notifications(&raw_events);
     let provenance = provenance_from_notifications(&raw_events);
-    append_action_audit(workspace_root, &session_id, &raw_events)?;
+    append_action_audit(state_root, &session_id, &raw_events)?;
     reject_repeated_tool_failures(&raw_events)?;
     if is_empty_agent_text(&text) {
         text = fallback_text_from_successful_tool(&raw_events)
@@ -444,7 +502,11 @@ pub fn respond_to_approval(request_id: &str, approved: bool) -> Result<(), Strin
     )
 }
 
-fn ensure_bridge(workspace_root: &Path, model: &str) -> Result<Arc<HermesAcpBridge>, String> {
+fn ensure_bridge(
+    resource_root: &Path,
+    state_root: &Path,
+    model: &str,
+) -> Result<Arc<HermesAcpBridge>, String> {
     let state = ACP_BRIDGE.get_or_init(|| Mutex::new(None));
     let mut guard = state
         .lock()
@@ -452,23 +514,27 @@ fn ensure_bridge(workspace_root: &Path, model: &str) -> Result<Arc<HermesAcpBrid
     if let Some(bridge) = guard.as_ref().filter(|bridge| bridge.is_running()) {
         return Ok(bridge.clone());
     }
-    let bridge = Arc::new(HermesAcpBridge::start(workspace_root, model)?);
+    let bridge = Arc::new(HermesAcpBridge::start(resource_root, state_root, model)?);
     bridge.initialize()?;
     *guard = Some(bridge.clone());
     Ok(bridge)
 }
 
 impl HermesAcpBridge {
-    fn start(workspace_root: &Path, model: &str) -> Result<Self, String> {
-        let paths = RuntimePaths::new(workspace_root);
+    fn start(resource_root: &Path, state_root: &Path, model: &str) -> Result<Self, String> {
+        let paths = RuntimePaths::new(resource_root, state_root);
         for (label, path) in [
-            ("Hermes ACP Python", &paths.python),
+            ("Hermes ACP packages", &paths.site_packages),
             ("Iris Hermes ACP launcher", &paths.launcher),
         ] {
             if !path.exists() {
                 return Err(format!("{label} is missing: {}", path.display()));
             }
         }
+        let python = hermes_python(&paths).ok_or_else(|| {
+            "Hermes ACP requires Python 3.13. Install or upgrade Python 3.13, then restart Iris."
+                .to_string()
+        })?;
         if let Some(parent) = paths.stderr_log.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
@@ -477,15 +543,21 @@ impl HermesAcpBridge {
             .append(true)
             .open(&paths.stderr_log)
             .map_err(|err| format!("failed to open Hermes ACP diagnostics: {err}"))?;
-        let mut command = Command::new(&paths.python);
+        let mut command = python_command_for_script(&python, &paths.launcher, &paths.site_packages);
         command
-            .arg(&paths.launcher)
-            .current_dir(workspace_root)
+            .current_dir(resource_root)
             .env("HERMES_HOME", &paths.home)
+            .env("IRIS_RESOURCE_ROOT", resource_root)
+            .env("IRIS_DATA_ROOT", state_root)
+            .env(
+                "IRIS_BROWSER_COMMAND_OUTPUT_DIR",
+                &paths.browser_command_output,
+            )
             .env("IRIS_HERMES_MODEL", model)
             .env("IRIS_HERMES_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
             .env("HERMES_DISABLE_LAZY_INSTALLS", "1")
             .env("PYTHONUTF8", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env_remove("OPENAI_API_KEY")
             .env_remove("OPENROUTER_API_KEY")
             .env_remove("ANTHROPIC_API_KEY")
@@ -531,7 +603,7 @@ impl HermesAcpBridge {
             event_sender,
             next_request_id: AtomicU64::new(1),
             session,
-            browser_command_output_dir: workspace_root.join(".iris-runtime/browser/command-output"),
+            browser_command_output_dir: paths.browser_command_output,
             #[cfg(windows)]
             job,
         })
@@ -642,22 +714,236 @@ impl HermesAcpBridge {
 }
 
 struct RuntimePaths {
-    python: PathBuf,
+    site_packages: PathBuf,
     launcher: PathBuf,
     home: PathBuf,
     stderr_log: PathBuf,
+    browser_command_output: PathBuf,
 }
 
 impl RuntimePaths {
-    fn new(workspace_root: &Path) -> Self {
-        let runtime = workspace_root.join(".iris-runtime/hermes");
+    fn new(resource_root: &Path, state_root: &Path) -> Self {
+        let venv = resource_root.join(".iris-runtime/hermes/.venv");
         Self {
-            python: runtime.join(".venv/Scripts/python.exe"),
-            launcher: workspace_root.join("plugins/hermes_acp/iris_acp.py"),
-            home: workspace_root.join(".iris-data/hermes-home"),
-            stderr_log: workspace_root.join("diagnostics/hermes-acp-stderr.log"),
+            site_packages: venv.join("Lib/site-packages"),
+            launcher: resource_root.join("plugins/hermes_acp/iris_acp.py"),
+            home: state_root.join(".iris-data/hermes-home"),
+            stderr_log: state_root.join("diagnostics/hermes-acp-stderr.log"),
+            browser_command_output: state_root.join(".iris-data/hermes-browser/command-output"),
         }
     }
+}
+
+fn hermes_python(paths: &RuntimePaths) -> Option<PythonLaunch> {
+    HERMES_PYTHON
+        .get_or_init(|| discover_python313(&paths.site_packages))
+        .clone()
+}
+
+fn discover_python313(site_packages: &Path) -> Option<PythonLaunch> {
+    python313_candidates()
+        .into_iter()
+        .filter(|candidate| !is_packaged_venv_python(candidate, site_packages))
+        .find(|candidate| python313_supports_hermes(candidate, site_packages))
+}
+
+fn is_packaged_venv_python(candidate: &PythonLaunch, site_packages: &Path) -> bool {
+    let Some(venv_root) = site_packages.parent().and_then(Path::parent) else {
+        return false;
+    };
+    let packaged = venv_root.join("Scripts/python.exe");
+    normalized_path_text(&candidate.executable)
+        .eq_ignore_ascii_case(&normalized_path_text(&packaged))
+}
+
+fn normalized_path_text(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn python313_candidates() -> Vec<PythonLaunch> {
+    let mut candidates = Vec::new();
+    if let Some(configured) = std::env::var_os("IRIS_PYTHON")
+        && !configured.is_empty()
+    {
+        push_python_candidate(
+            &mut candidates,
+            PythonLaunch {
+                executable: PathBuf::from(configured),
+                prefix_args: Vec::new(),
+            },
+        );
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let local_app_data = PathBuf::from(local_app_data);
+        push_python_path(
+            &mut candidates,
+            local_app_data.join("Programs/Python/Python313/python.exe"),
+        );
+        push_uv_python_candidates(&mut candidates, &local_app_data.join("uv/python"));
+    }
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        push_uv_python_candidates(&mut candidates, &PathBuf::from(app_data).join("uv/python"));
+    }
+    if let Some(program_files) = std::env::var_os("ProgramFiles") {
+        push_python_path(
+            &mut candidates,
+            PathBuf::from(program_files).join("Python313/python.exe"),
+        );
+    }
+    push_python_candidate(
+        &mut candidates,
+        PythonLaunch {
+            executable: PathBuf::from("py"),
+            prefix_args: vec!["-3.13".to_string()],
+        },
+    );
+    for executable in ["python3.13", "python"] {
+        push_python_path(&mut candidates, PathBuf::from(executable));
+    }
+    candidates
+}
+
+fn push_uv_python_candidates(candidates: &mut Vec<PythonLaunch>, root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut executables = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("cpython-3.13")
+        })
+        .map(|entry| entry.path().join("python.exe"))
+        .collect::<Vec<_>>();
+    executables.sort();
+    for executable in executables {
+        push_python_path(candidates, executable);
+    }
+}
+
+fn push_python_path(candidates: &mut Vec<PythonLaunch>, executable: PathBuf) {
+    push_python_candidate(
+        candidates,
+        PythonLaunch {
+            executable,
+            prefix_args: Vec::new(),
+        },
+    );
+}
+
+fn push_python_candidate(candidates: &mut Vec<PythonLaunch>, candidate: PythonLaunch) {
+    if !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn python313_supports_hermes(candidate: &PythonLaunch, site_packages: &Path) -> bool {
+    let version_probe = format!(
+        "import importlib.metadata as m,pathlib,sys; import acp,acp_adapter,jwt; site=pathlib.Path({:?}).resolve(); modules=(acp,acp_adapter,jwt); origins=[pathlib.Path(module.__file__).resolve() for module in modules]; ok=sys.version_info[:2] == (3, 13) and m.version('hermes-agent') == {HERMES_AGENT_VERSION:?} and m.version('agent-client-protocol') == {ACP_PACKAGE_VERSION:?} and m.version('PyJWT') == {PYJWT_VERSION:?} and all(site == origin or site in origin.parents for origin in origins); raise SystemExit(0 if ok else 1)",
+        site_packages.to_string_lossy()
+    );
+    let mut command = Command::new(&candidate.executable);
+    command
+        .args(&candidate.prefix_args)
+        .args(["-S", "-c", &version_probe])
+        .env("PYTHONPATH", site_packages)
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env_remove("PYTHONHOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.status().is_ok_and(|status| status.success())
+}
+
+fn discover_voice_python313(site_packages: &Path) -> Option<PythonLaunch> {
+    python313_candidates()
+        .into_iter()
+        .filter(|candidate| !is_packaged_venv_python(candidate, site_packages))
+        .find(|candidate| python313_supports_voice(candidate, site_packages))
+}
+
+fn python313_supports_voice(candidate: &PythonLaunch, site_packages: &Path) -> bool {
+    let version_probe = format!(
+        "import importlib.metadata as m,pathlib,sys; import kokoro_onnx,numpy,onnxruntime,soundfile; site=pathlib.Path({:?}).resolve(); modules=(kokoro_onnx,numpy,onnxruntime,soundfile); origins=[pathlib.Path(module.__file__).resolve() for module in modules]; ok=sys.version_info[:2] == (3, 13) and m.version('kokoro-onnx') == {KOKORO_ONNX_VERSION:?} and m.version('soundfile') == {SOUNDFILE_VERSION:?} and all(site == origin or site in origin.parents for origin in origins); raise SystemExit(0 if ok else 1)",
+        site_packages.to_string_lossy()
+    );
+    let mut command = Command::new(&candidate.executable);
+    command
+        .args(&candidate.prefix_args)
+        .args(["-S", "-c", &version_probe])
+        .env("PYTHONPATH", site_packages)
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env_remove("PYTHONHOME")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.status().is_ok_and(|status| status.success())
+}
+
+fn python_command_for_script(
+    python: &PythonLaunch,
+    script: &Path,
+    site_packages: &Path,
+) -> Command {
+    let mut command = Command::new(&python.executable);
+    command
+        .args(&python.prefix_args)
+        .arg("-S")
+        .arg(script)
+        .env("PYTHONPATH", site_packages)
+        .env("PYTHONNOUSERSITE", "1")
+        .env_remove("PYTHONHOME");
+    command
+}
+
+pub(crate) fn python313_command_for_script(
+    resource_root: &Path,
+    script: &Path,
+) -> Result<Command, String> {
+    let site_packages = resource_root.join(".iris-runtime/hermes/.venv/Lib/site-packages");
+    if !site_packages.is_dir() {
+        return Err(format!(
+            "Hermes Python packages are missing: {}",
+            site_packages.display()
+        ));
+    }
+    let python = HERMES_PYTHON
+        .get_or_init(|| discover_python313(&site_packages))
+        .as_ref()
+        .ok_or_else(|| {
+            "Iris requires Python 3.13. Install or upgrade Python 3.13, then restart Iris."
+                .to_string()
+        })?;
+    Ok(python_command_for_script(python, script, &site_packages))
+}
+
+pub(crate) fn python313_voice_command_for_script(
+    resource_root: &Path,
+    script: &Path,
+) -> Result<Command, String> {
+    let site_packages = resource_root.join(".iris-runtime/voice/Lib/site-packages");
+    if !site_packages.is_dir() {
+        return Err(format!(
+            "Iris voice Python packages are missing: {}",
+            site_packages.display()
+        ));
+    }
+    let python = VOICE_PYTHON
+        .get_or_init(|| discover_voice_python313(&site_packages))
+        .as_ref()
+        .ok_or_else(|| {
+            "Iris voice requires exact Python 3.13 with its pinned kokoro-onnx 0.5.0 and soundfile 0.14.0 layer. Repair or upgrade Iris, then restart it."
+                .to_string()
+        })?;
+    Ok(python_command_for_script(python, script, &site_packages))
 }
 
 fn start_reader(
@@ -988,11 +1274,11 @@ fn collect_text_blocks(value: &Value, found: &mut Vec<String>) {
 }
 
 fn append_action_audit(
-    workspace_root: &Path,
+    state_root: &Path,
     session_id: &str,
     notifications: &[Value],
 ) -> Result<(), String> {
-    let path = workspace_root.join("diagnostics/hermes-actions.jsonl");
+    let path = state_root.join("diagnostics/hermes-actions.jsonl");
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -1294,6 +1580,37 @@ mod tests {
     // Hermes ACP owns one supervised process and session, so live tests must not
     // compete for that singleton even when the Rust test runner is parallel.
     static LIVE_ACP_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn browser_executable_selection_honors_valid_absolute_override() {
+        let current_exe = std::env::current_exe().expect("current test executable");
+        assert_eq!(
+            select_browser_executable(
+                Some(current_exe.clone()),
+                [PathBuf::from("C:/missing/browser.exe")],
+            ),
+            Some(current_exe),
+        );
+        assert_eq!(
+            select_browser_executable(
+                Some(PathBuf::from("relative/browser.exe")),
+                [std::env::current_exe().expect("current test executable")],
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn browser_executable_selection_uses_first_existing_system_candidate() {
+        let current_exe = std::env::current_exe().expect("current test executable");
+        assert_eq!(
+            select_browser_executable(
+                None,
+                [PathBuf::from("C:/missing/browser.exe"), current_exe.clone(),],
+            ),
+            Some(current_exe),
+        );
+    }
 
     struct BridgeCleanup;
 
@@ -1777,14 +2094,176 @@ mod tests {
     }
 
     #[test]
-    fn runtime_paths_stay_inside_workspace() {
-        let root = Path::new("C:/Projects/IRIS");
-        let paths = RuntimePaths::new(root);
+    fn runtime_paths_split_immutable_resources_from_writable_state() {
+        let resources = Path::new("C:/Program Files/Iris");
+        let state = Path::new("C:/Users/Iris/AppData/Local/Iris");
+        let paths = RuntimePaths::new(resources, state);
 
-        assert!(paths.python.starts_with(root));
-        assert!(paths.launcher.starts_with(root));
-        assert!(paths.home.starts_with(root));
-        assert!(paths.stderr_log.starts_with(root));
+        assert!(paths.site_packages.starts_with(resources));
+        assert!(paths.launcher.starts_with(resources));
+        assert!(paths.home.starts_with(state));
+        assert!(paths.stderr_log.starts_with(state));
+        assert!(paths.browser_command_output.starts_with(state));
+        assert!(!paths.home.starts_with(resources));
+        assert!(!paths.browser_command_output.starts_with(resources));
+    }
+
+    #[test]
+    fn hermes_python_launch_uses_external_313_with_iris_owned_packages() {
+        let resources = Path::new("C:/Program Files/Iris");
+        let state = Path::new("C:/Users/Iris/AppData/Local/Iris");
+        let paths = RuntimePaths::new(resources, state);
+        let python = PythonLaunch {
+            executable: PathBuf::from("C:/Python313/python.exe"),
+            prefix_args: Vec::new(),
+        };
+        let command = python_command_for_script(&python, &paths.launcher, &paths.site_packages);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let env = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|value| value.to_string_lossy().to_string()),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        let expected_site_packages = paths.site_packages.to_string_lossy().to_string();
+        assert_eq!(command.get_program(), python.executable.as_os_str());
+        assert_eq!(
+            args,
+            [
+                "-S".to_string(),
+                paths.launcher.to_string_lossy().to_string()
+            ]
+        );
+        assert_eq!(
+            env.get("PYTHONPATH").and_then(|value| value.as_deref()),
+            Some(expected_site_packages.as_str())
+        );
+        assert_eq!(
+            env.get("PYTHONNOUSERSITE")
+                .and_then(|value| value.as_deref()),
+            Some("1")
+        );
+        assert_eq!(env.get("PYTHONHOME"), Some(&None));
+        assert!(
+            args.iter()
+                .all(|arg| !arg.contains(".venv/Scripts/python.exe"))
+        );
+        assert!(!is_packaged_venv_python(&python, &paths.site_packages));
+        assert!(is_packaged_venv_python(
+            &PythonLaunch {
+                executable: resources.join(".iris-runtime/hermes/.venv/Scripts/python.exe"),
+                prefix_args: Vec::new(),
+            },
+            &paths.site_packages,
+        ));
+    }
+
+    #[test]
+    fn image_provider_uses_the_same_relocatable_python_launch() {
+        let resources = Path::new("C:/Program Files/Iris");
+        let state = Path::new("C:/Users/Iris/AppData/Local/Iris");
+        let paths = RuntimePaths::new(resources, state);
+        let script = resources.join("tools/iris_image_provider.py");
+        let python = PythonLaunch {
+            executable: PathBuf::from("C:/Python313/python.exe"),
+            prefix_args: Vec::new(),
+        };
+        let command = python_command_for_script(&python, &script, &paths.site_packages);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(command.get_program(), python.executable.as_os_str());
+        assert_eq!(
+            args,
+            ["-S".to_string(), script.to_string_lossy().to_string()]
+        );
+        assert!(
+            args.iter()
+                .all(|arg| !arg.contains(".venv/Scripts/python.exe"))
+        );
+    }
+
+    #[test]
+    fn voice_python_launch_uses_only_the_iris_owned_voice_layer() {
+        let resources = Path::new("C:/Program Files/Iris");
+        let script = resources.join("tools/kokoro_tts.py");
+        let voice_site_packages = resources.join(".iris-runtime/voice/Lib/site-packages");
+        let python = PythonLaunch {
+            executable: PathBuf::from("C:/Python313/python.exe"),
+            prefix_args: Vec::new(),
+        };
+        let command = python_command_for_script(&python, &script, &voice_site_packages);
+        let env = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().to_string(),
+                    value.map(|value| value.to_string_lossy().to_string()),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let expected = voice_site_packages.to_string_lossy().to_string();
+
+        assert_eq!(
+            env.get("PYTHONPATH").and_then(|value| value.as_deref()),
+            Some(expected.as_str()),
+        );
+        assert!(!expected.contains(".iris-runtime/hermes"));
+        assert_eq!(
+            env.get("PYTHONNOUSERSITE")
+                .and_then(|value| value.as_deref()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn read_only_venv_config_is_ignored_and_never_rewritten() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-hermes-venv-config-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test root");
+        let config = root.join("pyvenv.cfg");
+        let original = "home = C:\\build-machine\\Python313\nversion_info = 3.13.14\n";
+        fs::write(&config, original).expect("venv config");
+        let mut permissions = fs::metadata(&config)
+            .expect("config metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&config, permissions).expect("read-only config");
+
+        let resources = root.join("resources");
+        let state = root.join("state");
+        let paths = RuntimePaths::new(&resources, &state);
+        let python = PythonLaunch {
+            executable: PathBuf::from("C:/Python313/python.exe"),
+            prefix_args: Vec::new(),
+        };
+        let _command = python_command_for_script(&python, &paths.launcher, &paths.site_packages);
+        assert_eq!(
+            fs::read_to_string(&config).expect("unchanged config"),
+            original
+        );
+
+        #[allow(clippy::permissions_set_readonly_false)]
+        {
+            let mut permissions = fs::metadata(&config)
+                .expect("config metadata")
+                .permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&config, permissions).expect("restore config permissions");
+        }
+        fs::remove_dir_all(root).expect("remove venv config test");
     }
 
     #[test]
@@ -1797,11 +2276,12 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace root");
-        let status = runtime_status(root);
+        let status = runtime_status(root, root);
         assert!(status.installed, "{status:?}");
         assert!(status.browser_tools_enabled, "{status:?}");
         let manifest = iris_config::load_manifest_from_workspace(root).expect("manifest");
         let result = submit_task(
+            root,
             root,
             root.to_string_lossy().as_ref(),
             &manifest.model_policy.model_id,
@@ -1842,6 +2322,7 @@ mod tests {
             .expect("model id");
 
         let result = submit_task(
+            root,
             root,
             root.to_str().expect("UTF-8 workspace path"),
             model,
@@ -1889,6 +2370,7 @@ mod tests {
 
         let query = submit_task(
             root,
+            root,
             workspace,
             model,
             "You must call iris_query_memory with query `age` and limit 5. Then answer Alejandro's age in one sentence and cite memory ID 7.",
@@ -1907,6 +2389,7 @@ mod tests {
 
         stop();
         let proposal = submit_task(
+            root,
             root,
             workspace,
             model,
@@ -1948,18 +2431,14 @@ mod tests {
         fs::write(workspace.join("seed.txt"), "IRIS_ACTION_OK").expect("write action test seed");
         let workspace_text = workspace.to_string_lossy().to_string();
 
-        let seed_path = workspace
-            .join("seed.txt")
-            .to_string_lossy()
-            .replace('\\', "/");
-        let read_prompt =
-            format!("Call read_file on `{seed_path}` now. Reply with exactly the file content.");
-        let read =
-            submit_task(root, &workspace_text, model, &read_prompt).expect("Hermes read_file task");
+        let read_prompt = "Call read_file on path `seed.txt` in the approved workspace now. Reply with exactly the file content.";
+        let read = submit_task(root, root, &workspace_text, model, read_prompt)
+            .expect("Hermes read_file task");
         assert!(read.text.contains("IRIS_ACTION_OK"), "{}", read.text);
 
         stop();
         let write = submit_task(
+            root,
             root,
             &workspace_text,
             model,
@@ -1980,6 +2459,7 @@ mod tests {
         stop();
         let shell = submit_task(
             root,
+            root,
             &workspace_text,
             model,
             "Call terminal with native PowerShell command `Write-Output 'IRIS_SHELL_OK'`. Reply with exactly its output.",
@@ -1992,6 +2472,7 @@ mod tests {
             let workspace_text = workspace_text.clone();
             let task = scope.spawn(move || {
                 submit_task(
+                    root,
                     root,
                     &workspace_text,
                     model,

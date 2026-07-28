@@ -63,7 +63,7 @@ Mark each item `PASS`, `FAIL`, or `BLOCKED`.
 | Extracted files | Launchers, docs, configs, models, profiles, and capabilities are present. |  |  |
 | Preflight | `.\Check Iris Preflight.bat` reports prerequisites without installing or downloading. |  |  |
 | Setup wizard | `.\Iris Setup Wizard.bat` reports setup status and clear repair guidance. |  |  |
-| Self-check | `.\Start Iris.ps1 --self-check` exits successfully. |  |  |
+| Self-check | `.\Start Iris.ps1 -SelfCheck` exits successfully. |  |  |
 | Desktop launch | `.\Start Iris.bat` opens the Iris desktop window. |  |  |
 | Text ask | Iris answers through local Ollama or reports the local prerequisite clearly. |  |  |
 | Image probe | Iris handles a local image prompt or reports the local prerequisite clearly. |  |  |

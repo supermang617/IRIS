@@ -2,6 +2,12 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $repoRoot
+$projectManifest = Get-Content -LiteralPath (Join-Path $repoRoot "manifest.json") -Raw | ConvertFrom-Json
+$expectedProjectVersion = [string]$projectManifest.project.version
+if ($expectedProjectVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+$") {
+    throw "manifest.json project version is not a three-part semantic version: $expectedProjectVersion"
+}
+$expectedRuntimeBanner = "Project Iris $expectedProjectVersion initialized."
 
 $runtimeExe = Join-Path $repoRoot "target\debug\iris-runtime.exe"
 Write-Host "Building iris-runtime for diagnostics..."
@@ -49,7 +55,7 @@ Require-OutputContains -Result $selfCheck -Needle "runtime_external_network=disa
 $dashboard = Invoke-Runtime -Arguments @("--dashboard-json")
 Require-Success -Result $dashboard -Name "dashboard json"
 $dashboardJson = $dashboard.Output | ConvertFrom-Json
-if ($dashboardJson.project_version -ne "v1") {
+if ($dashboardJson.project_version -ne $expectedProjectVersion) {
     throw "dashboard project version mismatch: $($dashboardJson.project_version)"
 }
 if ($dashboardJson.model.id -ne "huihui_ai/gemma-4-abliterated:e2b") {
@@ -61,7 +67,7 @@ if ($dashboardJson.model.runtime_external_network -ne "disabled" -or $dashboardJ
 
 $ask = Invoke-Runtime -Arguments @("--ask", "Say one sentence about your safety boundary.")
 Require-Success -Result $ask -Name "text ask"
-Require-OutputContains -Result $ask -Needle "Project Iris v1 initialized." -Name "text ask"
+Require-OutputContains -Result $ask -Needle $expectedRuntimeBanner -Name "text ask"
 
 $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-vision-text-diag-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
@@ -83,7 +89,7 @@ try {
     [System.IO.File]::WriteAllBytes($pngPath, [Convert]::FromBase64String($onePixelPngBase64))
     $validImage = Invoke-Runtime -Arguments @("--image-probe", $pngPath, "Describe this image as evidence only.")
     Require-Success -Result $validImage -Name "valid image probe graceful path"
-    Require-OutputContains -Result $validImage -Needle "Project Iris v1 initialized." -Name "valid image probe graceful path"
+    Require-OutputContains -Result $validImage -Needle $expectedRuntimeBanner -Name "valid image probe graceful path"
 } finally {
     Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 }

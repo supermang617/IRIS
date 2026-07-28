@@ -91,12 +91,13 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/package_windows_msix.ps1",
         "scripts/provision_hermes_acp.ps1",
         "scripts/provision_iris_browser.ps1",
+        "scripts/provision_iris_voice_runtime.ps1",
         "scripts/test_python.ps1",
         "scripts/test_vision_text_diagnostics.ps1",
         "scripts/benchmark_hermes_model.py",
         "scripts/test_windows_beginner_installer.ps1",
         "scripts/test_windows_release_download.ps1",
-        "scripts/test_github_v1_release.ps1",
+        "scripts/test_github_versioned_release.ps1",
         "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
         "scripts/test_windows_installer.ps1",
@@ -113,8 +114,11 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "plugins/memory/iris_broker/provider.py",
         "profiles/iris_restricted.json",
         "profiles/iris_agentic.json",
-        "profiles/hermes_agent_0_16_0.json",
+        "profiles/hermes_agent_0_18_0.json",
+        "profiles/hermes_agent_security_overrides.txt",
+        "profiles/hermes_agent_python_3_13.lock.txt",
         "profiles/iris_browser.json",
+        "profiles/iris_voice_python_3_13.lock.txt",
     ] {
         let path = root.join(relative);
         if !path.exists() {
@@ -392,7 +396,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let preflight_script = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
     let setup_script = read(root.join("scripts/iris_setup_wizard.ps1"))?;
     let windows_installer_script = read(root.join("scripts/install_iris_windows.ps1"))?;
-    let github_release_smoke = read(root.join("scripts/test_github_v1_release.ps1"))?;
+    let github_release_smoke = read(root.join("scripts/test_github_versioned_release.ps1"))?;
 
     for (name, content) in [
         ("README.md", &readme),
@@ -471,12 +475,12 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     for required in [
         "cargo fmt --all -- --check",
-        "cargo build --workspace",
-        "cargo test --workspace",
-        "cargo clippy --workspace",
+        "cargo build --workspace --locked",
+        "cargo test --workspace --locked",
+        "cargo clippy --workspace --locked -- -D warnings",
         "npm run test:voice",
         "npm run test:python",
-        "cargo run -p xtask",
+        "cargo run --locked -p xtask",
         "git diff --check",
     ] {
         if !ci.contains(required) {
@@ -484,8 +488,10 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         }
     }
     for required in [
-        "v[0-9]+",
-        "gh release download v1",
+        "v[0-9]+.[0-9]+.[0-9]+",
+        "scripts\\test_release_version.ps1",
+        "scripts\\test_github_versioned_release.ps1",
+        "DownloadPayloads",
         "scripts\\package_windows_release.ps1",
         "scripts\\test_windows_release_download.ps1",
         "scripts\\test_windows_beginner_installer.ps1",
@@ -524,9 +530,10 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "Iris Production Readiness Checklist",
         "Beginner Installer Acceptance",
         "Installed-App Manual Acceptance",
-        "Publish `v1`",
-        "Move/update only the single `v1` tag",
-        "scripts\\test_github_v1_release.ps1",
+        "Publish An Immutable Version",
+        "immutable monotonically increasing",
+        "Never move or replace a semantic tag",
+        "scripts\\test_github_versioned_release.ps1",
         "Production-Trusted Installer",
     ] {
         if !finish_checklist.contains(required) {
@@ -596,7 +603,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         .contains("The Iris desktop window opens first, then starts Ollama hidden")
         || !runtime_orchestration.contains("Ollama runs as the local model service")
         || !runtime_orchestration.contains("Safe Hermes remains a restricted Iris-owned sidecar")
-        || !runtime_orchestration.contains("pinned Hermes Agent 0.16.0")
+        || !runtime_orchestration.contains("pinned Hermes Agent 0.18.0")
         || !runtime_orchestration
             .contains("Agentic action tools: `read_file`, `write_file`, `patch`, `search_files`,")
         || !runtime_orchestration.contains("`terminal`, `process`")
@@ -621,16 +628,20 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     for required in [
         "gh release view $Tag",
-        "refs/heads/main",
         "refs/tags/$Tag",
-        "Remote main and $Tag must point to the same commit",
+        "ExpectedCommit",
+        "Versioned release verification requires an immutable semantic tag",
         "install-iris-windows.ps1.sha256",
         "iris-windows-installer.zip.sha256",
         "iris-windows.zip.sha256",
         "DownloadPayloads",
+        "RequireSignedMsix",
+        "RequireWingetBundle",
     ] {
         if !github_release_smoke.contains(required) {
-            return Err(format!("GitHub v1 release smoke test missing `{required}`"));
+            return Err(format!(
+                "GitHub versioned release smoke test missing `{required}`"
+            ));
         }
     }
     for (name, content) in [
@@ -672,7 +683,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     for required in [
         "iris-windows.zip",
         "iris-windows.zip.sha256",
-        "Start Iris.ps1 --self-check",
+        "Start Iris.ps1 -SelfCheck",
         "Ollama text ask",
         "Image probe",
         "Hermes status",
@@ -958,7 +969,7 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
         "\"expires_on_mode_change\": true",
         "\"duplicate_sessions_allowed\": false",
         "\"provider\": \"hermes_agent\"",
-        "\"version\": \"0.16.0\"",
+        "\"version\": \"0.18.0\"",
         "\"transport\": \"acp_stdio\"",
         "\"lifecycle_owner\": \"iris\"",
         "\"local_ollama_only\": true",
@@ -1083,7 +1094,12 @@ fn assert_hermes_browser_runtime(root: &Path) -> Result<(), String> {
     for required in [
         "\"provider\": \"agent-browser\"",
         "\"version\": \"0.27.2\"",
-        "\"chrome_for_testing_version\": \"149.0.7827.115\"",
+        "\"system_browser\"",
+        "\"bundled\": false",
+        "\"preferred\": \"Microsoft Edge\"",
+        "\"winget_package\": \"Microsoft.Edge\"",
+        "\"executable_override\": \"IRIS_BROWSER_EXECUTABLE_PATH\"",
+        "\"isolated_profile\": true",
         "\"headless_default\": true",
         "\"manual_auth_headed_allowed\": true",
         "\"private_network_navigation\": false",
@@ -1142,9 +1158,13 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     let beginner_smoke = read(root.join("scripts/test_windows_beginner_installer.ps1"))?;
     let installer_smoke = read(root.join("scripts/test_windows_installer.ps1"))?;
     for required in [
-        ".iris-runtime\\hermes\\.venv",
+        ".iris-runtime\\hermes\\.venv\\Lib\\site-packages",
+        ".iris-runtime\\voice\\Lib\\site-packages",
+        ".iris-runtime\\voice\\runtime-lock.txt",
+        "profiles\\iris_voice_python_3_13.lock.txt",
         ".iris-runtime\\browser\\node_modules",
-        ".iris-runtime\\browser\\browsers",
+        "system_browser = [ordered]@{",
+        "winget_package = \"Microsoft.Edge\"",
         "volatile_data_packaged = $false",
     ] {
         if !package.contains(required) {
@@ -1214,7 +1234,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "fresh installer smoke",
         "upgrade installer smoke",
         "-SkipSelfCheck",
-        "installed Hermes Python probe",
+        "installed Hermes package probe",
         "timed out after $TimeoutSeconds seconds",
     ] {
         if !installer_smoke.contains(required) {
@@ -1228,7 +1248,6 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "SkipSelfCheck",
         "IRIS_PREFLIGHT_FAST_LOCAL_ONLY",
         "Installed Iris self-check timed out",
-        "Invoke-InstallerProbe",
         "timed out after $TimeoutSeconds seconds",
         "Stop-ProcessTree",
         "installer-self-check.log",
@@ -1275,13 +1294,14 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     let ci = read(root.join(".github/workflows/ci.yml"))?;
     for required in [
         "node-version: \"24\"",
-        "python-version: \"3.11\"",
+        "python-version: \"3.13\"",
         "scripts\\provision_hermes_acp.ps1",
         "scripts\\provision_iris_browser.ps1",
+        "scripts\\provision_iris_voice_runtime.ps1",
         "npm run test:python",
-        "cargo run -p xtask",
-        "cargo run -p iris-runtime -- --dashboard-json",
-        "cargo clippy --workspace -- -D warnings",
+        "cargo run --locked -p xtask",
+        "cargo run --locked -p iris-runtime -- --dashboard-json",
+        "cargo clippy --workspace --locked -- -D warnings",
         "iris-dependency-inventory",
     ] {
         if !ci.contains(required) {
@@ -1289,6 +1309,20 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         }
     }
 
+    let workspace_version = env!("CARGO_PKG_VERSION");
+    if !is_release_semver(workspace_version) {
+        return Err(format!(
+            "workspace package version `{workspace_version}` must be MAJOR.MINOR.PATCH"
+        ));
+    }
+    let workspace_manifest = read(root.join("Cargo.toml"))?;
+    if !workspace_manifest.contains("[workspace.package]")
+        || !workspace_manifest.contains(&format!("version = \"{workspace_version}\""))
+    {
+        return Err(format!(
+            "Cargo.toml must declare workspace package version {workspace_version}"
+        ));
+    }
     for path in [
         "crates/iris-cognition/Cargo.toml",
         "crates/iris-config/Cargo.toml",
@@ -1306,38 +1340,50 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "src-tauri/Cargo.toml",
         "xtask/Cargo.toml",
     ] {
-        if !read(root.join(path))?.contains("version = \"1.0.0\"") {
-            return Err(format!("{path} must use release version 1.0.0"));
+        if !read(root.join(path))?.contains("version.workspace = true") {
+            return Err(format!("{path} must inherit the workspace package version"));
         }
     }
-    if !read(root.join("package.json"))?.contains("\"version\": \"1.0.0\"")
-        || !tauri.contains("\"version\": \"1.0.0\"")
-        || !read(root.join("manifest.json"))?.contains("\"version\": \"v1\"")
+    let expected_json_version = format!("\"version\": \"{workspace_version}\"");
+    let diagnostics_test = read(root.join("scripts/test_vision_text_diagnostics.ps1"))?;
+    if !read(root.join("package.json"))?.contains(&expected_json_version)
+        || !read(root.join("package-lock.json"))?.contains(&expected_json_version)
+        || !tauri.contains(&expected_json_version)
+        || !read(root.join("manifest.json"))?.contains(&expected_json_version)
         || !read(root.join("crates/iris-core-types/src/lib.rs"))?
-            .contains("PROJECT_VERSION: &str = \"v1\"")
+            .contains("PROJECT_VERSION: &str = env!(\"CARGO_PKG_VERSION\")")
         || read(root.join("crates/iris-runtime/src/main.rs"))?
             .contains("Project Iris v0.1 initialized")
-        || !read(root.join("scripts/test_vision_text_diagnostics.ps1"))?
-            .contains("Project Iris v1 initialized")
+        || !diagnostics_test.contains("$projectManifest.project.version")
+        || !diagnostics_test.contains(
+            "$expectedRuntimeBanner = \"Project Iris $expectedProjectVersion initialized.\"",
+        )
     {
-        return Err(
-            "npm, Tauri, Iris manifest, shared constant, and runtime banner versions must be 1.0.0"
-                .to_string(),
-        );
+        return Err(format!(
+            "npm, Tauri, Iris manifest, shared constant, and runtime banner versions must match workspace version {workspace_version}"
+        ));
     }
     Ok(())
 }
 
 fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
-    let metadata = read(root.join("profiles/hermes_agent_0_16_0.json"))?;
+    let metadata = read(root.join("profiles/hermes_agent_0_18_0.json"))?;
     for required in [
-        "\"version\": \"0.16.0\"",
-        "\"release_tag\": \"v2026.6.5\"",
-        "\"release_commit\": \"3c231eb3979ab9c57d5cd6d02f1d577a3b718b43\"",
-        "\"wheel_sha256\": \"accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2\"",
-        "\"sigstore_transparency_entry\": 1737513268",
+        "\"version\": \"0.18.0\"",
+        "\"release_tag\": \"v2026.7.1\"",
+        "\"release_commit\": \"7c1a029553d87c43ecff8a3821336bc95872213b\"",
+        "\"wheel_sha256\": \"bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37\"",
+        "\"sigstore_transparency_entry\": 2040635656",
         "\"trusted_publishing\": true",
         "\"agent_client_protocol\": \"0.9.0\"",
+        "\"pyjwt\": \"2.13.0\"",
+        "\"python\": \"3.13\"",
+        "\"dependency_lock\": \"profiles/hermes_agent_python_3_13.lock.txt\"",
+        "\"dependency_lock_sha256\": \"faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47\"",
+        "\"dependency_count\": 65",
+        "\"profile\": \"profiles/hermes_agent_security_overrides.txt\"",
+        "\"cryptography\": \"48.0.1\"",
+        "\"pillow\": \"12.3.0\"",
         "\"runtime_root\": \".iris-runtime/hermes\"",
     ] {
         if !metadata.contains(required) {
@@ -1347,11 +1393,16 @@ fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
 
     let provision = read(root.join("scripts/provision_hermes_acp.ps1"))?;
     for required in [
-        "hermes_agent-0.16.0-py3-none-any.whl",
-        "accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2",
-        "\"$Wheel[acp]\"",
-        "m.version('hermes-agent') == '0.16.0'",
-        "m.version('agent-client-protocol') == '0.9.0'",
+        "hermes_agent-0.18.0-py3-none-any.whl",
+        "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37",
+        "faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47",
+        "pip install --python $Python --require-hashes --no-deps --only-binary :all: --requirement $DependencyLock",
+        "expected[\"hermes-agent\"] = \"0.18.0\"",
+        "\"agent-client-protocol\": \"0.9.0\"",
+        "\"pyjwt\": \"2.13.0\"",
+        "\"cryptography\": \"48.0.1\"",
+        "\"pillow\": \"12.3.0\"",
+        "Hermes ACP exact dependency-set audit failed.",
     ] {
         if !provision.contains(required) {
             return Err(format!("Hermes ACP provisioner missing `{required}`"));
@@ -1503,21 +1554,19 @@ fn is_approved_live_self_check_process_probe(
         return Ok(false);
     }
     let constructor_count = content.matches("Command::new(").count();
-    let python_constructor_count = content.matches("Command::new(\"python\")").count();
-    let approved_agentic_probes = [
-        "Command::new(&hermes_python)",
+    let approved_prerequisite_probes = [
+        "Command::new(&candidate.executable)",
         "Command::new(&agent_browser)",
+        "fn run_python313_probe",
         "fn validate_agentic_prerequisites",
     ];
-    if constructor_count != 4
-        || python_constructor_count != 2
-        || approved_agentic_probes
+    if constructor_count != 2
+        || approved_prerequisite_probes
             .iter()
             .any(|probe| !content.contains(probe))
     {
         return Err(
-            "iris-runtime self-check may launch only the four audited prerequisite probes"
-                .to_string(),
+            "iris-runtime self-check may launch only the audited external Python and agent-browser prerequisite probes".to_string(),
         );
     }
     Ok(true)
@@ -1567,7 +1616,10 @@ fn is_approved_local_ocr_process_probe(
 fn is_loopback_inference_file(file: &Path, pattern: &str) -> bool {
     file.components()
         .any(|component| component.as_os_str() == "iris-ollama")
-        && matches!(pattern, "reqwest" | "std::net::")
+        && matches!(
+            pattern,
+            "reqwest" | "std::net::" | "TcpStream" | "TcpListener"
+        )
 }
 
 fn forbidden_patterns() -> Vec<String> {
@@ -1616,6 +1668,16 @@ fn collect_source_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), Str
     Ok(())
 }
 
+fn is_release_semver(value: &str) -> bool {
+    let parts = value.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && (part == &"0" || !part.starts_with('0'))
+        })
+}
+
 fn read(path: impl AsRef<Path>) -> Result<String, String> {
     fs::read_to_string(path.as_ref()).map_err(|err| format!("{}: {err}", path.as_ref().display()))
 }
@@ -1629,6 +1691,26 @@ mod tests {
             .parent()
             .expect("xtask has workspace parent")
             .to_path_buf()
+    }
+
+    #[test]
+    fn release_version_requires_plain_semver() {
+        for allowed in ["0.1.0", "1.0.0", "12.34.567"] {
+            assert!(is_release_semver(allowed), "{allowed}");
+        }
+        for rejected in [
+            "v1.0.0",
+            "1",
+            "1.0",
+            "1.0.0.0",
+            "01.0.0",
+            "1.00.0",
+            "1.0.00",
+            "1.0.0-beta.1",
+            "",
+        ] {
+            assert!(!is_release_semver(rejected), "{rejected}");
+        }
     }
 
     #[test]

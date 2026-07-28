@@ -22,7 +22,7 @@ This repository is public and source-first so people can inspect, test, and subm
 - Memory: Iris-owned local memory with restricted Hermes broker/staging path.
 - Dynamic system context: local, text-free aggregate communication metrics
   adapt response presentation with a 30-day decay and explicit on/off/reset controls.
-- Hermes: Safe mode uses the restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal by default. Agentic Session uses pinned Hermes Agent 0.16.0 through an Iris-supervised local ACP bridge.
+- Hermes: Safe mode uses the restricted Iris-owned local RAG sidecar, enabled for local memory query/proposal by default. Agentic Session uses provenance-pinned Hermes Agent 0.18.0 through an Iris-supervised local ACP bridge.
 - Hermes modes: Off, Safe, and Agentic Session are implemented. Safe is the startup default. Agentic supports supervised local text, file, PowerShell, process, and isolated browser tasks plus Iris-owned RAG and staged memory proposals.
 - Local archive policy: Iris memory stays in Iris-owned local storage. Future archive files must use `.iris-memory-archive.enc` and must not live in cloud-sync folders.
 
@@ -113,14 +113,23 @@ scripts\iris_preflight_wizard.ps1
 scripts\iris_setup_wizard.ps1 -NonInteractive
 scripts\test_windows_beginner_installer.ps1
 scripts\test_windows_installer.ps1
+scripts\test_iris_data_root.ps1
+scripts\test_iris_windows_update.ps1
+scripts\test_windows_browser_payload.ps1
+scripts\test_winget_manifests.ps1
 scripts\test_windows_signed_installer_readiness.ps1
 scripts\test_windows_msix_signature.ps1
 git diff --check
 ```
 
-Native ASR builds require `libclang`. Workspace pins `LIBCLANG_PATH` in `.cargo/config.toml` to local Python `libclang` package installed for this build.
+Native ASR builds require LLVM `libclang`. CI provisions LLVM explicitly;
+local Windows source builds can install the updateable `LLVM.LLVM` WinGet
+package and set `LIBCLANG_PATH` to its `bin` directory when discovery needs help.
 
-Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice declared in `manifest.json`. The current helper requires Python with `kokoro-onnx` and `soundfile` installed.
+Kokoro TTS uses local assets under `models/kokoro/` and the `af_heart` voice
+declared in `manifest.json`. Windows runtime helpers use exact Python 3.13.
+The release carries fully hash-locked, Iris-owned Hermes, image-provider, and
+Kokoro package layers; users do not install those packages globally.
 
 ## Run
 
@@ -130,12 +139,18 @@ Architecture notes: `docs/iris-architecture.md`.
 Beginner preflight guide: `docs/installer-preflight.md`.
 Windows installer plan: `docs/windows-installer.md`.
 Signed installer decision: `docs/signed-installer-decision.md`.
+WinGet release and external submission path: `docs/winget-release.md`.
 Runtime orchestration: `docs/runtime-orchestration.md`.
 Historical manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
 The recommended beginner download is `iris-windows-installer.zip`: extract it
 and double-click `Install Iris.bat`. The portable release remains available for
 advanced/manual use and includes `Iris Setup Wizard.bat` plus read-only
 `Check Iris Preflight.bat`.
+
+The target public package identifier is `AlejandroPinto.Iris`. WinGet install
+and upgrade commands become available only after a production-signed semantic
+release is accepted into Microsoft's `microsoft/winget-pkgs` catalog; generated
+manifests in this repository are not a claim that acceptance is complete.
 
 Console:
 

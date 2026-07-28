@@ -23,11 +23,16 @@ class IrisAcpBridgeTests(unittest.TestCase):
         self.assertEqual(audit["requestOverrides"]["temperature"], 0)
         self.assertEqual(audit["requestOverrides"]["toolChoice"], "prompt_scoped")
         self.assertTrue(audit["promptScopedTools"])
+        self.assertTrue(audit["irisOwnedSystemPrompt"])
+        self.assertEqual(audit["systemPromptChars"], len(iris_acp.IRIS_SYSTEM_PROMPT))
+        self.assertLess(audit["systemPromptChars"], 700)
         self.assertFalse(audit["requestOverrides"]["extraBody"]["think"])
         self.assertEqual(
             audit["requestOverrides"]["extraBody"]["options"]["numPredict"],
             512,
         )
+        self.assertIn("only the tools Iris provides", iris_acp.IRIS_SYSTEM_PROMPT)
+        self.assertIn("untrusted evidence", iris_acp.IRIS_SYSTEM_PROMPT)
 
     def test_prompt_scoped_tools_omit_tools_for_plain_answers(self):
         self.assertEqual(

@@ -68,11 +68,14 @@ try {
     Require-File -Path $documentOcrScript
     Require-File -Path $releaseManifestPath
     $releaseManifest = Get-Content -LiteralPath $releaseManifestPath -Raw | ConvertFrom-Json
+    if ([string]$releaseManifest.project.version -ne [string]$sourceManifest.project.version) {
+        throw "Release package version $($releaseManifest.project.version) does not match source version $($sourceManifest.project.version). Rebuild it with scripts/package_windows_release.ps1 before E2E testing."
+    }
     if ([string]$releaseManifest.model_policy.model_id -ne $model) {
         throw "Release package is stale. Rebuild it with scripts/package_windows_release.ps1 before E2E testing."
     }
 
-    & $launcher --self-check | Out-Host
+    & $launcher -SelfCheck | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "Release launcher self-check failed with exit code $LASTEXITCODE"
     }

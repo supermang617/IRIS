@@ -1,3 +1,7 @@
+param(
+    [switch]$UseExistingReleaseBinaries
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
@@ -78,10 +82,14 @@ Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyConti
 Remove-Item -LiteralPath $distRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $packageRoot, $distRoot | Out-Null
 
-Write-Host "Building release executables..."
-& cargo build --workspace --release
-if ($LASTEXITCODE -ne 0) {
-    throw "cargo build --workspace --release failed with exit code $LASTEXITCODE"
+if ($UseExistingReleaseBinaries) {
+    Write-Warning "Using existing target\\release executables. This mode is for packaging diagnostics only; production releases must build from the tagged source."
+} else {
+    Write-Host "Building release executables..."
+    & cargo build --workspace --release --locked
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo build --workspace --release failed with exit code $LASTEXITCODE"
+    }
 }
 
 $runtimeExe = Join-Path $repoRoot "target\release\iris-runtime.exe"
@@ -104,6 +112,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "docs\installer-preflight.md") -D
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\iris-architecture.md") -Destination (Join-Path $packageRoot "docs\iris-architecture.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\windows-installer.md") -Destination (Join-Path $packageRoot "docs\windows-installer.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\signed-installer-decision.md") -Destination (Join-Path $packageRoot "docs\signed-installer-decision.md")
+Copy-RequiredFile -Source (Join-Path $repoRoot "docs\winget-release.md") -Destination (Join-Path $packageRoot "docs\winget-release.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\runtime-orchestration.md") -Destination (Join-Path $packageRoot "docs\runtime-orchestration.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "docs\manual-end-user-test-v0.1.0.md") -Destination (Join-Path $packageRoot "docs\manual-end-user-test-v0.1.0.md")
 Copy-RequiredFile -Source (Join-Path $repoRoot "tools\kokoro_tts.py") -Destination (Join-Path $packageRoot "tools\kokoro_tts.py")
@@ -112,6 +121,8 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_preflight_wizard.ps
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_setup_wizard.ps1") -Destination (Join-Path $packageRoot "Iris Setup Wizard.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_document_ocr.ps1") -Destination (Join-Path $packageRoot "Iris Document OCR.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1") -Destination (Join-Path $packageRoot "Install Iris.ps1")
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\initialize_iris_data_root.ps1") -Destination (Join-Path $packageRoot "Initialize Iris Data Root.ps1")
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\update_iris_windows.ps1") -Destination (Join-Path $packageRoot "Update Iris.ps1")
 
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "models") -Destination (Join-Path $packageRoot "models")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "profiles") -Destination (Join-Path $packageRoot "profiles")
@@ -120,12 +131,23 @@ Copy-RequiredDirectory -Source (Join-Path $repoRoot "assets") -Destination (Join
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "plugins") -Destination (Join-Path $packageRoot "plugins")
 
 $hermesRuntime = Join-Path $repoRoot ".iris-runtime\hermes"
+$voiceRuntime = Join-Path $repoRoot ".iris-runtime\voice"
 $browserRuntime = Join-Path $repoRoot ".iris-runtime\browser"
-Copy-RequiredDirectory -Source (Join-Path $hermesRuntime ".venv") -Destination (Join-Path $packageRoot ".iris-runtime\hermes\.venv")
+Copy-RequiredDirectory `
+    -Source (Join-Path $hermesRuntime ".venv\Lib\site-packages") `
+    -Destination (Join-Path $packageRoot ".iris-runtime\hermes\.venv\Lib\site-packages")
+Copy-RequiredDirectory `
+    -Source (Join-Path $voiceRuntime "Lib\site-packages") `
+    -Destination (Join-Path $packageRoot ".iris-runtime\voice\Lib\site-packages")
+Copy-RequiredFile `
+    -Source (Join-Path $voiceRuntime "runtime-lock.txt") `
+    -Destination (Join-Path $packageRoot ".iris-runtime\voice\runtime-lock.txt")
 Copy-RequiredDirectory -Source (Join-Path $browserRuntime "node_modules") -Destination (Join-Path $packageRoot ".iris-runtime\browser\node_modules")
-Copy-RequiredDirectory -Source (Join-Path $browserRuntime "browsers") -Destination (Join-Path $packageRoot ".iris-runtime\browser\browsers")
 Copy-RequiredFile -Source (Join-Path $browserRuntime "package.json") -Destination (Join-Path $packageRoot ".iris-runtime\browser\package.json")
 Copy-RequiredFile -Source (Join-Path $browserRuntime "package-lock.json") -Destination (Join-Path $packageRoot ".iris-runtime\browser\package-lock.json")
+$browserPrune = & (Join-Path $repoRoot "scripts\prune_windows_browser_runtime.ps1") `
+    -BrowserRuntimeRoot (Join-Path $packageRoot ".iris-runtime\browser") `
+    -PassThru
 
 $packageRootResolved = [System.IO.Path]::GetFullPath($packageRoot).TrimEnd("\")
 foreach ($cacheDirectory in @(Get-ChildItem -LiteralPath $packageRootResolved -Recurse -Force -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue)) {
@@ -144,36 +166,102 @@ foreach ($bytecodeFile in @(Get-ChildItem -LiteralPath $packageRootResolved -Rec
     Remove-Item -LiteralPath $bytecodePath -Force
 }
 
+$voiceProfileLock = Join-Path $packageRoot "profiles\iris_voice_python_3_13.lock.txt"
+$voiceRuntimeLock = Join-Path $packageRoot ".iris-runtime\voice\runtime-lock.txt"
+$voiceLockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $voiceProfileLock).Hash.ToLowerInvariant()
+$voiceRuntimeLockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $voiceRuntimeLock).Hash.ToLowerInvariant()
+if ($voiceRuntimeLockHash -ne $voiceLockHash) {
+    throw "Iris voice runtime was provisioned from a different lock. Run scripts\provision_iris_voice_runtime.ps1 before packaging."
+}
+$voiceLockText = Get-Content -LiteralPath $voiceProfileLock -Raw
+$voiceLockedPackages = @(
+    Get-Content -LiteralPath $voiceProfileLock |
+        Where-Object { $_ -match '^[a-z0-9][a-z0-9._-]*==[^ ]+ \\' }
+)
+if (
+    $voiceLockedPackages.Count -ne 32 -or
+    $voiceLockText -notmatch '(?m)^kokoro-onnx==0\.5\.0 \\' -or
+    $voiceLockText -notmatch '(?m)^soundfile==0\.14\.0 \\'
+) {
+    throw "Iris voice runtime lock is incomplete."
+}
+$voiceLayerBytes = [int64]((Get-ChildItem -LiteralPath (Join-Path $packageRoot ".iris-runtime\voice\Lib\site-packages") -Recurse -Force -File |
+        Measure-Object -Property Length -Sum).Sum)
+
 $runtimeManifest = [ordered]@{
     hermes_agent = [ordered]@{
-        version = "0.16.0"
-        wheel_sha256 = "accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2"
+        version = "0.18.0"
+        upstream_tag = "v2026.7.1"
+        upstream_commit = "7c1a029553d87c43ecff8a3821336bc95872213b"
+        wheel_sha256 = "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37"
+        dependency_lock = "profiles/hermes_agent_python_3_13.lock.txt"
+        dependency_lock_sha256 = "faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47"
+        dependency_count = 65
+        security_overrides = [ordered]@{
+            cryptography = "48.0.1"
+            pillow = "12.3.0"
+        }
+        sigstore_entry = "2040635656"
+        bundled_site_packages = $true
+        bundled_interpreter = $false
+        required_python = "3.13"
+    }
+    voice_python = [ordered]@{
+        required_python = "3.13"
+        platform = "win_amd64"
+        bundled_site_packages = $true
+        bundled_interpreter = $false
+        lock_path = "profiles/iris_voice_python_3_13.lock.txt"
+        lock_sha256 = $voiceLockHash
+        package_count = 32
+        installed_bytes = $voiceLayerBytes
+        roots = @("kokoro-onnx==0.5.0", "soundfile==0.14.0")
+        core_versions = [ordered]@{
+            numpy = "2.5.1"
+            onnxruntime = "1.28.0"
+        }
+        upgrade_owner = "AlejandroPinto.Iris"
     }
     agent_browser = [ordered]@{
         version = "0.27.2"
-        binary_sha256 = "013c9bb6084e72d69a8ebb6c3d5669ba117129479b81d9336012b36b91f490e5"
+        platform = "windows-x64"
+        binary_sha256 = $browserPrune.WindowsBinarySha256
+        pruned_non_windows_binaries = $browserPrune.RemovedCount
+        pruned_bytes = $browserPrune.BytesRemoved
     }
-    chrome_for_testing = [ordered]@{
-        version = "149.0.7827.115"
-        executable_sha256 = "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56"
+    system_browser = [ordered]@{
+        bundled = $false
+        preferred = "Microsoft Edge"
+        winget_package = "Microsoft.Edge"
+        executable_override = "IRIS_BROWSER_EXECUTABLE_PATH"
+        isolated_profile = $true
     }
     volatile_data_packaged = $false
 }
 $runtimeManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packageRoot ".iris-runtime\runtime-manifest.json") -Encoding utf8
 
 $startPs1 = @'
+param(
+    [switch]$SelfCheck
+)
+
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $runtimeExe = Join-Path $root "bin\iris-runtime.exe"
 $desktopExe = Join-Path $root "bin\iris-tauri.exe"
+$dataRootInitializer = Join-Path $root "Initialize Iris Data Root.ps1"
 $manifestPath = Join-Path $root "manifest.json"
 $kokoroModel = Join-Path $root "models\kokoro\kokoro-v1.0.onnx"
 $kokoroVoices = Join-Path $root "models\kokoro\voices-v1.0.bin"
 $whisperModel = Join-Path $root "models\whisper\ggml-tiny.en.bin"
-$hermesPython = Join-Path $root ".iris-runtime\hermes\.venv\Scripts\python.exe"
+$hermesMetadata = Join-Path $root ".iris-runtime\hermes\.venv\Lib\site-packages\hermes_agent-0.18.0.dist-info\METADATA"
+$voiceLock = Join-Path $root ".iris-runtime\voice\runtime-lock.txt"
+$voiceKokoroMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\kokoro_onnx-0.5.0.dist-info\METADATA"
+$voiceSoundfileMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\soundfile-0.14.0.dist-info\METADATA"
+$voiceNumpyMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\numpy-2.5.1.dist-info\METADATA"
+$voiceOnnxruntimeMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\onnxruntime-1.28.0.dist-info\METADATA"
 $agentBrowser = Join-Path $root ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
-$browserExe = Join-Path $root ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -184,105 +272,61 @@ function Require-File {
 
 Require-File -Path $runtimeExe
 Require-File -Path $desktopExe
+Require-File -Path $dataRootInitializer
 Require-File -Path $manifestPath
 Require-File -Path $kokoroModel
 Require-File -Path $kokoroVoices
 Require-File -Path $whisperModel
-Require-File -Path $hermesPython
+Require-File -Path $hermesMetadata
+Require-File -Path $voiceLock
+Require-File -Path $voiceKokoroMetadata
+Require-File -Path $voiceSoundfileMetadata
+Require-File -Path $voiceNumpyMetadata
+Require-File -Path $voiceOnnxruntimeMetadata
 Require-File -Path $agentBrowser
-Require-File -Path $browserExe
 
-Set-Location -LiteralPath $root
+& $dataRootInitializer -InstallRoot $root
 
-function Find-Python311Home {
-    $candidateExecutables = New-Object System.Collections.Generic.List[string]
+$script:irisOllamaServerDefaultsInitialized = $false
 
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uv) {
-        try {
-            $uvPython = (& $uv.Source python find 3.11 2>$null | Select-Object -First 1)
-            if ($uvPython) {
-                $candidateExecutables.Add([string]$uvPython) | Out-Null
-            }
-        } catch {
-        }
-    }
-
-    try {
-        $pyPython = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-        if ($pyPython) {
-            $candidateExecutables.Add([string]$pyPython) | Out-Null
-        }
-    } catch {
-    }
-
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
-        try {
-            $pathPython = (& $python.Source -c "import sys; print(sys.executable if sys.version_info[:2] == (3, 11) else '')" 2>$null | Select-Object -First 1)
-            if ($pathPython) {
-                $candidateExecutables.Add([string]$pathPython) | Out-Null
-            }
-        } catch {
-        }
-    }
-
-    foreach ($globRoot in @(
-        (Join-Path $env:APPDATA "uv\python"),
-        (Join-Path $env:LOCALAPPDATA "uv\python")
-    )) {
-        if (Test-Path -LiteralPath $globRoot -PathType Container) {
-            foreach ($candidate in @(Get-ChildItem -LiteralPath $globRoot -Directory -Filter "cpython-3.11*" -ErrorAction SilentlyContinue)) {
-                $candidateExecutables.Add((Join-Path $candidate.FullName "python.exe")) | Out-Null
-            }
-        }
-    }
-    $candidateExecutables.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")) | Out-Null
-
-    foreach ($candidate in @($candidateExecutables)) {
-        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            continue
-        }
-        try {
-            $version = (& $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Select-Object -First 1)
-            if ($version -eq "3.11") {
-                return (Split-Path -Parent ([System.IO.Path]::GetFullPath($candidate)))
-            }
-        } catch {
-            continue
-        }
-    }
-
-    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run uv python install 3.11, then start Iris again."
-}
-
-function Test-HermesVenv {
-    $python = Join-Path $root ".iris-runtime\hermes\.venv\Scripts\python.exe"
-    try {
-        $output = & $python -c "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))" 2>$null
-        return ($LASTEXITCODE -eq 0 -and (@($output) -join "`n").Trim() -eq "0.16.0`n0.9.0")
-    } catch {
-        return $false
-    }
-}
-
-function Repair-HermesVenv {
-    if (Test-HermesVenv) {
+function Set-IrisOllamaDefault {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [switch]$PersistForCurrentUser
+    )
+    $current = [Environment]::GetEnvironmentVariable($Name, "Process")
+    if (-not [string]::IsNullOrWhiteSpace($current)) {
         return
     }
-    $cfg = Join-Path $root ".iris-runtime\hermes\.venv\pyvenv.cfg"
-    Require-File -Path $cfg
-    $pythonHome = Find-Python311Home
-    @(
-        "home = $pythonHome",
-        "implementation = CPython",
-        "version_info = 3.11",
-        "include-system-site-packages = false"
-    ) | Set-Content -LiteralPath $cfg -Encoding ascii
-    if (-not (Test-HermesVenv)) {
-        throw "Bundled Hermes Agent runtime could not be repaired against local Python 3.11."
+
+    $persisted = @(
+        [Environment]::GetEnvironmentVariable($Name, "User"),
+        [Environment]::GetEnvironmentVariable($Name, "Machine")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+    if ($persisted) {
+        Set-Item -Path "Env:$Name" -Value $persisted
+        return
+    }
+
+    Set-Item -Path "Env:$Name" -Value $Value
+    if ($PersistForCurrentUser) {
+        $script:irisOllamaServerDefaultsInitialized = $true
+        try {
+            [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+            Write-Host "Initialized CurrentUser $Name=$Value so the Ollama server can inherit Iris' measured memory default."
+        } catch {
+            Write-Warning "Could not persist CurrentUser $Name; this launch still uses $Value. $($_.Exception.Message)"
+        }
     }
 }
+
+Set-IrisOllamaDefault -Name "OLLAMA_FLASH_ATTENTION" -Value "1" -PersistForCurrentUser
+Set-IrisOllamaDefault -Name "OLLAMA_KV_CACHE_TYPE" -Value "q8_0" -PersistForCurrentUser
+Set-IrisOllamaDefault -Name "OLLAMA_NUM_PARALLEL" -Value "1"
+Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "1"
+
+Set-Location -LiteralPath $root
 
 function Test-CommandAvailable {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -380,20 +424,19 @@ function Use-IrisOllamaRuntimeSettings {
     $env:OLLAMA_CONTEXT_LENGTH = [string](Get-IrisNumCtx)
 }
 
-function Stop-OllamaForIris {
-    Get-Process "ollama", "ollama app", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
-
 function Start-OllamaForIris {
     Use-IrisOllamaModelStore
     Use-IrisOllamaRuntimeSettings
 
     if (Test-OllamaReady) {
-        if ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
+        if ($script:irisOllamaServerDefaultsInitialized) {
+            Write-Host "Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts."
+        } elseif ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
             return
+        } else {
+            Write-Host "Ollama is already listening. Iris will use the shared server without terminating it; self-check will report a missing model or incompatible runtime."
         }
-        Stop-OllamaForIris
-        Start-Sleep -Seconds 2
+        return
     }
     if (-not (Test-CommandAvailable -Name "ollama")) {
         throw "Ollama is not available on PATH. Run Iris Setup Wizard or install Ollama for Windows."
@@ -441,34 +484,16 @@ function Invoke-IrisSelfCheck {
         return 0
     }
 
-    Write-Host "Iris self-check failed with exit code $exitCode. Restarting Ollama once and retrying."
-    Stop-OllamaForIris
-    Start-Sleep -Seconds 2
-    Start-OllamaForIris
-
-    $retryOutput = @()
-    $retryExitCode = 0
-    try {
-        $retryOutput = & $runtimeExe --self-check 2>&1
-        $retryExitCode = $LASTEXITCODE
-    } catch {
-        $retryOutput = @($retryOutput; ($_ | Out-String))
-        $retryExitCode = 1
-    }
-    if ($retryOutput.Count -gt 0) {
-        $retryOutput | ForEach-Object { Write-Host $_ }
-    }
-    return $retryExitCode
+    Write-Host "Iris self-check failed with exit code $exitCode. The launcher will not terminate a shared Ollama server."
+    return $exitCode
 }
 
-if ($env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
-    Repair-HermesVenv
+if ($SelfCheck -or $env:IRIS_SELF_CHECK -eq "1" -or $args -contains "--self-check") {
     Start-OllamaForIris
     $selfCheckExitCode = Invoke-IrisSelfCheck
     exit $selfCheckExitCode
 }
 
-Repair-HermesVenv
 Start-OllamaForIris
 if (Test-IrisAlreadyRunning -ExecutablePath $desktopExe) {
     exit 0
@@ -508,11 +533,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%Install Iris
 exit /b %ERRORLEVEL%
 '@
 
+$updateBat = @'
+@echo off
+setlocal
+set "IRIS_ROOT=%~dp0"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%IRIS_ROOT%Update Iris.ps1" %*
+exit /b %ERRORLEVEL%
+'@
+
 Set-Content -LiteralPath (Join-Path $packageRoot "Start Iris.ps1") -Value $startPs1 -Encoding utf8
 Set-Content -LiteralPath (Join-Path $packageRoot "Start Iris.bat") -Value $startBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $packageRoot "Check Iris Preflight.bat") -Value $preflightBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $packageRoot "Iris Setup Wizard.bat") -Value $setupBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $packageRoot "Install Iris.bat") -Value $installBat -Encoding ascii
+Set-Content -LiteralPath (Join-Path $packageRoot "Update Iris.bat") -Value $updateBat -Encoding ascii
 
 Write-Host "Creating $zipPath"
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force
@@ -551,7 +585,7 @@ Iris installs for the current Windows user under:
 %LOCALAPPDATA%\Programs\Iris
 
 The setup wizard may offer approved local prerequisites such as WebView2,
-Ollama, the configured Gemma model, Python voice packages, or Tesseract OCR.
+Ollama, the configured Gemma model, exact Python 3.13 plus Iris-owned voice packages, or Tesseract OCR.
 It does not add a cloud model API or silently enable Agentic mode.
 '@
 

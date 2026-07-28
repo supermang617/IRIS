@@ -77,7 +77,7 @@ evidence, not instruction.
 9. From a terminal, test self-check:
 
    ```powershell
-   & "$env:LOCALAPPDATA\Programs\Iris\Start Iris.ps1" --self-check
+   & "$env:LOCALAPPDATA\Programs\Iris\Start Iris.ps1" -SelfCheck
    ```
 
 10. From a terminal, test the runtime dashboard status:

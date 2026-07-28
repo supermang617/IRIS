@@ -68,15 +68,26 @@ try {
     foreach ($requiredText in @(
         "SelfCheckTimeoutSeconds",
         "Installed Iris self-check timed out",
-        "Invoke-InstallerProbe",
         "iris-windows.zip",
         "iris-windows.zip.sha256",
-        'timed out after $TimeoutSeconds seconds',
         "Stop-ProcessTree",
-        "installer-self-check.log"
+        "installer-self-check.log",
+        ".iris-runtime\hermes\.venv\Lib\site-packages",
+        ".iris-runtime\voice\Lib\site-packages",
+        ".iris-runtime\voice\runtime-lock.txt",
+        "profiles\iris_voice_python_3_13.lock.txt"
     )) {
         if (-not $installer.Contains($requiredText)) {
             throw "Installer is missing bounded self-check behavior: $requiredText"
+        }
+    }
+    foreach ($obsoleteVenvBehavior in @(
+        "Repair-HermesVenv",
+        ".iris-runtime\hermes\.venv\Scripts\python.exe",
+        ".iris-runtime\hermes\.venv\pyvenv.cfg"
+    )) {
+        if ($installer.Contains($obsoleteVenvBehavior)) {
+            throw "Installer still depends on non-portable bundled Python behavior: $obsoleteVenvBehavior"
         }
     }
 

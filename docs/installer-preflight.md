@@ -44,8 +44,10 @@ For a one-command repair session after you have reviewed this page, run:
 .\Iris Setup Wizard.ps1 -InstallMissing
 ```
 
-That mode may use `winget`, `pip`, or `ollama pull` for allowlisted Iris
-prerequisites. Large model downloads can take time and disk space.
+That mode may use `winget` or `ollama pull` for allowlisted Iris prerequisites.
+It does not modify global Python packages; repair or upgrade Iris if its
+hash-locked package layer is incomplete. Large model downloads can take time
+and disk space.
 
 For diagnostics only:
 
@@ -100,9 +102,10 @@ The interactive setup wizard can offer these repairs only:
 - Start the local Ollama service.
 - Download the configured local model with
   `ollama pull huihui_ai/gemma-4-abliterated:e2b`.
-- Install Python through `winget`, or show Python's official Windows page.
-- Install local Kokoro voice helper packages with
-  `python -m pip install kokoro-onnx soundfile`.
+- Install exact Python 3.13 through `winget`, or show Python's official Windows
+  page.
+- Repair or upgrade Iris if its hash-locked Kokoro voice package layer is
+  incomplete. The setup wizard never mutates global Python packages.
 - Install local Tesseract OCR through `winget`, or show Tesseract's official
   project page.
 

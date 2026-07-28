@@ -4,7 +4,9 @@ param(
     [string]$CertificateThumbprint = "",
     [string]$PfxPath = "",
     [string]$PfxPassword = "",
+    [string]$TimestampUrl = "http://timestamp.acs.microsoft.com",
     [switch]$ReadinessOnly,
+    [switch]$AllowIncompleteReadiness,
     [switch]$SkipSigning
 )
 
@@ -24,6 +26,21 @@ $msixPath = Join-Path $distRoot "iris-windows.msix"
 $msixShaPath = "$msixPath.sha256"
 $certExportPath = Join-Path $distRoot "iris-msix-signing.cer"
 $certExportShaPath = "$certExportPath.sha256"
+
+if ($Version -notmatch "^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){3}$") {
+    throw "MSIX Version must contain four numeric components, for example 1.0.1.0."
+}
+foreach ($part in $Version.Split(".")) {
+    if ([int]$part -gt 65535) {
+        throw "MSIX Version components must be between 0 and 65535: $Version"
+    }
+}
+if (-not $Publisher.Trim()) {
+    throw "Publisher must match the subject of the certificate used to sign the MSIX."
+}
+if (-not $SkipSigning -and -not $TimestampUrl.Trim()) {
+    throw "An RFC 3161 timestamp URL is required for durable production signatures."
+}
 
 function Find-Tool {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -70,10 +87,21 @@ $results += Add-Result -Status ($(if (Test-Path -LiteralPath $zipPath -PathType 
 $results += Add-Result -Status ($(if (Test-Path -LiteralPath $shaPath -PathType Leaf) { "PASS" } else { "FAIL" })) -Name "portable ZIP SHA256" -Detail $shaPath
 if ($SkipSigning) {
     $results += Add-Result -Status "WARN" -Name "signing input" -Detail "SkipSigning was requested; unsigned MSIX files are not installable for normal users."
-} elseif ($CertificateThumbprint -or $env:IRIS_SIGNING_CERT_THUMBPRINT -or $PfxPath -or $env:IRIS_SIGNING_PFX) {
-    $results += Add-Result -Status "PASS" -Name "signing input" -Detail "A certificate thumbprint or PFX path was provided."
 } else {
-    $results += Add-Result -Status "FAIL" -Name "signing input" -Detail "Provide -CertificateThumbprint, IRIS_SIGNING_CERT_THUMBPRINT, -PfxPath, or IRIS_SIGNING_PFX."
+    $thumbprintInput = if ($CertificateThumbprint) { $CertificateThumbprint } else { $env:IRIS_SIGNING_CERT_THUMBPRINT }
+    $pfxInput = if ($PfxPath) { $PfxPath } else { $env:IRIS_SIGNING_PFX }
+    if ($thumbprintInput) {
+        $certificate = @(
+            Get-ChildItem -LiteralPath Cert:\CurrentUser\My, Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+                Where-Object Thumbprint -eq $thumbprintInput
+        ) | Select-Object -First 1
+        $results += Add-Result -Status ($(if ($certificate) { "PASS" } else { "FAIL" })) -Name "signing input" -Detail ($(if ($certificate) { "Certificate thumbprint resolved for $($certificate.Subject)." } else { "Certificate thumbprint was provided but not found in CurrentUser or LocalMachine personal stores." }))
+    } elseif ($pfxInput) {
+        $pfxResolved = [System.IO.Path]::GetFullPath($pfxInput)
+        $results += Add-Result -Status ($(if (Test-Path -LiteralPath $pfxResolved -PathType Leaf) { "PASS" } else { "FAIL" })) -Name "signing input" -Detail ($(if (Test-Path -LiteralPath $pfxResolved -PathType Leaf) { "PFX path exists." } else { "PFX path was provided but does not exist: $pfxResolved" }))
+    } else {
+        $results += Add-Result -Status "FAIL" -Name "signing input" -Detail "Provide -CertificateThumbprint, IRIS_SIGNING_CERT_THUMBPRINT, -PfxPath, or IRIS_SIGNING_PFX."
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $distRoot | Out-Null
@@ -82,6 +110,8 @@ $lines = @(
     "Iris MSIX/App Installer readiness",
     "Generated: $(Get-Date -Format o)",
     "Recommendation: MSIX/App Installer for signed distribution; keep PowerShell ZIP installer as fallback.",
+    "Package version: $Version",
+    "Publisher identity: $Publisher",
     ""
 )
 foreach ($result in $results) {
@@ -90,17 +120,27 @@ foreach ($result in $results) {
     $lines += $line
 }
 Set-Content -LiteralPath $readinessPath -Value $lines -Encoding utf8
-Write-Host "Readiness report: $readinessPath"
 
 $failCount = @($results | Where-Object Status -eq "FAIL").Count
+$productionReady = $failCount -eq 0 -and -not $SkipSigning
+$summary = "Overall production readiness: $(if ($productionReady) { 'READY' } else { 'NOT READY' }); failures=$failCount; unsigned=$($SkipSigning.IsPresent.ToString().ToLowerInvariant())"
+Write-Host $summary
+Add-Content -LiteralPath $readinessPath -Value @("", $summary) -Encoding utf8
+Write-Host "Readiness report: $readinessPath"
+
 if ($ReadinessOnly) {
-    if ($failCount -gt 0) {
-        Write-Host "MSIX build is not ready on this machine. This readiness check is non-destructive."
+    if (-not $productionReady) {
+        $message = "MSIX production build is not ready on this machine. This readiness check was non-destructive."
+        if ($AllowIncompleteReadiness) {
+            Write-Warning $message
+            return
+        }
+        throw $message
     }
-    exit 0
+    return
 }
 if ($failCount -gt 0) {
-    throw "MSIX build prerequisites are missing. Run with -ReadinessOnly for a non-blocking report."
+    throw "MSIX build prerequisites are missing. Run with -ReadinessOnly -AllowIncompleteReadiness for a non-blocking report."
 }
 
 Remove-Item -LiteralPath $msixRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -119,13 +159,15 @@ $manifest = @"
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap desktop rescap">
+  IgnorableNamespaces="uap desktop desktop6 rescap">
   <Identity Name="ProjectIris.LocalAssistant" Publisher="$Publisher" Version="$Version" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>Project Iris</DisplayName>
     <PublisherDisplayName>Alejandro Pinto</PublisherDisplayName>
     <Logo>VFS\ProgramFilesX64\Iris\assets\iris-logo-256.png</Logo>
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
   </Properties>
   <Dependencies>
     <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26200.0" />
@@ -135,6 +177,7 @@ $manifest = @"
   </Resources>
   <Capabilities>
     <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
   </Capabilities>
   <Applications>
     <Application Id="Iris" Executable="VFS\ProgramFilesX64\Iris\bin\iris-tauri.exe" EntryPoint="Windows.FullTrustApplication">
@@ -157,13 +200,13 @@ if (-not $SkipSigning) {
     $thumbprint = if ($CertificateThumbprint) { $CertificateThumbprint } else { $env:IRIS_SIGNING_CERT_THUMBPRINT }
     $pfx = if ($PfxPath) { $PfxPath } else { $env:IRIS_SIGNING_PFX }
     if ($thumbprint) {
-        & $signTool sign /fd SHA256 /sha1 $thumbprint $msixPath
+        & $signTool sign /fd SHA256 /tr $TimestampUrl /td SHA256 /sha1 $thumbprint $msixPath
     } else {
         $password = if ($PfxPassword) { $PfxPassword } else { $env:IRIS_SIGNING_PFX_PASSWORD }
         if ($password) {
-            & $signTool sign /fd SHA256 /f $pfx /p $password $msixPath
+            & $signTool sign /fd SHA256 /tr $TimestampUrl /td SHA256 /f $pfx /p $password $msixPath
         } else {
-            & $signTool sign /fd SHA256 /f $pfx $msixPath
+            & $signTool sign /fd SHA256 /tr $TimestampUrl /td SHA256 /f $pfx $msixPath
         }
     }
     if ($LASTEXITCODE -ne 0) {

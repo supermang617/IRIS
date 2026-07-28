@@ -15,9 +15,10 @@ source code, not third-party model files or downloaded assets.
 - Microsoft Edge WebView2 Runtime.
 - Ollama running locally on `127.0.0.1:11434` with
   `huihui_ai/gemma-4-abliterated:e2b` available.
-- Python is required only for Kokoro TTS helper use. The portable ZIP includes
-  the Kokoro model and voice files, but Python packages such as `kokoro-onnx`
-  and `soundfile` must be installed by the user if TTS helper execution is used.
+- Exact Python 3.13 is required for the pinned Hermes Agent and image-provider
+  packages included in the Iris release, and for Python-backed Kokoro helper
+  use. The portable ZIP includes the pinned package tree plus Kokoro model and
+  voice files; the setup wizard verifies the compatible interpreter.
 - Tesseract OCR is required only for document-image OCR. Iris uses it locally
   for explicit user-selected document images and treats OCR text as untrusted
   evidence.
@@ -54,6 +55,34 @@ installer is not code-signed. Do not bypass a publisher warning unless the
 files came from the official `supermang617/IRIS` GitHub release and the release
 checks have passed.
 
+## WinGet Availability
+
+The planned package identifier is `AlejandroPinto.Iris`. These commands become
+the preferred install and upgrade path only after a production-signed package
+is accepted into Microsoft's public WinGet catalog:
+
+```powershell
+winget install --id AlejandroPinto.Iris -e
+winget upgrade --id AlejandroPinto.Iris -e
+```
+
+If `winget show --id AlejandroPinto.Iris -e` reports no package, Iris has not
+yet completed that external catalog review; use the verified GitHub bundle
+above. Repository-generated manifests alone do not make the command public.
+
+On a fresh WinGet install, complete the explicit local model setup shown in the
+package notes, then launch Iris from the Windows Start menu:
+
+```powershell
+ollama pull huihui_ai/gemma-4-abliterated:e2b
+```
+
+New WinGet-compatible Iris releases use immutable semantic tags such as
+`v1.0.1`. Rust is not an end-user dependency. Hermes' pinned packages ship with
+Iris and use WinGet-managed Python 3.13, llama inference ships with Ollama, and
+the selected Ollama model remains an explicit first-run download rather than a
+WinGet payload.
+
 ## Portable/Advanced Download
 
 1. Open the GitHub Release for `supermang617/IRIS`.
@@ -81,11 +110,13 @@ First run the setup wizard:
 ```
 
 It checks Windows, RAM, disk space, WebView2, Ollama, the configured model,
-Tesseract OCR, Kokoro/Whisper assets, optional Python speech packages, and
-local-only policy. It shows PASS/WARN/FAIL steps, official links, and
+Tesseract OCR, Kokoro/Whisper assets, exact Python 3.13, the Iris-owned
+hash-locked voice package layer, and local-only policy. It shows
+PASS/WARN/FAIL steps, official links, and
 copy/paste repair commands. If you approve a repair, it can use allowlisted
-tools such as `winget`, `pip`, or `ollama pull` to install/download the missing
-local prerequisite.
+tools such as `winget` or `ollama pull` to install/download the missing local
+prerequisite. A damaged Iris-owned Python package layer is repaired by updating
+or reinstalling Iris, not by changing global Python packages.
 
 For a read-only check that never installs or downloads:
 
@@ -109,10 +140,30 @@ After installation, use the `Iris` Desktop or Start Menu shortcut. It launches
 the GUI directly without opening a command prompt; Ollama and voice warm-up run
 behind the visible Iris window.
 
+Installed memories, generated images, and settings use
+`%LOCALAPPDATA%\Iris\.iris-data`; diagnostics use
+`%LOCALAPPDATA%\Iris\diagnostics`. Both are separate from application binaries. The installer
+preserves missing files from older install-root `.iris-data` and `diagnostics`
+folders without deleting the originals.
+
+A developer source checkout (detected by its `.git` entry) keeps the historical
+repo-local `.iris-data` and `diagnostics` layout. An explicit `IRIS_DATA_ROOT`
+always wins. Extracted portable and installed builds default to
+`%LOCALAPPDATA%\Iris`.
+
+The launcher applies measured local defaults without replacing an existing
+process, CurrentUser, or machine override. On first run it persists
+`OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` for the current user
+so the separately running Ollama server can inherit them. If Ollama was already
+running when those values were first initialized, Iris restarts that server
+once to apply them. `OLLAMA_NUM_PARALLEL=1` and
+`OLLAMA_MAX_LOADED_MODELS=1` remain process-only so Iris does not globally
+restrict other Ollama clients.
+
 For a non-destructive startup check:
 
 ```powershell
-.\Start Iris.ps1 --self-check
+.\Start Iris.ps1 -SelfCheck
 ```
 
 The launcher fails clearly if bundled files such as `manifest.json`,
@@ -136,7 +187,9 @@ are missing.
 - `profiles\iris_restricted.json`
 - `profiles\iris_agentic.json`
 - `.iris-runtime\hermes` pinned Hermes Agent environment
-- `.iris-runtime\browser` pinned agent-browser and Chrome for Testing runtime
+- `.iris-runtime\browser` pinned Windows agent-browser runtime; the browser
+  engine is the system Microsoft Edge installed/updated by WinGet, always with
+  a separate Iris profile
 - `capabilities\v0_1_capability_ledger.toml`
 - user-facing docs, license, notice, security notes, known limitations, assets
 

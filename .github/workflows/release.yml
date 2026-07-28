@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: write
@@ -14,6 +15,18 @@ jobs:
     runs-on: windows-latest
     env:
       CARGO_TERM_COLOR: always
+      GGML_AVX: "ON"
+      GGML_AVX2: "ON"
+      GGML_AVX_VNNI: "OFF"
+      GGML_AVX512: "OFF"
+      GGML_AVX512_BF16: "OFF"
+      GGML_AVX512_VBMI: "OFF"
+      GGML_AVX512_VNNI: "OFF"
+      GGML_BMI2: "ON"
+      GGML_F16C: "ON"
+      GGML_FMA: "ON"
+      GGML_NATIVE: "OFF"
+      GGML_SSE42: "ON"
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
 
     steps:
@@ -21,6 +34,26 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Resolve release version
+        id: release_version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = [string]$env:GITHUB_REF_NAME
+          if ($tag -match "^v(?<version>[0-9]+\.[0-9]+\.[0-9]+)$") {
+            "is_semver=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "package_version=$($Matches.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "msix_version=$($Matches.version).0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "Immutable versioned release: $tag"
+          } elseif ($tag -match "^v[0-9]+$") {
+            "is_semver=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "package_version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "msix_version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "Legacy major-version release: $tag. WinGet manifests will not be generated."
+          } else {
+            throw "Unsupported release tag '$tag'. Use vMAJOR.MINOR.PATCH for upgradeable releases."
+          }
 
       - name: Detect package-affecting changes
         id: package_changes
@@ -59,8 +92,13 @@ jobs:
           if ($packageChanged) {
             "Windows release assets are affected by this tag update."
           } else {
-            "Only site/checksum/workflow metadata changed; keeping existing v1 assets."
+            "Only site/checksum/workflow metadata changed; keeping existing release assets."
           }
+
+      - name: Validate semantic release version
+        if: steps.release_version.outputs.is_semver == 'true'
+        shell: pwsh
+        run: .\scripts\test_release_version.ps1 -Tag $env:GITHUB_REF_NAME
 
       - name: Set up Node.js
         if: steps.package_changes.outputs.package_changed == 'true'
@@ -73,7 +111,7 @@ jobs:
         if: steps.package_changes.outputs.package_changed == 'true'
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install LLVM for whisper-rs bindgen
         if: steps.package_changes.outputs.package_changed == 'true'
@@ -91,50 +129,159 @@ jobs:
         if: steps.package_changes.outputs.package_changed == 'true'
         run: npm ci
 
-      - name: Provision pinned Hermes runtimes
+      - name: Provision pinned Iris runtimes
         if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
-          python -m pip install uv
+          python -m pip install --disable-pip-version-check --no-input "uv==0.11.12"
+          $uvVersion = (& uv --version | Select-Object -First 1)
+          if ($uvVersion -notmatch "^uv 0\.11\.12\b") {
+            throw "Expected uv 0.11.12, found: $uvVersion"
+          }
           .\scripts\provision_hermes_acp.ps1
+          .\scripts\provision_iris_voice_runtime.ps1 -PythonPath (Get-Command python).Source
           .\scripts\provision_iris_browser.ps1
+
+      - name: Audit dependencies
+        if: steps.package_changes.outputs.package_changed == 'true'
+        shell: pwsh
+        run: |
+          .\scripts\test_model_asset_lock.ps1
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+          npm audit --audit-level=high
+          npm --prefix .\.iris-runtime\browser audit --audit-level=high
+          uvx --from pip-audit==2.10.1 pip-audit --require-hashes --disable-pip --progress-spinner off -r profiles\hermes_agent_python_3_13.lock.txt
+          uvx --from pip-audit==2.10.1 pip-audit --require-hashes --disable-pip --progress-spinner off -r profiles\iris_voice_python_3_13.lock.txt
 
       - name: Validate source
         if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
           cargo fmt --all -- --check
-          cargo build --workspace
-          cargo test --workspace
-          cargo clippy --workspace -- -D warnings
+          cargo build --workspace --locked
+          cargo test --workspace --locked
+          cargo clippy --workspace --locked -- -D warnings
           npm run test:voice
           npm run test:python
-          cargo run -p xtask
-          cargo run -p iris-runtime -- --dashboard-json
+          .\scripts\test_iris_data_root.ps1
+          .\scripts\test_iris_windows_update.ps1
+          .\scripts\test_windows_installer_path_safety.ps1
+          .\scripts\test_windows_launcher_defaults.ps1
+          .\scripts\test_windows_browser_payload.ps1
+          .\scripts\test_winget_manifests.ps1
+          cargo run --locked -p xtask
+          cargo run --locked -p iris-runtime -- --dashboard-json
           git diff --check
 
-      - name: Restore release model assets
+      - name: Restore verified legacy model assets
         if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $bootstrap = Join-Path $PWD "release\bootstrap"
-          $extract = Join-Path $bootstrap "v1"
-          New-Item -ItemType Directory -Force -Path $bootstrap | Out-Null
-          gh release download v1 --repo $env:GITHUB_REPOSITORY --pattern iris-windows.zip --dir $bootstrap --clobber
-          Expand-Archive -LiteralPath (Join-Path $bootstrap "iris-windows.zip") -DestinationPath $extract -Force
-          if (-not (Test-Path -LiteralPath (Join-Path $extract "models") -PathType Container)) {
-            throw "v1 release ZIP did not contain models."
+          $lockPath = Join-Path $PWD "profiles\iris_model_assets.lock.json"
+          .\scripts\test_model_asset_lock.ps1 -LockPath $lockPath
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          $releaseJson = gh release view $lock.bootstrap.tag `
+            --repo $lock.bootstrap.repository `
+            --json tagName,targetCommitish,isDraft,isPrerelease,assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not read the locked legacy bootstrap release."
           }
-          Copy-Item -LiteralPath (Join-Path $extract "models") -Destination (Join-Path $PWD "models") -Recurse -Force
-          Get-ChildItem -LiteralPath (Join-Path $PWD "models") -Recurse | Select-Object FullName, Length
+          $release = $releaseJson | ConvertFrom-Json
+          if (
+            [string]$release.tagName -ne [string]$lock.bootstrap.tag -or
+            [string]$release.targetCommitish -ne [string]$lock.bootstrap.release_commit -or
+            $release.isDraft -or
+            $release.isPrerelease
+          ) {
+            throw "The legacy bootstrap release no longer matches its locked public tag and commit."
+          }
+          $matchingAssets = @(
+            $release.assets |
+                Where-Object { [string]$_.name -eq [string]$lock.bootstrap.asset.name }
+          )
+          if ($matchingAssets.Count -ne 1) {
+            throw "The legacy bootstrap release must contain exactly one locked model payload."
+          }
+          $remoteAsset = $matchingAssets[0]
+          $expectedDigest = "sha256:$($lock.bootstrap.asset.sha256)"
+          if (
+            [long]$remoteAsset.size -ne [long]$lock.bootstrap.asset.size -or
+            [string]$remoteAsset.digest -ne $expectedDigest
+          ) {
+            throw "The legacy bootstrap asset metadata differs from the model lock."
+          }
+
+          $bootstrap = Join-Path $env:RUNNER_TEMP "iris-model-bootstrap"
+          $extract = Join-Path $bootstrap "extract"
+          New-Item -ItemType Directory -Force -Path $bootstrap | Out-Null
+          gh release download $lock.bootstrap.tag `
+            --repo $lock.bootstrap.repository `
+            --pattern $lock.bootstrap.asset.name `
+            --dir $bootstrap `
+            --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download the locked legacy bootstrap asset."
+          }
+          $bootstrapZip = Join-Path $bootstrap $lock.bootstrap.asset.name
+          .\scripts\test_model_asset_lock.ps1 `
+            -LockPath $lockPath `
+            -BootstrapZipPath $bootstrapZip
+          Expand-Archive -LiteralPath $bootstrapZip -DestinationPath $extract -Force
+          .\scripts\test_model_asset_lock.ps1 `
+            -LockPath $lockPath `
+            -ModelRoot $extract `
+            -RequireAssets
+
+          foreach ($model in $lock.models) {
+            $relativePath = ([string]$model.path).Replace("/", "\")
+            $source = Join-Path $extract $relativePath
+            $destination = Join-Path $PWD $relativePath
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+            Copy-Item -LiteralPath $source -Destination $destination -Force
+          }
+          .\scripts\test_model_asset_lock.ps1 -LockPath $lockPath -RequireAssets
+          $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd("\")
+          $bootstrapResolved = [System.IO.Path]::GetFullPath($bootstrap)
+          if (-not $bootstrapResolved.StartsWith($runnerTemp + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove bootstrap data outside the runner temp directory."
+          }
+          Remove-Item -LiteralPath $bootstrapResolved -Recurse -Force
 
       - name: Package release ZIP
         if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
-        run: .\scripts\package_windows_release.ps1
+        run: |
+          $ErrorActionPreference = "Stop"
+          $portableWhisperFlags = @{
+            GGML_NATIVE = "OFF"
+            GGML_SSE42 = "OFF"
+            GGML_AVX = "OFF"
+            GGML_AVX2 = "OFF"
+            GGML_AVX_VNNI = "OFF"
+            GGML_BMI2 = "OFF"
+            GGML_AVX512 = "OFF"
+            GGML_AVX512_VBMI = "OFF"
+            GGML_AVX512_VNNI = "OFF"
+            GGML_AVX512_BF16 = "OFF"
+            GGML_FMA = "OFF"
+            GGML_F16C = "OFF"
+            GGML_AMX_TILE = "OFF"
+            GGML_AMX_INT8 = "OFF"
+            GGML_AMX_BF16 = "OFF"
+          }
+          foreach ($name in $portableWhisperFlags.Keys) {
+            Set-Item -Path "Env:$name" -Value $portableWhisperFlags[$name]
+          }
+          cargo build --workspace --release --locked
+          if ($LASTEXITCODE -ne 0) {
+            throw "Locked portable release build failed."
+          }
+          .\scripts\package_windows_release.ps1 -UseExistingReleaseBinaries
+          git diff --exit-code -- Cargo.lock
 
       - name: Smoke test release ZIP
         if: steps.package_changes.outputs.package_changed == 'true'
@@ -145,6 +292,52 @@ jobs:
         if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: .\scripts\test_windows_beginner_installer.ps1
+
+      - name: Smoke test install, upgrade, and uninstall
+        if: steps.package_changes.outputs.package_changed == 'true'
+        shell: pwsh
+        run: .\scripts\test_windows_installer.ps1
+
+      - name: Build signed MSIX and WinGet submission manifests
+        id: signed_package
+        if: steps.package_changes.outputs.package_changed == 'true' && steps.release_version.outputs.is_semver == 'true'
+        shell: pwsh
+        env:
+          IRIS_SIGNING_PFX_BASE64: ${{ secrets.IRIS_SIGNING_PFX_BASE64 }}
+          IRIS_SIGNING_PFX_PASSWORD: ${{ secrets.IRIS_SIGNING_PFX_PASSWORD }}
+          IRIS_MSIX_PUBLISHER: ${{ secrets.IRIS_MSIX_PUBLISHER }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          "built=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if (-not $env:IRIS_SIGNING_PFX_BASE64 -or -not $env:IRIS_MSIX_PUBLISHER) {
+            Write-Warning "Signed MSIX was skipped. Configure IRIS_SIGNING_PFX_BASE64, IRIS_SIGNING_PFX_PASSWORD, and IRIS_MSIX_PUBLISHER repository secrets to produce WinGet-ready assets."
+            "### Signed Windows package" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "Not generated: production signing secrets are not configured." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            exit 0
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "iris-release-signing.pfx"
+          try {
+            [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:IRIS_SIGNING_PFX_BASE64))
+            .\scripts\package_windows_msix.ps1 `
+              -Publisher $env:IRIS_MSIX_PUBLISHER `
+              -Version "${{ steps.release_version.outputs.msix_version }}" `
+              -PfxPath $pfxPath `
+              -PfxPassword $env:IRIS_SIGNING_PFX_PASSWORD
+            .\scripts\test_windows_msix_signature.ps1 `
+              -ExpectedPackageVersion "${{ steps.release_version.outputs.msix_version }}" `
+              -ExpectedPublisher $env:IRIS_MSIX_PUBLISHER
+            .\scripts\generate_winget_manifests.ps1 `
+              -PackageVersion "${{ steps.release_version.outputs.package_version }}" `
+              -MsixPath .\release\dist\iris-windows.msix
+            "built=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "### Signed Windows package" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "Signed MSIX and WinGet submission bundle generated for v${{ steps.release_version.outputs.package_version }}." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          } finally {
+            if (Test-Path -LiteralPath $pfxPath) {
+              Remove-Item -LiteralPath $pfxPath -Force
+            }
+          }
 
       - name: Upload release assets
         if: steps.package_changes.outputs.package_changed == 'true'
@@ -160,6 +353,11 @@ jobs:
 
             The installer verifies the packaged payload before installation.
             Advanced users can use `iris-windows.zip` as the portable package.
+
+            Signed semantic releases may also include an MSIX and a WinGet
+            submission bundle. `winget install/upgrade AlejandroPinto.Iris`
+            becomes public only after Microsoft accepts the manifests into
+            `microsoft/winget-pkgs`.
           files: |
             release/dist/iris-windows.zip
             release/dist/iris-windows.zip.sha256
@@ -167,3 +365,27 @@ jobs:
             release/dist/iris-windows-installer.zip.sha256
             release/dist/install-iris-windows.ps1
             release/dist/install-iris-windows.ps1.sha256
+            release/dist/iris-windows.msix
+            release/dist/iris-windows.msix.sha256
+            release/dist/iris-msix-signing.cer
+            release/dist/iris-msix-signing.cer.sha256
+            release/dist/winget/iris-winget-manifests.zip
+            release/dist/winget/iris-winget-manifests.zip.sha256
+
+      - name: Verify immutable versioned release
+        if: steps.package_changes.outputs.package_changed == 'true' && steps.release_version.outputs.is_semver == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IRIS_SIGNED_PACKAGE_BUILT: ${{ steps.signed_package.outputs.built }}
+        run: |
+          $arguments = @{
+            Tag = $env:GITHUB_REF_NAME
+            ExpectedCommit = $env:GITHUB_SHA
+            DownloadPayloads = $true
+          }
+          if ($env:IRIS_SIGNED_PACKAGE_BUILT -eq "true") {
+            $arguments.RequireSignedMsix = $true
+            $arguments.RequireWingetBundle = $true
+          }
+          .\scripts\test_github_versioned_release.ps1 @arguments

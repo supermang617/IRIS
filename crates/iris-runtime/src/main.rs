@@ -1,9 +1,16 @@
 use std::{
+    ffi::OsString,
     fs,
     io::{self, BufRead, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PythonLaunch {
+    executable: PathBuf,
+    prefix_args: Vec<OsString>,
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -148,7 +155,7 @@ fn validate_runtime_prerequisites(
         ),
         (
             "Hermes Agent profile",
-            workspace_root.join("profiles/hermes_agent_0_16_0.json"),
+            workspace_root.join("profiles/hermes_agent_0_18_0.json"),
         ),
         (
             "Hermes agentic profile",
@@ -205,34 +212,11 @@ fn validate_runtime_prerequisites(
 }
 
 fn validate_agentic_prerequisites(workspace_root: &Path) -> Result<(), String> {
-    let hermes_python = workspace_root.join(".iris-runtime/hermes/.venv/Scripts/python.exe");
     let agent_browser = workspace_root
         .join(".iris-runtime/browser/node_modules/agent-browser/bin/agent-browser-win32-x64.exe");
-    let chrome =
-        workspace_root.join(".iris-runtime/browser/browsers/chrome-149.0.7827.115/chrome.exe");
-    for (label, path) in [
-        ("Hermes Agent Python", hermes_python.as_path()),
-        ("agent-browser", agent_browser.as_path()),
-        ("Chrome for Testing", chrome.as_path()),
-    ] {
-        require_nonempty_file(label, path)?;
-    }
-
-    let hermes = Command::new(&hermes_python)
-        .args([
-            "-c",
-            "import importlib.metadata as m; print(m.version('hermes-agent')); print(m.version('agent-client-protocol'))",
-        ])
-        .output()
-        .map_err(|err| format!("failed to start Hermes Agent version check: {err}"))?;
-    if !hermes.status.success()
-        || String::from_utf8_lossy(&hermes.stdout)
-            .lines()
-            .collect::<Vec<_>>()
-            != ["0.16.0", "0.9.0"]
-    {
-        return Err("Hermes Agent or ACP package version does not match the pinned runtime".into());
-    }
+    require_nonempty_file("agent-browser", &agent_browser)?;
+    let browser_executable = find_system_browser_executable()?;
+    require_nonempty_file("system Edge/Chrome", &browser_executable)?;
 
     let browser = Command::new(&agent_browser)
         .arg("--version")
@@ -244,6 +228,38 @@ fn validate_agentic_prerequisites(workspace_root: &Path) -> Result<(), String> {
         return Err("agent-browser version does not match the pinned runtime".into());
     }
     Ok(())
+}
+
+fn find_system_browser_executable() -> Result<PathBuf, String> {
+    if let Some(configured) = std::env::var_os("IRIS_BROWSER_EXECUTABLE_PATH") {
+        let configured = PathBuf::from(configured);
+        if !configured.is_absolute() || !configured.is_file() {
+            return Err(
+                "IRIS_BROWSER_EXECUTABLE_PATH must name an absolute existing Edge/Chrome executable"
+                    .to_string(),
+            );
+        }
+        return Ok(configured);
+    }
+    for (variable, relative) in [
+        ("ProgramFiles(x86)", "Microsoft/Edge/Application/msedge.exe"),
+        ("ProgramFiles", "Microsoft/Edge/Application/msedge.exe"),
+        ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
+        ("ProgramFiles", "Google/Chrome/Application/chrome.exe"),
+        ("ProgramFiles(x86)", "Google/Chrome/Application/chrome.exe"),
+        ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
+    ] {
+        if let Some(root) = std::env::var_os(variable) {
+            let candidate = PathBuf::from(root).join(relative);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(
+        "Microsoft Edge is required for Iris browser tools. Install Microsoft.Edge with WinGet."
+            .to_string(),
+    )
 }
 
 fn require_nonempty_file(label: &str, path: &Path) -> Result<(), String> {
@@ -259,36 +275,162 @@ fn require_nonempty_file(label: &str, path: &Path) -> Result<(), String> {
 }
 
 fn validate_python_prerequisites(workspace_root: &Path) -> Result<(), String> {
-    let output = Command::new("python")
-        .args(["-c", "import kokoro_onnx, numpy, soundfile"])
-        .output()
-        .map_err(|err| format!("failed to start Python prerequisite check: {err}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "Python voice prerequisites are unavailable: {}",
-            stderr.trim()
-        ));
-    }
+    let hermes_site = workspace_root.join(".iris-runtime/hermes/.venv/Lib/site-packages");
+    let voice_site = workspace_root.join(".iris-runtime/voice/Lib/site-packages");
+    require_directory("Hermes package layer", &hermes_site)?;
+    require_directory("voice package layer", &voice_site)?;
+    let hermes_probe = format!(
+        "import importlib.metadata as m,pathlib,sys; import acp,acp_adapter,jwt; site=pathlib.Path({:?}).resolve(); mods=(acp,acp_adapter,jwt); origins=[pathlib.Path(x.__file__).resolve() for x in mods]; ok=sys.version_info[:2]==(3,13) and m.version('hermes-agent')=='0.18.0' and m.version('agent-client-protocol')=='0.9.0' and m.version('PyJWT')=='2.13.0' and all(site == p or site in p.parents for p in origins); raise SystemExit(0 if ok else 1)",
+        hermes_site.to_string_lossy()
+    );
+    run_python313_probe(&hermes_site, &hermes_probe)
+        .map_err(|error| format!("Hermes Python package audit failed: {error}"))?;
+    let voice_probe = format!(
+        "import importlib.metadata as m,pathlib,sys; import kokoro_onnx,numpy,onnxruntime,soundfile; site=pathlib.Path({:?}).resolve(); mods=(kokoro_onnx,numpy,onnxruntime,soundfile); origins=[pathlib.Path(x.__file__).resolve() for x in mods]; ok=sys.version_info[:2]==(3,13) and m.version('kokoro-onnx')=='0.5.0' and m.version('soundfile')=='0.14.0' and m.version('numpy')=='2.5.1' and m.version('onnxruntime')=='1.28.0' and all(site == p or site in p.parents for p in origins); raise SystemExit(0 if ok else 1)",
+        voice_site.to_string_lossy()
+    );
+    run_python313_probe(&voice_site, &voice_probe)
+        .map_err(|error| format!("voice Python package audit failed: {error}"))?;
 
     for script in [
         workspace_root.join("tools/kokoro_tts.py"),
         workspace_root.join("plugins/hermes_sidecar/sidecar.py"),
         workspace_root.join("plugins/memory/iris_broker/provider.py"),
     ] {
-        let status = Command::new("python")
-            .args(["-m", "py_compile"])
-            .arg(&script)
-            .status()
-            .map_err(|err| format!("failed to validate {}: {err}", script.display()))?;
-        if !status.success() {
-            return Err(format!(
-                "Python prerequisite is invalid: {}",
-                script.display()
-            ));
-        }
+        let code = format!(
+            "import py_compile; py_compile.compile({:?}, doraise=True)",
+            script.to_string_lossy()
+        );
+        run_python313_probe(&voice_site, &code)
+            .map_err(|error| format!("failed to validate {}: {error}", script.display()))?;
     }
     Ok(())
+}
+
+fn require_directory(label: &str, path: &Path) -> Result<(), String> {
+    if !path.is_dir() {
+        return Err(format!("missing {label}: {}", path.display()));
+    }
+    if fs::read_dir(path)
+        .map_err(|err| format!("failed to inspect {label} {}: {err}", path.display()))?
+        .next()
+        .is_none()
+    {
+        return Err(format!("{label} is empty: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn run_python313_probe(site_packages: &Path, code: &str) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for candidate in python313_candidates() {
+        let mut command = Command::new(&candidate.executable);
+        command
+            .args(&candidate.prefix_args)
+            .args(["-S", "-c", code])
+            .env("PYTHONPATH", site_packages)
+            .env("PYTHONNOUSERSITE", "1")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .env_remove("PYTHONHOME");
+        match command.output() {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => failures.push(format!(
+                "{}: {}",
+                candidate.executable.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+            Err(error) => failures.push(format!("{}: {error}", candidate.executable.display())),
+        }
+    }
+    Err(format!(
+        "exact external Python 3.13 with the Iris-owned package layer was not usable ({})",
+        failures.join("; ")
+    ))
+}
+
+fn python313_candidates() -> Vec<PythonLaunch> {
+    let mut candidates = Vec::new();
+    if let Some(configured) = std::env::var_os("IRIS_PYTHON") {
+        push_python_candidate(
+            &mut candidates,
+            PythonLaunch {
+                executable: PathBuf::from(configured),
+                prefix_args: Vec::new(),
+            },
+        );
+    }
+    push_python_candidate(
+        &mut candidates,
+        PythonLaunch {
+            executable: PathBuf::from("py"),
+            prefix_args: vec![OsString::from("-3.13")],
+        },
+    );
+    for (variable, relative) in [
+        ("LOCALAPPDATA", "Programs/Python/Python313/python.exe"),
+        ("ProgramFiles", "Python313/python.exe"),
+    ] {
+        if let Some(root) = std::env::var_os(variable) {
+            push_python_candidate(
+                &mut candidates,
+                PythonLaunch {
+                    executable: PathBuf::from(root).join(relative),
+                    prefix_args: Vec::new(),
+                },
+            );
+        }
+    }
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        push_uv_python_candidates(
+            &mut candidates,
+            &PathBuf::from(local_app_data).join("uv/python"),
+        );
+    }
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        push_uv_python_candidates(&mut candidates, &PathBuf::from(app_data).join("uv/python"));
+    }
+    for executable in ["python3.13", "python"] {
+        push_python_candidate(
+            &mut candidates,
+            PythonLaunch {
+                executable: PathBuf::from(executable),
+                prefix_args: Vec::new(),
+            },
+        );
+    }
+    candidates
+}
+
+fn push_uv_python_candidates(candidates: &mut Vec<PythonLaunch>, root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut executables = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("cpython-3.13")
+        })
+        .map(|entry| entry.path().join("python.exe"))
+        .collect::<Vec<_>>();
+    executables.sort();
+    for executable in executables {
+        push_python_candidate(
+            candidates,
+            PythonLaunch {
+                executable,
+                prefix_args: Vec::new(),
+            },
+        );
+    }
+}
+
+fn push_python_candidate(candidates: &mut Vec<PythonLaunch>, candidate: PythonLaunch) {
+    if !candidates.contains(&candidate) {
+        candidates.push(candidate);
+    }
 }
 
 fn print_response(text: &str) {

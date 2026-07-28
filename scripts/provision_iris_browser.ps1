@@ -1,3 +1,7 @@
+param(
+    [switch]$IncludePinnedDevelopmentBrowser
+)
+
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -22,7 +26,7 @@ if ($NodeMajor -lt 24) {
     throw "agent-browser 0.27.2 requires Node.js 24 or newer."
 }
 
-New-Item -ItemType Directory -Force -Path $RuntimeRoot, $DownloadRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
 & npm install --prefix $RuntimeRoot --save-exact "agent-browser@0.27.2"
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install pinned agent-browser 0.27.2."
@@ -41,36 +45,69 @@ if ($AgentBrowserHash -ne $ExpectedAgentBrowserSha256) {
     throw "agent-browser native binary hash mismatch: $AgentBrowserHash"
 }
 
-if (-not (Test-Path -LiteralPath $ChromeZip -PathType Leaf)) {
-    Invoke-WebRequest -Uri $ChromeZipUrl -OutFile $ChromeZip
-}
-$ChromeZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ChromeZip).Hash.ToLowerInvariant()
-if ($ChromeZipHash -ne $ExpectedChromeZipSha256) {
-    throw "Chrome for Testing archive hash mismatch: $ChromeZipHash"
-}
-
-if (-not (Test-Path -LiteralPath $BrowserExe -PathType Leaf)) {
-    if (Test-Path -LiteralPath $BrowserRoot) {
-        throw "Incomplete Iris browser directory already exists: $BrowserRoot"
+if ($IncludePinnedDevelopmentBrowser) {
+    New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
+    if (-not (Test-Path -LiteralPath $ChromeZip -PathType Leaf)) {
+        Invoke-WebRequest -Uri $ChromeZipUrl -OutFile $ChromeZip
     }
-    $ExtractRoot = Join-Path $RuntimeRoot "chrome-extract-149.0.7827.115"
-    if (Test-Path -LiteralPath $ExtractRoot) {
-        $ResolvedRuntime = [System.IO.Path]::GetFullPath($RuntimeRoot)
-        $ResolvedExtract = [System.IO.Path]::GetFullPath($ExtractRoot)
-        if (-not $ResolvedExtract.StartsWith($ResolvedRuntime, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to remove browser extraction path outside the Iris runtime."
+    $ChromeZipHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ChromeZip).Hash.ToLowerInvariant()
+    if ($ChromeZipHash -ne $ExpectedChromeZipSha256) {
+        throw "Chrome for Testing archive hash mismatch: $ChromeZipHash"
+    }
+
+    if (-not (Test-Path -LiteralPath $BrowserExe -PathType Leaf)) {
+        if (Test-Path -LiteralPath $BrowserRoot) {
+            throw "Incomplete Iris browser directory already exists: $BrowserRoot"
         }
+        $ExtractRoot = Join-Path $RuntimeRoot "chrome-extract-149.0.7827.115"
+        if (Test-Path -LiteralPath $ExtractRoot) {
+            $ResolvedRuntime = [System.IO.Path]::GetFullPath($RuntimeRoot)
+            $ResolvedExtract = [System.IO.Path]::GetFullPath($ExtractRoot)
+            if (-not $ResolvedExtract.StartsWith($ResolvedRuntime, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Refusing to remove browser extraction path outside the Iris runtime."
+            }
+            Remove-Item -LiteralPath $ExtractRoot -Recurse -Force
+        }
+        Expand-Archive -LiteralPath $ChromeZip -DestinationPath $ExtractRoot
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BrowserRoot) | Out-Null
+        Move-Item -LiteralPath (Join-Path $ExtractRoot "chrome-win64") -Destination $BrowserRoot
         Remove-Item -LiteralPath $ExtractRoot -Recurse -Force
     }
-    Expand-Archive -LiteralPath $ChromeZip -DestinationPath $ExtractRoot
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BrowserRoot) | Out-Null
-    Move-Item -LiteralPath (Join-Path $ExtractRoot "chrome-win64") -Destination $BrowserRoot
-    Remove-Item -LiteralPath $ExtractRoot -Recurse -Force
+
+    $ChromeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $BrowserExe).Hash.ToLowerInvariant()
+    if ($ChromeHash -ne $ExpectedChromeExeSha256) {
+        throw "Chrome for Testing executable hash mismatch: $ChromeHash"
+    }
+    Write-Output "Pinned agent-browser 0.27.2 and optional Chrome for Testing 149.0.7827.115 development fallback are ready."
+    return
 }
 
-$ChromeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $BrowserExe).Hash.ToLowerInvariant()
-if ($ChromeHash -ne $ExpectedChromeExeSha256) {
-    throw "Chrome for Testing executable hash mismatch: $ChromeHash"
+$configuredBrowser = if ($env:IRIS_BROWSER_EXECUTABLE_PATH) {
+    if (-not [System.IO.Path]::IsPathRooted($env:IRIS_BROWSER_EXECUTABLE_PATH)) {
+        throw "IRIS_BROWSER_EXECUTABLE_PATH must be an absolute path."
+    }
+    [System.IO.Path]::GetFullPath($env:IRIS_BROWSER_EXECUTABLE_PATH)
+} else {
+    $null
+}
+$systemBrowserCandidates = @($configuredBrowser)
+foreach ($candidate in @(
+        @{ Root = ${env:ProgramFiles(x86)}; Relative = "Microsoft\Edge\Application\msedge.exe" },
+        @{ Root = $env:ProgramFiles; Relative = "Microsoft\Edge\Application\msedge.exe" },
+        @{ Root = $env:LOCALAPPDATA; Relative = "Microsoft\Edge\Application\msedge.exe" },
+        @{ Root = $env:ProgramFiles; Relative = "Google\Chrome\Application\chrome.exe" },
+        @{ Root = ${env:ProgramFiles(x86)}; Relative = "Google\Chrome\Application\chrome.exe" },
+        @{ Root = $env:LOCALAPPDATA; Relative = "Google\Chrome\Application\chrome.exe" }
+    )) {
+    if ($candidate.Root) {
+        $systemBrowserCandidates += Join-Path $candidate.Root $candidate.Relative
+    }
+}
+$systemBrowser = $systemBrowserCandidates |
+    Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+    Select-Object -First 1
+if (-not $systemBrowser) {
+    throw "Iris needs Microsoft Edge for isolated browser automation. Install it with: winget install --id Microsoft.Edge -e"
 }
 
-Write-Output "Iris-owned agent-browser 0.27.2 and Chrome for Testing 149.0.7827.115 are ready."
+Write-Output "Pinned agent-browser 0.27.2 is ready with system browser: $systemBrowser"

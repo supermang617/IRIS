@@ -78,7 +78,29 @@ The MSIX script is guarded:
   local diagnostics.
 - A real MSIX build fails closed unless `makeappx.exe`, `signtool.exe`, the
   portable ZIP, its SHA256 file, and signing inputs are available.
+- Production signing uses an RFC 3161 SHA-256 timestamp so the signature can
+  remain verifiable after the signing certificate expires.
 - It verifies the portable ZIP SHA before staging package contents.
+- Readiness-only mode exits unsuccessfully when production prerequisites are
+  missing unless the caller explicitly requests a non-blocking diagnostic.
+- Signed semantic builds can generate schema-valid WinGet manifests with
+  immutable versioned GitHub Release URLs.
+
+## WinGet Publication Boundary
+
+WinGet's public community source does not accept PowerShell/script installers.
+Iris must first have a production-signed MSIX (or another supported signed
+installer type), published under an immutable semantic tag such as `v1.0.1`.
+
+Repository tooling generates a submission bundle, but publication still
+requires:
+
+1. validate the manifests with `winget validate`;
+2. test install, upgrade, and uninstall in Windows Sandbox or a clean VM;
+3. submit the version folder to `microsoft/winget-pkgs`;
+4. wait for automated checks and Microsoft moderator acceptance.
+
+See `docs/winget-release.md` for the exact release and submission sequence.
 
 ## Safety Boundary
 
@@ -91,6 +113,14 @@ The signed installer path must not change Iris runtime permissions:
   approval-gated Hermes session;
 - no model-output-driven high-risk action without separate confirmation;
 - no local memory exposure outside Iris-owned boundaries.
+
+The production manifest uses Microsoft's desktop6
+`FileSystemWriteVirtualization=disabled` setting with the
+`unvirtualizedResources` restricted capability. Iris needs one shared
+`%LOCALAPPDATA%\Iris` state root that is visible to its desktop process,
+external Python workers, and migration tooling and that is not removed as
+virtualized package state. Static manifest tests are required, followed by a
+signed two-version MSIX VM upgrade/uninstall test before publication.
 
 Installer tooling may run during packaging or explicit user installation only.
 That is separate from Iris runtime capability.

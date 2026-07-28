@@ -93,17 +93,17 @@ pub struct PreferenceExport {
 }
 
 pub fn capture_feedback(
-    root: &Path,
+    state_root: &Path,
     capture: FeedbackCapture,
     now_ms: u128,
 ) -> Result<FeedbackEvent, String> {
     let event = build_event(capture, now_ms)?;
-    append_event(&feedback_events_path(root), &event)?;
+    append_event(&feedback_events_path(state_root), &event)?;
     Ok(event)
 }
 
-pub fn load_events(root: &Path) -> Result<Vec<FeedbackEvent>, String> {
-    let path = feedback_events_path(root);
+pub fn load_events(state_root: &Path) -> Result<Vec<FeedbackEvent>, String> {
+    let path = feedback_events_path(state_root);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -252,14 +252,14 @@ pub fn instruction_block(events: &[FeedbackEvent]) -> Option<String> {
 }
 
 pub fn export_preference_pairs(
-    root: &Path,
+    state_root: &Path,
     events: &[FeedbackEvent],
 ) -> Result<PreferenceExport, String> {
     let pairs = events
         .iter()
         .filter_map(preference_pair_from_event)
         .collect::<Vec<_>>();
-    let path = preference_pairs_path(root);
+    let path = preference_pairs_path(state_root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
@@ -360,12 +360,12 @@ fn preference_pair_from_event(event: &FeedbackEvent) -> Option<PreferencePair> {
     })
 }
 
-pub fn feedback_events_path(root: &Path) -> PathBuf {
-    root.join(".iris-data/feedback-events.jsonl")
+pub fn feedback_events_path(state_root: &Path) -> PathBuf {
+    state_root.join(".iris-data/feedback-events.jsonl")
 }
 
-pub fn preference_pairs_path(root: &Path) -> PathBuf {
-    root.join(".iris-data/exports/preference-pairs.jsonl")
+pub fn preference_pairs_path(state_root: &Path) -> PathBuf {
+    state_root.join(".iris-data/exports/preference-pairs.jsonl")
 }
 
 fn normalize_required(text: &str, label: &str) -> Result<String, String> {

@@ -3,6 +3,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,7 @@ use std::os::windows::process::CommandExt;
 
 const DEFAULT_OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const DEFAULT_KEEP_ALIVE: &str = "10m";
 const DEFAULT_NUM_PREDICT: u32 = 192;
 const VISUAL_NUM_PREDICT: u32 = 128;
@@ -36,10 +38,18 @@ pub enum ConversationRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamingOutcome {
+    Completed(String),
+    Cancelled(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OllamaSettings {
     pub generate_url: String,
     pub model_id: String,
     pub num_ctx: u32,
+    /// Safe compatibility fallback used only when Ollama's automatic placement
+    /// fails while loading or allocating the configured model.
     pub num_gpu_layers: u32,
 }
 
@@ -72,12 +82,46 @@ impl OllamaSettings {
 pub struct OllamaClient {
     settings: OllamaSettings,
     client: reqwest::blocking::Client,
+    streaming_client: reqwest::Client,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VisualEvidenceSource {
     UserSelectedImage,
     ScreenAreaUnderIris,
+}
+
+#[derive(Debug)]
+struct GenerateAttemptError {
+    user_message: String,
+    retry_with_safe_gpu_placement: bool,
+}
+
+impl GenerateAttemptError {
+    fn new(user_message: impl Into<String>) -> Self {
+        Self {
+            user_message: user_message.into(),
+            retry_with_safe_gpu_placement: false,
+        }
+    }
+
+    fn from_http_status(status: reqwest::StatusCode, response_body: &str) -> Self {
+        Self {
+            user_message: format!("Ollama generate request failed with HTTP status {status}"),
+            retry_with_safe_gpu_placement: is_gpu_placement_or_resource_failure(
+                Some(status.as_u16()),
+                response_body,
+            ),
+        }
+    }
+
+    fn from_ollama_error(error: &str, response_started: bool) -> Self {
+        Self {
+            user_message: "Ollama reported a local generation error".to_string(),
+            retry_with_safe_gpu_placement: !response_started
+                && is_gpu_placement_or_resource_failure(None, error),
+        }
+    }
 }
 
 impl OllamaClient {
@@ -87,7 +131,15 @@ impl OllamaClient {
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|err| format!("failed to create Ollama client: {err}"))?;
-        Ok(Self { settings, client })
+        let streaming_client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .map_err(|err| format!("failed to create streaming Ollama client: {err}"))?;
+        Ok(Self {
+            settings,
+            client,
+            streaming_client,
+        })
     }
 
     pub fn respond(&self, bundle: &GatedContextBundle) -> AssistantResponse {
@@ -135,6 +187,79 @@ impl OllamaClient {
         }
     }
 
+    /// Streams answer text as Ollama produces it and returns the same complete
+    /// answer Iris would retain for conversation history.
+    pub fn stream_response(
+        &self,
+        bundle: &GatedContextBundle,
+        on_chunk: impl FnMut(&str),
+    ) -> Result<String, String> {
+        self.stream_response_with_dynamic_context(bundle, &[], &[], None, on_chunk)
+    }
+
+    /// Streams answer text with the same bounded history, approved memories,
+    /// dynamic context, model, and generation limits as the buffered path.
+    pub fn stream_response_with_dynamic_context(
+        &self,
+        bundle: &GatedContextBundle,
+        history: &[ConversationTurn],
+        memories: &[String],
+        dynamic_context: Option<&str>,
+        on_chunk: impl FnMut(&str),
+    ) -> Result<String, String> {
+        let cancellation = AtomicBool::new(false);
+        match self.stream_response_with_dynamic_context_cancellable(
+            bundle,
+            history,
+            memories,
+            dynamic_context,
+            &cancellation,
+            on_chunk,
+        )? {
+            StreamingOutcome::Completed(response) => Ok(response),
+            StreamingOutcome::Cancelled(_) => {
+                Err("Ollama streaming generation was cancelled".to_string())
+            }
+        }
+    }
+
+    /// Streams answer text until completion or until `cancellation` is set.
+    /// A cancelled outcome contains only text already delivered to `on_chunk`.
+    pub fn stream_response_cancellable(
+        &self,
+        bundle: &GatedContextBundle,
+        cancellation: &AtomicBool,
+        on_chunk: impl FnMut(&str),
+    ) -> Result<StreamingOutcome, String> {
+        self.stream_response_with_dynamic_context_cancellable(
+            bundle,
+            &[],
+            &[],
+            None,
+            cancellation,
+            on_chunk,
+        )
+    }
+
+    /// Cancellable streaming variant with bounded history, approved memories,
+    /// and advisory dynamic context.
+    pub fn stream_response_with_dynamic_context_cancellable(
+        &self,
+        bundle: &GatedContextBundle,
+        history: &[ConversationTurn],
+        memories: &[String],
+        dynamic_context: Option<&str>,
+        cancellation: &AtomicBool,
+        mut on_chunk: impl FnMut(&str),
+    ) -> Result<StreamingOutcome, String> {
+        if cancellation.load(Ordering::Acquire) {
+            return Ok(StreamingOutcome::Cancelled(String::new()));
+        }
+        let prompt = prompt_from_gated_context(bundle, history, memories, dynamic_context)?;
+        let request = self.text_generate_request(prompt, true);
+        self.generate_streaming_with_gpu_fallback(&request, cancellation, &mut on_chunk)
+    }
+
     fn try_respond(&self, bundle: &GatedContextBundle) -> Result<String, String> {
         self.try_respond_with_history(bundle, &[], &[], None)
     }
@@ -147,11 +272,16 @@ impl OllamaClient {
         dynamic_context: Option<&str>,
     ) -> Result<String, String> {
         let prompt = prompt_from_gated_context(bundle, history, memories, dynamic_context)?;
-        let request = GenerateRequest {
+        let request = self.text_generate_request(prompt, false);
+        self.generate_full_with_gpu_fallback(&request, "response")
+    }
+
+    fn text_generate_request(&self, prompt: String, stream: bool) -> GenerateRequest {
+        GenerateRequest {
             model: self.settings.model_id.clone(),
             prompt,
             images: Vec::new(),
-            stream: false,
+            stream,
             think: false,
             keep_alive: DEFAULT_KEEP_ALIVE,
             options: GenerateOptions {
@@ -161,21 +291,45 @@ impl OllamaClient {
                 top_k: None,
                 top_p: None,
                 seed: None,
-                num_gpu: Some(self.settings.num_gpu_layers),
+                num_gpu: None,
             },
-        };
+        }
+    }
 
+    fn send_generate_request(
+        &self,
+        request: &GenerateRequest,
+    ) -> Result<reqwest::blocking::Response, GenerateAttemptError> {
         let response = self
             .client
             .post(&self.settings.generate_url)
             .json(&request)
             .send()
-            .map_err(|err| err.to_string())?
-            .error_for_status()
-            .map_err(|err| err.to_string())?
-            .json::<GenerateResponse>()
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| GenerateAttemptError::new(err.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let body = response.text().unwrap_or_default();
+        Err(GenerateAttemptError::from_http_status(status, &body))
+    }
 
+    fn generate_full_once(
+        &self,
+        request: &GenerateRequest,
+        response_kind: &str,
+    ) -> Result<String, GenerateAttemptError> {
+        let response = self
+            .send_generate_request(request)?
+            .json::<GenerateResponse>()
+            .map_err(|err| GenerateAttemptError::new(err.to_string()))?;
+        if let Some(error) = response
+            .error
+            .as_deref()
+            .filter(|error| !error.trim().is_empty())
+        {
+            return Err(GenerateAttemptError::from_ollama_error(error, false));
+        }
         let text = response.response.trim();
         if text.is_empty() {
             if response
@@ -183,21 +337,160 @@ impl OllamaClient {
                 .as_deref()
                 .is_some_and(|thinking| !thinking.trim().is_empty())
             {
-                return Err(format!(
+                return Err(GenerateAttemptError::new(format!(
                     "Ollama returned only hidden thinking and no answer; done_reason={}",
                     response
                         .done_reason
                         .unwrap_or_else(|| "unknown".to_string())
-                ));
+                )));
             }
-            return Err(format!(
-                "Ollama returned an empty response; done_reason={}",
+            return Err(GenerateAttemptError::new(format!(
+                "Ollama returned an empty {response_kind}; done_reason={}",
                 response
                     .done_reason
                     .unwrap_or_else(|| "unknown".to_string())
-            ));
+            )));
         }
         Ok(text.to_string())
+    }
+
+    fn generate_full_with_gpu_fallback(
+        &self,
+        request: &GenerateRequest,
+        response_kind: &str,
+    ) -> Result<String, String> {
+        self.with_safe_gpu_fallback(request, |attempt| {
+            self.generate_full_once(attempt, response_kind)
+        })
+    }
+
+    fn generate_streaming_once(
+        &self,
+        request: &GenerateRequest,
+        cancellation: &AtomicBool,
+        on_chunk: &mut impl FnMut(&str),
+    ) -> Result<StreamingOutcome, GenerateAttemptError> {
+        if cancellation.load(Ordering::Acquire) {
+            return Ok(StreamingOutcome::Cancelled(String::new()));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| GenerateAttemptError::new(err.to_string()))?;
+        runtime.block_on(self.generate_streaming_once_async(request, cancellation, on_chunk))
+    }
+
+    async fn generate_streaming_once_async(
+        &self,
+        request: &GenerateRequest,
+        cancellation: &AtomicBool,
+        on_chunk: &mut impl FnMut(&str),
+    ) -> Result<StreamingOutcome, GenerateAttemptError> {
+        let send = self
+            .streaming_client
+            .post(&self.settings.generate_url)
+            .json(request)
+            .send();
+        tokio::pin!(send);
+        let mut response = loop {
+            if cancellation.load(Ordering::Acquire) {
+                return Ok(StreamingOutcome::Cancelled(String::new()));
+            }
+            tokio::select! {
+                response = &mut send => {
+                    break response.map_err(|err| GenerateAttemptError::new(err.to_string()))?;
+                }
+                _ = tokio::time::sleep(CANCELLATION_POLL_INTERVAL) => {}
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(GenerateAttemptError::from_http_status(status, &body));
+        }
+
+        let mut state = GenerateStreamState::default();
+        let mut pending = Vec::<u8>::new();
+        loop {
+            if cancellation.load(Ordering::Acquire) {
+                return Ok(state.cancelled());
+            }
+            let body_chunk = tokio::select! {
+                chunk = response.chunk() => {
+                    chunk.map_err(|err| GenerateAttemptError::new(err.to_string()))?
+                }
+                _ = tokio::time::sleep(CANCELLATION_POLL_INTERVAL) => {
+                    continue;
+                }
+            };
+            let Some(body_chunk) = body_chunk else {
+                break;
+            };
+            pending.extend_from_slice(&body_chunk);
+            while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+                let line = pending.drain(..=newline).collect::<Vec<_>>();
+                state.consume_line(&line, on_chunk)?;
+                if cancellation.load(Ordering::Acquire) {
+                    return Ok(state.cancelled());
+                }
+            }
+        }
+        if !pending.iter().all(u8::is_ascii_whitespace) {
+            state.consume_line(&pending, on_chunk)?;
+        }
+        state.completed()
+    }
+
+    fn generate_streaming_with_gpu_fallback(
+        &self,
+        request: &GenerateRequest,
+        cancellation: &AtomicBool,
+        on_chunk: &mut impl FnMut(&str),
+    ) -> Result<StreamingOutcome, String> {
+        match self.generate_streaming_once(request, cancellation, on_chunk) {
+            Ok(outcome) => Ok(outcome),
+            Err(primary_error)
+                if primary_error.retry_with_safe_gpu_placement
+                    && !cancellation.load(Ordering::Acquire) =>
+            {
+                let fallback_request = request.with_num_gpu(Some(self.settings.num_gpu_layers));
+                self.generate_streaming_once(&fallback_request, cancellation, on_chunk)
+                    .map_err(|fallback_error| {
+                        format!(
+                            "{}; safe one-layer GPU placement retry failed: {}",
+                            primary_error.user_message, fallback_error.user_message
+                        )
+                    })
+            }
+            Err(_) if cancellation.load(Ordering::Acquire) => {
+                Ok(StreamingOutcome::Cancelled(String::new()))
+            }
+            Err(error) => Err(error.user_message),
+        }
+    }
+
+    fn with_safe_gpu_fallback<T>(
+        &self,
+        request: &GenerateRequest,
+        mut attempt: impl FnMut(&GenerateRequest) -> Result<T, GenerateAttemptError>,
+    ) -> Result<T, String> {
+        debug_assert!(
+            request.options.num_gpu.is_none(),
+            "normal Ollama requests must use automatic GPU placement"
+        );
+        match attempt(request) {
+            Ok(output) => Ok(output),
+            Err(primary_error) if primary_error.retry_with_safe_gpu_placement => {
+                let fallback_request = request.with_num_gpu(Some(self.settings.num_gpu_layers));
+                attempt(&fallback_request).map_err(|fallback_error| {
+                    format!(
+                        "{}; safe one-layer GPU placement retry failed: {}",
+                        primary_error.user_message, fallback_error.user_message
+                    )
+                })
+            }
+            Err(error) => Err(error.user_message),
+        }
     }
 
     pub fn respond_to_image_probe(
@@ -325,31 +618,10 @@ impl OllamaClient {
                 top_k: Some(1),
                 top_p: Some(0.1),
                 seed: Some(7),
-                num_gpu: Some(self.settings.num_gpu_layers),
+                num_gpu: None,
             },
         };
-
-        let response = self
-            .client
-            .post(&self.settings.generate_url)
-            .json(&request)
-            .send()
-            .map_err(|err| err.to_string())?
-            .error_for_status()
-            .map_err(|err| err.to_string())?
-            .json::<GenerateResponse>()
-            .map_err(|err| err.to_string())?;
-
-        let text = response.response.trim();
-        if text.is_empty() {
-            return Err(format!(
-                "Ollama returned an empty image response; done_reason={}",
-                response
-                    .done_reason
-                    .unwrap_or_else(|| "unknown".to_string())
-            ));
-        }
-        Ok(text.to_string())
+        self.generate_full_with_gpu_fallback(&request, "image response")
     }
 }
 
@@ -619,7 +891,7 @@ fn validate_image_probe_path(image_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct GenerateRequest {
     model: String,
     prompt: String,
@@ -631,7 +903,15 @@ struct GenerateRequest {
     options: GenerateOptions,
 }
 
-#[derive(Debug, Serialize)]
+impl GenerateRequest {
+    fn with_num_gpu(&self, num_gpu: Option<u32>) -> Self {
+        let mut request = self.clone();
+        request.options.num_gpu = num_gpu;
+        request
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct GenerateOptions {
     num_ctx: u32,
     num_predict: u32,
@@ -649,11 +929,152 @@ struct GenerateOptions {
 
 #[derive(Debug, Deserialize)]
 struct GenerateResponse {
+    #[serde(default)]
     response: String,
     #[serde(default)]
     thinking: Option<String>,
     #[serde(default)]
+    done: bool,
+    #[serde(default)]
     done_reason: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct GenerateStreamState {
+    response_text: String,
+    response_started: bool,
+    hidden_thinking_returned: bool,
+    terminal_marker_received: bool,
+    done_reason: Option<String>,
+}
+
+impl GenerateStreamState {
+    fn consume_line(
+        &mut self,
+        line: &[u8],
+        on_chunk: &mut impl FnMut(&str),
+    ) -> Result<(), GenerateAttemptError> {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return Ok(());
+        }
+        let chunk = serde_json::from_slice::<GenerateResponse>(line)
+            .map_err(|err| GenerateAttemptError::new(err.to_string()))?;
+        if let Some(error) = chunk
+            .error
+            .as_deref()
+            .filter(|error| !error.trim().is_empty())
+        {
+            return Err(GenerateAttemptError::from_ollama_error(
+                error,
+                self.response_started,
+            ));
+        }
+        if chunk
+            .thinking
+            .as_deref()
+            .is_some_and(|thinking| !thinking.trim().is_empty())
+        {
+            self.hidden_thinking_returned = true;
+        }
+        if !chunk.response.is_empty() {
+            self.response_started = true;
+            self.response_text.push_str(&chunk.response);
+            on_chunk(&chunk.response);
+        }
+        if chunk.done_reason.is_some() {
+            self.done_reason = chunk.done_reason;
+        }
+        self.terminal_marker_received |= chunk.done;
+        Ok(())
+    }
+
+    fn cancelled(&self) -> StreamingOutcome {
+        StreamingOutcome::Cancelled(self.response_text.trim().to_string())
+    }
+
+    fn completed(self) -> Result<StreamingOutcome, GenerateAttemptError> {
+        let text = self.response_text.trim();
+        if !self.terminal_marker_received {
+            return Err(GenerateAttemptError::new(
+                "Ollama streaming response ended before its terminal done marker",
+            ));
+        }
+        if text.is_empty() {
+            if self.hidden_thinking_returned {
+                return Err(GenerateAttemptError::new(format!(
+                    "Ollama returned only hidden thinking and no answer; done_reason={}",
+                    self.done_reason.unwrap_or_else(|| "unknown".to_string())
+                )));
+            }
+            return Err(GenerateAttemptError::new(format!(
+                "Ollama returned an empty streaming response; done_reason={}",
+                self.done_reason.unwrap_or_else(|| "unknown".to_string())
+            )));
+        }
+        Ok(StreamingOutcome::Completed(text.to_string()))
+    }
+}
+
+#[cfg(test)]
+fn consume_generate_stream(
+    mut reader: impl std::io::BufRead,
+    cancellation: &AtomicBool,
+    on_chunk: &mut impl FnMut(&str),
+) -> Result<StreamingOutcome, GenerateAttemptError> {
+    let mut state = GenerateStreamState::default();
+    let mut line = String::new();
+
+    loop {
+        if cancellation.load(Ordering::Acquire) {
+            return Ok(state.cancelled());
+        }
+        line.clear();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .map_err(|err| GenerateAttemptError::new(err.to_string()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        if cancellation.load(Ordering::Acquire) {
+            return Ok(state.cancelled());
+        }
+        state.consume_line(line.as_bytes(), on_chunk)?;
+        if cancellation.load(Ordering::Acquire) {
+            return Ok(state.cancelled());
+        }
+    }
+    state.completed()
+}
+
+fn is_gpu_placement_or_resource_failure(status: Option<u16>, message: &str) -> bool {
+    if status.is_some_and(|status| status < 500) {
+        return false;
+    }
+    let message = message.to_ascii_lowercase();
+    let explicit_resource_failure = [
+        "cuda",
+        "gpu",
+        "vram",
+        "out of memory",
+        "insufficient memory",
+        "not enough memory",
+        "memory allocation",
+        "failed to allocate",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+    let model_load_failure = [
+        "error loading model",
+        "failed to load model",
+        "unable to load model",
+        "model requires more system memory",
+        "runner process has terminated",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+    explicit_resource_failure || model_load_failure
 }
 
 fn prompt_from_gated_context(
@@ -781,10 +1202,74 @@ fn base64_encode(bytes: &[u8]) -> String {
 mod tests {
     use iris_context_gate::gate_context;
     use iris_core_types::{ContextSource, RawContextItem};
+    use std::io::{Cursor, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
 
     use super::*;
 
     const MANIFEST: &str = include_str!("../../../manifest.json");
+
+    fn test_client() -> OllamaClient {
+        OllamaClient::new(OllamaSettings {
+            generate_url: "http://127.0.0.1:11434/api/generate".to_string(),
+            model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            num_ctx: 8192,
+            num_gpu_layers: 1,
+        })
+        .unwrap()
+    }
+
+    fn automatic_text_request(stream: bool) -> GenerateRequest {
+        GenerateRequest {
+            model: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            prompt: "hello".to_string(),
+            images: Vec::new(),
+            stream,
+            think: false,
+            keep_alive: DEFAULT_KEEP_ALIVE,
+            options: GenerateOptions {
+                num_ctx: 8192,
+                num_predict: DEFAULT_NUM_PREDICT,
+                temperature: None,
+                top_k: None,
+                top_p: None,
+                seed: None,
+                num_gpu: None,
+            },
+        }
+    }
+
+    fn read_test_http_request(stream: &mut TcpStream) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let bytes_read = stream.read(&mut buffer).unwrap();
+            assert!(bytes_read > 0, "test HTTP request ended before its body");
+            request.extend_from_slice(&buffer[..bytes_read]);
+            let Some(headers_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers_end = headers_end + 4;
+            let headers = String::from_utf8_lossy(&request[..headers_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= headers_end + content_length {
+                return;
+            }
+        }
+    }
 
     #[test]
     fn settings_use_manifest_model_and_context_ceiling() {
@@ -822,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_request_disables_thinking() {
+    fn generate_request_disables_thinking_and_uses_automatic_gpu_placement() {
         assert_eq!(DEFAULT_NUM_PREDICT, 192);
         let request = GenerateRequest {
             model: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
@@ -838,7 +1323,7 @@ mod tests {
                 top_k: None,
                 top_p: None,
                 seed: None,
-                num_gpu: Some(1),
+                num_gpu: None,
             },
         };
 
@@ -850,7 +1335,10 @@ mod tests {
         assert!(json["options"].get("top_k").is_none());
         assert!(json["options"].get("top_p").is_none());
         assert!(json["options"].get("seed").is_none());
-        assert_eq!(json["options"]["num_gpu"], 1);
+        assert!(json["options"].get("num_gpu").is_none());
+
+        let fallback_json = serde_json::to_value(request.with_num_gpu(Some(1))).unwrap();
+        assert_eq!(fallback_json["options"]["num_gpu"], 1);
     }
 
     #[test]
@@ -873,7 +1361,7 @@ mod tests {
                 top_k: Some(1),
                 top_p: Some(0.1),
                 seed: Some(7),
-                num_gpu: Some(1),
+                num_gpu: None,
             },
         };
 
@@ -884,7 +1372,346 @@ mod tests {
         assert_eq!(json["options"]["top_k"], 1);
         assert!((json["options"]["top_p"].as_f64().unwrap() - 0.1).abs() < 0.000_001);
         assert_eq!(json["options"]["seed"], 7);
-        assert_eq!(json["options"]["num_gpu"], 1);
+        assert!(json["options"].get("num_gpu").is_none());
+    }
+
+    #[test]
+    fn gpu_resource_failure_retries_once_with_safe_placement() {
+        let client = test_client();
+        let request = automatic_text_request(false);
+        let mut observed_num_gpu = Vec::new();
+        let mut attempts = 0;
+
+        let response = client
+            .with_safe_gpu_fallback(&request, |attempt| {
+                attempts += 1;
+                observed_num_gpu.push(attempt.options.num_gpu);
+                if attempts == 1 {
+                    Err(GenerateAttemptError::from_http_status(
+                        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                        "CUDA out of memory while loading the model",
+                    ))
+                } else {
+                    Ok("ready".to_string())
+                }
+            })
+            .unwrap();
+
+        assert_eq!(response, "ready");
+        assert_eq!(observed_num_gpu, vec![None, Some(1)]);
+    }
+
+    #[test]
+    fn unrelated_failure_does_not_retry_with_safe_placement() {
+        let client = test_client();
+        let request = automatic_text_request(false);
+        let mut attempts = 0;
+
+        let error = client
+            .with_safe_gpu_fallback::<String>(&request, |_| {
+                attempts += 1;
+                Err(GenerateAttemptError::from_http_status(
+                    reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                    "unexpected internal model response",
+                ))
+            })
+            .unwrap_err();
+
+        assert_eq!(attempts, 1);
+        assert!(error.contains("HTTP status 500"));
+    }
+
+    #[test]
+    fn gpu_failure_classification_is_narrow_and_error_body_is_redacted() {
+        let secret = "private-user-prompt-marker";
+        let retryable = GenerateAttemptError::from_http_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("failed to allocate VRAM while serving {secret}"),
+        );
+        let client_error = GenerateAttemptError::from_http_status(
+            reqwest::StatusCode::BAD_REQUEST,
+            "GPU option was invalid",
+        );
+        let generic_server_error = GenerateAttemptError::from_http_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "unexpected internal model response",
+        );
+
+        assert!(retryable.retry_with_safe_gpu_placement);
+        assert!(!retryable.user_message.contains(secret));
+        assert!(!client_error.retry_with_safe_gpu_placement);
+        assert!(!generic_server_error.retry_with_safe_gpu_placement);
+    }
+
+    #[test]
+    fn streaming_parser_emits_incremental_text_and_reassembles_exact_content() {
+        let stream = concat!(
+            "{\"response\":\"{\\\"tool\\\":\",\"done\":false}\n",
+            "{\"response\":\"\\\"iris_query_memory\\\"}\",\"done\":false}\n",
+            "{\"response\":\"\",\"done\":true,\"done_reason\":\"stop\"}\n"
+        );
+        let mut chunks = Vec::new();
+        let cancellation = AtomicBool::new(false);
+
+        let response = consume_generate_stream(Cursor::new(stream), &cancellation, &mut |chunk| {
+            chunks.push(chunk.to_string())
+        })
+        .unwrap();
+
+        assert_eq!(
+            chunks,
+            vec![
+                "{\"tool\":".to_string(),
+                "\"iris_query_memory\"}".to_string()
+            ]
+        );
+        assert_eq!(
+            response,
+            StreamingOutcome::Completed("{\"tool\":\"iris_query_memory\"}".to_string())
+        );
+    }
+
+    #[test]
+    fn streaming_parser_never_emits_hidden_thinking() {
+        let stream = concat!(
+            "{\"thinking\":\"private chain\",\"response\":\"\",\"done\":false}\n",
+            "{\"response\":\"Visible answer.\",\"done\":true,\"done_reason\":\"stop\"}\n"
+        );
+        let mut chunks = Vec::new();
+        let cancellation = AtomicBool::new(false);
+
+        let response = consume_generate_stream(Cursor::new(stream), &cancellation, &mut |chunk| {
+            chunks.push(chunk.to_string())
+        })
+        .unwrap();
+
+        assert_eq!(chunks, vec!["Visible answer.".to_string()]);
+        assert_eq!(
+            response,
+            StreamingOutcome::Completed("Visible answer.".to_string())
+        );
+    }
+
+    #[test]
+    fn streaming_parser_rejects_a_truncated_response_without_done_marker() {
+        let stream = "{\"response\":\"partial answer\",\"done\":false}\n";
+        let cancellation = AtomicBool::new(false);
+
+        let error =
+            consume_generate_stream(Cursor::new(stream), &cancellation, &mut |_| {}).unwrap_err();
+
+        assert!(
+            error
+                .user_message
+                .contains("ended before its terminal done marker")
+        );
+    }
+
+    #[test]
+    fn network_cancellation_interrupts_a_stalled_response_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(400));
+        });
+        let client = OllamaClient::new(OllamaSettings {
+            generate_url: format!("http://{address}/api/generate"),
+            model_id: "test-model".to_string(),
+            num_ctx: 8192,
+            num_gpu_layers: 1,
+        })
+        .unwrap();
+        let bundle = gate_context(vec![RawContextItem::new(
+            ContextSource::UserUtterance,
+            "hello",
+        )]);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancellation_trigger = Arc::clone(&cancellation);
+        let trigger = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            cancellation_trigger.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+
+        let outcome = client
+            .stream_response_cancellable(&bundle, cancellation.as_ref(), |_| {})
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        trigger.join().unwrap();
+        server.join().unwrap();
+        assert_eq!(outcome, StreamingOutcome::Cancelled(String::new()));
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "header cancellation took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn network_cancellation_interrupts_a_stalled_response_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    concat!(
+                        "HTTP/1.1 200 OK\r\n",
+                        "Content-Type: application/x-ndjson\r\n",
+                        "Connection: close\r\n",
+                        "\r\n",
+                        "{\"response\":\"first\",\"done\":false}\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            thread::sleep(Duration::from_millis(400));
+        });
+        let client = OllamaClient::new(OllamaSettings {
+            generate_url: format!("http://{address}/api/generate"),
+            model_id: "test-model".to_string(),
+            num_ctx: 8192,
+            num_gpu_layers: 1,
+        })
+        .unwrap();
+        let bundle = gate_context(vec![RawContextItem::new(
+            ContextSource::UserUtterance,
+            "hello",
+        )]);
+        let cancellation = AtomicBool::new(false);
+        let started = Instant::now();
+        let mut chunks = Vec::new();
+
+        let outcome = client
+            .stream_response_cancellable(&bundle, &cancellation, |chunk| {
+                chunks.push(chunk.to_string());
+                cancellation.store(true, Ordering::Release);
+            })
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        server.join().unwrap();
+        assert_eq!(chunks, vec!["first".to_string()]);
+        assert_eq!(outcome, StreamingOutcome::Cancelled("first".to_string()));
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "body cancellation took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_gpu_error_can_retry_only_before_output_is_emitted() {
+        let before_output =
+            "{\"error\":\"runner process has terminated while loading model\",\"done\":true}\n";
+        let after_output = concat!(
+            "{\"response\":\"Hello\",\"done\":false}\n",
+            "{\"error\":\"CUDA out of memory\",\"done\":true}\n"
+        );
+        let cancellation = AtomicBool::new(false);
+
+        let before_error =
+            consume_generate_stream(Cursor::new(before_output), &cancellation, &mut |_| {})
+                .unwrap_err();
+        let after_error =
+            consume_generate_stream(Cursor::new(after_output), &cancellation, &mut |_| {})
+                .unwrap_err();
+
+        assert!(before_error.retry_with_safe_gpu_placement);
+        assert!(!after_error.retry_with_safe_gpu_placement);
+    }
+
+    #[test]
+    fn streaming_cancellation_stops_before_the_next_fragment() {
+        let stream = concat!(
+            "{\"response\":\"first\",\"done\":false}\n",
+            "{\"response\":\" second\",\"done\":false}\n",
+            "{\"response\":\" third\",\"done\":true,\"done_reason\":\"stop\"}\n"
+        );
+        let cancellation = AtomicBool::new(false);
+        let mut chunks = Vec::new();
+
+        let outcome = consume_generate_stream(Cursor::new(stream), &cancellation, &mut |chunk| {
+            chunks.push(chunk.to_string());
+            cancellation.store(true, Ordering::Release);
+        })
+        .unwrap();
+
+        assert_eq!(chunks, vec!["first".to_string()]);
+        assert_eq!(outcome, StreamingOutcome::Cancelled("first".to_string()));
+    }
+
+    #[test]
+    fn pre_cancelled_stream_never_contacts_ollama_or_attempts_gpu_fallback() {
+        let client = OllamaClient::new(OllamaSettings {
+            generate_url: "http://127.0.0.1:1/api/generate".to_string(),
+            model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+            num_ctx: 8192,
+            num_gpu_layers: 1,
+        })
+        .unwrap();
+        let bundle = gate_context(vec![RawContextItem::new(
+            ContextSource::UserUtterance,
+            "hello",
+        )]);
+        let cancellation = AtomicBool::new(true);
+        let mut callback_invoked = false;
+
+        let outcome = client
+            .stream_response_cancellable(&bundle, &cancellation, |_| {
+                callback_invoked = true;
+            })
+            .unwrap();
+
+        assert_eq!(outcome, StreamingOutcome::Cancelled(String::new()));
+        assert!(!callback_invoked);
+    }
+
+    #[test]
+    #[ignore = "requires the configured local Ollama model"]
+    fn live_streaming_response_matches_incremental_chunks() {
+        let manifest = iris_config::ProjectManifest::from_json_str(MANIFEST).unwrap();
+        let client = OllamaClient::new(OllamaSettings::from_manifest(&manifest).unwrap()).unwrap();
+        let bundle = gate_context(vec![RawContextItem::new(
+            ContextSource::UserUtterance,
+            "Reply with exactly: streaming ready",
+        )]);
+        let mut streamed = String::new();
+
+        let response = client
+            .stream_response(&bundle, |chunk| streamed.push_str(chunk))
+            .unwrap();
+
+        assert!(!streamed.is_empty());
+        assert_eq!(response, streamed.trim());
+    }
+
+    #[test]
+    #[ignore = "requires the configured local Ollama model"]
+    fn live_streaming_cancellation_stops_after_delivered_text() {
+        let manifest = iris_config::ProjectManifest::from_json_str(MANIFEST).unwrap();
+        let client = OllamaClient::new(OllamaSettings::from_manifest(&manifest).unwrap()).unwrap();
+        let bundle = gate_context(vec![RawContextItem::new(
+            ContextSource::UserUtterance,
+            "Count slowly from one to twenty in complete sentences.",
+        )]);
+        let cancellation = AtomicBool::new(false);
+        let mut streamed = String::new();
+
+        let outcome = client
+            .stream_response_cancellable(&bundle, &cancellation, |chunk| {
+                streamed.push_str(chunk);
+                cancellation.store(true, Ordering::Release);
+            })
+            .unwrap();
+
+        assert!(!streamed.is_empty());
+        assert_eq!(
+            outcome,
+            StreamingOutcome::Cancelled(streamed.trim().to_string())
+        );
     }
 
     #[test]

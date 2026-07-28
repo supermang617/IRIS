@@ -30,9 +30,9 @@ const sitemap = readFileSync(join(siteDir, "sitemap.xml"), "utf8");
 const llms = readFileSync(join(siteDir, "llms.txt"), "utf8");
 
 const expectedHashes = new Map([
-  ["iris-windows-installer.zip", "eb3a44183aeb19afb4a5839e682372a47bf97c772aa15140f3bf2ba3d47f6bef"],
-  ["iris-windows.zip", "f0c2feacc544d83c197122ccec9e73788bc92ba269c1232664aa15b44fb1c761"],
-  ["install-iris-windows.ps1", "89aefc50fc22b52b9b707456381f475f79fc1a30590364b2132d9c3535975a1f"],
+  ["iris-windows-installer.zip", "4328992bbd59eae216a1be8b03091a734ece9bcadb02c1487c65aca0be3dc545"],
+  ["iris-windows.zip", "a2b29f79ab667ebe5bb0d89f79547dcafcf54969ccb0a2be8214af2d514f67d1"],
+  ["install-iris-windows.ps1", "0bd2fd7ca8d010921be1ca997132771d9a2c62e5658e159805dacf45aa31d73c"],
 ]);
 
 const requiredFragments = [
@@ -67,6 +67,15 @@ if (/@keyframes|animation\s*:/i.test(css)) {
 
 if (manifest.tag !== "v1") {
   throw new Error(`Release manifest must stay on v1; got ${manifest.tag}`);
+}
+if (
+  manifest.package_manager?.id !== "AlejandroPinto.Iris" ||
+  manifest.package_manager?.status !== "pending-signed-release-and-catalog-acceptance"
+) {
+  throw new Error("Release manifest must describe the truthful pending WinGet publication state.");
+}
+if (!html.includes("WinGet package ID <code>AlejandroPinto.Iris</code> is prepared but not yet public")) {
+  throw new Error("Site must not imply that Iris is already available from the WinGet catalog.");
 }
 
 for (const [name, hash] of expectedHashes) {

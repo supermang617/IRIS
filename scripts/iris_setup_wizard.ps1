@@ -12,7 +12,8 @@ if ((Split-Path -Leaf $root) -ieq "scripts") {
 }
 Set-Location -LiteralPath $root
 
-$diagnosticsDir = Join-Path $root "diagnostics"
+$reportRoot = if ($env:IRIS_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT) } else { $root }
+$diagnosticsDir = Join-Path $reportRoot "diagnostics"
 $preflightJson = Join-Path $diagnosticsDir "preflight-report.json"
 $setupReport = Join-Path $diagnosticsDir "setup-wizard-report.txt"
 $modelId = "huihui_ai/gemma-4-abliterated:e2b"
@@ -42,6 +43,34 @@ function Test-CommandAvailable {
     return $null
 }
 
+function Find-Python313 {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            $candidate = (& $py.Source -3.13 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+            if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+                return [System.IO.Path]::GetFullPath($candidate)
+            }
+        } catch {
+        }
+    }
+    foreach ($commandName in @("python3.13", "python")) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if (-not $command -or -not $command.Source) {
+            continue
+        }
+        try {
+            $version = (& $command.Source -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Select-Object -First 1)
+            if ($version -eq "3.13") {
+                return [System.IO.Path]::GetFullPath($command.Source)
+            }
+        } catch {
+            continue
+        }
+    }
+    return $null
+}
+
 function Get-RepairPlan {
     param([Parameter(Mandatory = $true)]$Check)
 
@@ -55,6 +84,17 @@ function Get-RepairPlan {
                     "winget install --id Microsoft.EdgeWebView2Runtime -e --accept-source-agreements --accept-package-agreements"
                 )
                 Action = "winget:webview2"
+            }
+        }
+        "^System browser executable$" {
+            return [pscustomobject]@{
+                Title = "Install Microsoft Edge"
+                Description = "Iris uses an installed Edge or Chrome executable for approval-gated browser tools. Browser data remains in Iris' isolated profile."
+                Link = "https://www.microsoft.com/edge/download"
+                Commands = @(
+                    "winget install --id Microsoft.Edge -e --accept-source-agreements --accept-package-agreements"
+                )
+                Action = "winget:edge"
             }
         }
         "^Ollama executable$" {
@@ -97,24 +137,24 @@ function Get-RepairPlan {
         }
         "^Python executable$" {
             return [pscustomobject]@{
-                Title = "Install Python for Kokoro voice"
-                Description = "Text and vision can run without Python, but Kokoro speech needs Python."
+                Title = "Install exact Python 3.13"
+                Description = "Iris uses this interpreter with its own pinned Hermes, image-provider, and Kokoro voice package layers."
                 Link = "https://www.python.org/downloads/windows/"
                 Commands = @(
-                    "winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements"
+                    "winget install --id Python.Python.3.13 -e --accept-source-agreements --accept-package-agreements"
                 )
                 Action = "winget:python"
             }
         }
-        "^Python package kokoro-onnx$|^Python package soundfile$" {
+        "^Iris-owned voice Python layer$" {
             return [pscustomobject]@{
-                Title = "Install Kokoro voice Python packages"
-                Description = "These packages let Iris use the bundled Kokoro voice assets locally."
-                Link = "https://pypi.org/project/kokoro-onnx/"
+                Title = "Restore the Iris-owned voice runtime"
+                Description = "The voice layer is part of Iris and must be replaced as a hash-locked unit. Re-extract the release or upgrade Iris; do not install unpinned packages globally."
+                Link = "https://github.com/supermang617/IRIS/releases/latest"
                 Commands = @(
-                    "python -m pip install kokoro-onnx soundfile"
+                    "winget upgrade --id AlejandroPinto.Iris -e"
                 )
-                Action = "pip:kokoro"
+                Action = "manual:restore-release"
             }
         }
         "^Tesseract document OCR$" {
@@ -196,6 +236,13 @@ function Invoke-Repair {
             & winget install --id Microsoft.EdgeWebView2Runtime -e --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -ne 0) { throw "WebView2 winget install failed with exit code $LASTEXITCODE" }
         }
+        "winget:edge" {
+            if (-not (Test-CommandAvailable -Name "winget")) {
+                throw "winget is not available. Use the official link instead: $($Plan.Link)"
+            }
+            & winget install --id Microsoft.Edge -e --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) { throw "Microsoft Edge winget install failed with exit code $LASTEXITCODE" }
+        }
         "winget:ollama" {
             if (-not (Test-CommandAvailable -Name "winget")) {
                 throw "winget is not available. Use the official link instead: $($Plan.Link)"
@@ -207,7 +254,7 @@ function Invoke-Repair {
             if (-not (Test-CommandAvailable -Name "winget")) {
                 throw "winget is not available. Use the official link instead: $($Plan.Link)"
             }
-            & winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
+            & winget install --id Python.Python.3.13 -e --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -ne 0) { throw "Python winget install failed with exit code $LASTEXITCODE" }
         }
         "winget:tesseract" {
@@ -230,13 +277,6 @@ function Invoke-Repair {
             }
             & ollama pull $modelId
             if ($LASTEXITCODE -ne 0) { throw "ollama pull failed with exit code $LASTEXITCODE" }
-        }
-        "pip:kokoro" {
-            if (-not (Test-CommandAvailable -Name "python")) {
-                throw "python is not available on PATH."
-            }
-            & python -m pip install kokoro-onnx soundfile
-            if ($LASTEXITCODE -ne 0) { throw "pip install failed with exit code $LASTEXITCODE" }
         }
         default {
             if ($OpenLinks -and $Plan.Link) {

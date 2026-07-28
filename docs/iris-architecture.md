@@ -63,7 +63,7 @@ Hermes has three explicit process-local modes:
   inactivity. The selected workspace is an advisory boundary because Agentic
   PowerShell is not an OS sandbox.
 
-Agentic Session uses pinned Hermes Agent 0.16.0 over stdio ACP. Iris owns and
+Agentic Session uses provenance-pinned Hermes Agent 0.18.0 over stdio ACP. Iris owns and
 supervises the process tree, routes it to local Ollama only, and disables native
 durable memory, MCP, cloud fallback, lazy package installs, and unapproved
 toolsets. Agentic Hermes can query approved Iris memory, stage proposals, and

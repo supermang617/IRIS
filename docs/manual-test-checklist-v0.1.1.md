@@ -57,7 +57,7 @@ Record `PASS`, `FAIL`, or `BLOCKED` for each row.
 | --- | --- | --- | --- | --- |
 | Preflight | `.\Check Iris Preflight.bat` | Reports local prerequisite status without installing or downloading. |  |  |
 | Setup wizard | `.\Iris Setup Wizard.bat` | Shows setup status and repair guidance; no unexpected external service is required. |  |  |
-| Runtime self-check | `.\Start Iris.ps1 --self-check` | Prints Iris startup and safety status; exits successfully. |  |  |
+| Runtime self-check | `.\Start Iris.ps1 -SelfCheck` | Prints Iris startup and safety status; exits successfully. |  |  |
 | Ollama text ask | `.\bin\iris-runtime.exe --ask "What can you do right now?"` | Uses local Ollama loopback or reports the local model prerequisite clearly. |  |  |
 | Image probe | `.\bin\iris-runtime.exe --image-probe <local-image> "What is in this image?"` | Uses the configured local vision path or reports a clear local prerequisite blocker. |  |  |
 | Desktop launch | `.\Start Iris.bat` | Opens the Iris desktop window. |  |  |

@@ -50,6 +50,12 @@ import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./p
 import { playWavBytes } from "./speech-output.js";
 import { splitSpeechChunks } from "./speech-chunks.js";
 import {
+  createPipelinedSpeechQueue,
+  createSpeechPlaybackRegistry,
+  drainCompletedSpeech,
+  speechRunIsCurrent
+} from "./speech-stream.js";
+import {
   formatHermesMemoryTaskText,
   formatHermesTaskStagedSection,
   formatStagedMemories
@@ -57,6 +63,10 @@ import {
 import {
   classifyAsrError,
   classifyVoiceTranscript,
+  interruptionCandidatePauseAllowed,
+  interruptionCaptureAttemptAllowed,
+  interruptionRetryDelayMs,
+  interruptionSignalIsCurrent,
   nextVoiceListenMode,
   noSpeechStatusForMode,
   shouldDisarmWakeFollowupAfterMisses,
@@ -69,6 +79,11 @@ import {
 
 const invoke = window.__TAURI__?.core?.invoke;
 const currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
+const tauriEventApi = window.__TAURI__?.event;
+const listenTauriEvent = tauriEventApi?.listen?.bind(tauriEventApi);
+const interruptionOnsetEvent = "iris://voice/interruption-onset";
+const playbackOnsetEvent = "iris://voice/playback-onset";
+const modelChunkEvent = "iris://model/chunk";
 
 const elements = {
   approvalAllow: document.querySelector("#approval-allow"),
@@ -125,8 +140,19 @@ let thinking = false;
 let speaking = false;
 let speechRunId = 0;
 let interruptionListening = false;
+let interruptionMonitorGeneration = 0;
+let interruptionRequestSequence = 0;
+let activeInterruptionRequestId = 0;
+let pausedInterruptionRequestId = 0;
+let activeInterruptionCaptureStartedAt = 0;
+let rejectedInterruptionPauseCount = 0;
 let activeAudio = null;
-let activeSpeechResolve = null;
+let activeNativePlaybackOnset = null;
+const activeSpeechPlayback = createSpeechPlaybackRegistry();
+let activeSpeechQueue = null;
+let modelRequestSequence = 0;
+let activeModelStream = null;
+let pendingInterruptionPrompt = "";
 let activeListenMode = "idle";
 let listenGeneration = 0;
 let wakeRestartTimer = null;
@@ -161,6 +187,8 @@ class VoiceLatencyTrace {
     this.llmFirstTokenMs = null;
     this.llmFullResponseMs = null;
     this.ttsFirstAudioMs = null;
+    this.ttsSynthesisMs = null;
+    this.ttsPlaybackMs = null;
     this.ttsFullMs = null;
     this.timeToFirstSpokenWordMs = null;
     this.totalTurnTimeMs = null;
@@ -186,6 +214,8 @@ class VoiceLatencyTrace {
       llmFirstTokenMs: this.llmFirstTokenMs,
       llmFullResponseMs: this.llmFullResponseMs,
       ttsFirstAudioMs: this.ttsFirstAudioMs,
+      ttsSynthesisMs: this.ttsSynthesisMs,
+      ttsPlaybackMs: this.ttsPlaybackMs,
       ttsFullMs: this.ttsFullMs,
       timeToFirstSpokenWordMs: this.timeToFirstSpokenWordMs,
       totalTurnTimeMs: this.totalTurnTimeMs
@@ -292,6 +322,8 @@ async function warmVoice() {
     logVoice("kokoro_warm_ready");
   } catch (error) {
     logVoice("kokoro_warm_error", String(error));
+    elements.voiceStatus.textContent =
+      "Voice setup needed: repair or upgrade Iris, and ensure Python 3.13 is installed";
   }
 }
 
@@ -382,7 +414,10 @@ async function warmRuntimeBeforeListening() {
     );
   } catch (error) {
     logVoice("local_runtime_error", String(error));
-    elements.hudOutput.textContent = "Local model service is unavailable.";
+    const message = String(error || "");
+    elements.hudOutput.textContent = message.includes("ollama pull")
+      ? message
+      : "Local model service is unavailable. Run Iris Setup Wizard or install Ollama for Windows.";
   }
   if (runtimeReady) {
     elements.hudOutput.textContent = "Waiting for input.";
@@ -453,14 +488,75 @@ async function submitMessage(text, source = "typed") {
   elements.hudOutput.textContent = documentAttached
     ? `${originalText}\n\nDocument attached. Thinking locally...`
     : `${text}\n\nThinking locally...`;
+  let turnStream = null;
   try {
     const history = conversationHistory.slice();
-    const response = await call("submit_typed_hud", {
+    const speechSession = speakReplies ? await beginSpeechSession(latencyTrace) : null;
+    const requestId = ++modelRequestSequence;
+    turnStream = {
+      requestId,
+      text: "",
+      speechRemainder: "",
+      speechSession,
+      latencyTrace,
+      modelStartedAt: performance.now(),
+      cancelRequested: false
+    };
+    activeModelStream = turnStream;
+    const response = await call("submit_typed_hud_stream", {
       text,
       history,
-      styleText: originalText
+      styleText: originalText,
+      requestId
     });
     latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
+    if (response.error) {
+      if (activeModelStream === turnStream) {
+        activeModelStream = null;
+      }
+      if (turnStream.speechSession) {
+        await turnStream.speechSession.cancel();
+      }
+      elements.hudOutput.textContent = String(response.error);
+      logVoice(
+        "turn_model_error",
+        `${source}; request=${requestId}; model_ms=${response.model_elapsed_ms}; ${String(response.error)}`
+      );
+      return;
+    }
+    if (activeModelStream === turnStream && !turnStream.cancelRequested) {
+      if (!turnStream.text && response.text) {
+        appendModelStreamText(turnStream, response.text);
+      } else if (String(response.text || "").startsWith(turnStream.text)) {
+        appendModelStreamText(
+          turnStream,
+          String(response.text || "").slice(turnStream.text.length)
+        );
+      }
+      if (turnStream.speechSession) {
+        const finalSpeech = drainCompletedSpeech(turnStream.speechRemainder, {
+          final: true
+        });
+        turnStream.speechRemainder = finalSpeech.remainder;
+        for (const speechChunk of finalSpeech.chunks) {
+          turnStream.speechSession.push(speechChunk);
+        }
+      }
+    }
+    if (activeModelStream === turnStream) {
+      activeModelStream = null;
+    }
+    if (response.cancelled || turnStream.cancelRequested) {
+      if (turnStream.speechSession) {
+        void turnStream.speechSession.cancel();
+      }
+      elements.hudOutput.textContent = "Stopped.";
+      logVoice(
+        "turn_cancelled",
+        `${source}; request=${requestId}; model_ms=${response.model_elapsed_ms}`
+      );
+      return;
+    }
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", documentAttached ? `[document] ${originalText}` : originalText);
     rememberTurn("iris", response.text);
@@ -479,8 +575,17 @@ async function submitMessage(text, source = "typed") {
     );
     thinking = false;
     setInputsDisabled(false);
-    await speak(response.text, latencyTrace);
+    if (turnStream.speechSession) {
+      await turnStream.speechSession.finish();
+    }
   } catch (error) {
+    if (activeModelStream === turnStream) {
+      await cancelActiveModelGeneration("turn-error");
+      activeModelStream = null;
+    }
+    if (turnStream?.speechSession) {
+      void turnStream.speechSession.cancel();
+    }
     elements.hudOutput.textContent = String(error);
     logVoice(
       "turn_error",
@@ -1190,18 +1295,105 @@ async function deleteMemoryFromPanel(id) {
   }
 }
 
-function cancelSpeech() {
+async function cancelInterruptionMonitoring(reason) {
+  const cancelledRequestId = activeInterruptionRequestId;
+  interruptionMonitorGeneration += 1;
+  activeInterruptionRequestId = 0;
+  activeInterruptionCaptureStartedAt = 0;
+  pausedInterruptionRequestId = 0;
+  interruptionListening = false;
+  if (!invoke) {
+    return;
+  }
+  try {
+    await call("cancel_native_asr");
+    if (cancelledRequestId > 0) {
+      logVoice(
+        "speech_interruption_capture_cancelled",
+        `request=${cancelledRequestId}; reason=${reason}`
+      );
+    }
+  } catch (error) {
+    logVoice("speech_interruption_cancel_error", String(error));
+  }
+}
+
+async function setNativePlaybackPaused(paused, runId, requestId) {
+  if (!invoke || runId <= 0 || requestId <= 0) {
+    return false;
+  }
+  try {
+    return Boolean(
+      await call("set_tts_playback_paused", {
+        paused,
+        playbackId: runId,
+        requestId
+      })
+    );
+  } catch (error) {
+    logVoice("speech_native_pause_error", `run=${runId}; request=${requestId}; ${String(error)}`);
+    return false;
+  }
+}
+
+async function cancelNativePlayback(runId) {
+  if (!invoke || runId <= 0) {
+    return;
+  }
+  try {
+    await call("cancel_tts_playback", { playbackId: runId });
+  } catch (error) {
+    logVoice("speech_native_cancel_error", `run=${runId}; ${String(error)}`);
+  }
+}
+
+function cancelSpeech(reason = "requested") {
+  const cancelledRunId = speechRunId;
   speechRunId += 1;
   speaking = false;
+  const speechQueue = activeSpeechQueue;
+  activeSpeechQueue = null;
+  if (speechQueue) {
+    void speechQueue.cancel();
+  }
+  const interruptionCancellation = cancelInterruptionMonitoring(reason);
+  const playbackCancellation = cancelNativePlayback(cancelledRunId);
+  const modelCancellation = cancelActiveModelGeneration(reason);
   if (activeAudio) {
     activeAudio.pause();
     activeAudio.src = "";
     activeAudio = null;
   }
-  if (activeSpeechResolve) {
-    const resolve = activeSpeechResolve;
-    activeSpeechResolve = null;
-    resolve();
+  if (activeNativePlaybackOnset?.runId === cancelledRunId) {
+    activeNativePlaybackOnset = null;
+  }
+  activeSpeechPlayback.cancelRun(cancelledRunId);
+  return Promise.allSettled([
+    interruptionCancellation,
+    playbackCancellation,
+    modelCancellation
+  ]);
+}
+
+async function cancelActiveModelGeneration(reason = "requested") {
+  const stream = activeModelStream;
+  if (!stream || stream.requestId <= 0 || stream.cancelRequested) {
+    return false;
+  }
+  stream.cancelRequested = true;
+  logVoice("model_stream_cancel_requested", `request=${stream.requestId}; reason=${reason}`);
+  try {
+    return Boolean(
+      await call("cancel_model_generation", {
+        requestId: stream.requestId
+      })
+    );
+  } catch (error) {
+    logVoice(
+      "model_stream_cancel_error",
+      `request=${stream.requestId}; ${String(error)}`
+    );
+    return false;
   }
 }
 
@@ -1214,108 +1406,210 @@ async function speak(text, latencyTrace = null) {
   if (chunks.length === 0) {
     return;
   }
-  const runId = ++speechRunId;
-  speaking = true;
-  let totalTtsMs = 0;
-  for (let index = 0; index < chunks.length; index += 1) {
-    if (speechRunId !== runId || panicStopActive) {
-      break;
-    }
-    totalTtsMs += await playSpeechChunk(chunks[index], runId, latencyTrace, index === 0);
-    if (latencyTrace) {
-      latencyTrace.ttsFullMs = totalTtsMs;
-    }
+  const session = await beginSpeechSession(latencyTrace);
+  for (const chunk of chunks) {
+    session.push(chunk);
   }
-  if (speechRunId === runId) {
-    speaking = false;
-  }
-  activeSpeechResolve = null;
-  logVoice("speech_finished", `run=${runId}; chunks=${chunks.length}`);
+  await session.finish();
 }
 
-function playSpeechChunk(text, runId, latencyTrace, firstChunk) {
+async function beginSpeechSession(latencyTrace = null) {
+  await cancelInterruptionMonitoring("speech-start");
+  rejectedInterruptionPauseCount = 0;
+  const runId = ++speechRunId;
+  const speechPipelineStartedAt = performance.now();
+  speaking = true;
+  let totalTtsSynthesisMs = 0;
+  let totalTtsPlaybackMs = 0;
+  let queuedChunks = 0;
+  const queue = createPipelinedSpeechQueue({
+    isCancelled: () => speechRunId !== runId || panicStopActive,
+    synthesize: (text, index) => synthesizeSpeechChunk(text, runId, index === 0),
+    play: async ({ prepared, index }) => {
+      if (!prepared) {
+        return;
+      }
+      totalTtsSynthesisMs += optionalTiming(prepared.elapsedMs) || 0;
+      const playbackStartedAt = performance.now();
+      await playPreparedSpeechChunk(
+        prepared,
+        runId,
+        latencyTrace,
+        index === 0
+      );
+      totalTtsPlaybackMs += Math.round(performance.now() - playbackStartedAt);
+      if (latencyTrace) {
+        latencyTrace.ttsSynthesisMs = totalTtsSynthesisMs;
+        latencyTrace.ttsPlaybackMs = totalTtsPlaybackMs;
+        latencyTrace.ttsFullMs = Math.round(
+          performance.now() - speechPipelineStartedAt
+        );
+      }
+    }
+  });
+  activeSpeechQueue = queue;
+  let finalized = false;
+
+  async function finalizeSpeech(reason) {
+    if (finalized) {
+      return;
+    }
+    finalized = true;
+    if (activeSpeechQueue === queue) {
+      activeSpeechQueue = null;
+    }
+    if (speechRunId === runId) {
+      speaking = false;
+      await cancelInterruptionMonitoring(reason);
+    }
+    activeSpeechPlayback.clearRun(runId);
+    logVoice(reason, `run=${runId}; chunks=${queuedChunks}`);
+  }
+
+  return {
+    push(chunk) {
+      if (speechRunId === runId && !panicStopActive) {
+        queuedChunks += 1;
+        queue.push(chunk);
+      }
+    },
+    async finish() {
+      try {
+        await queue.close();
+      } finally {
+        await finalizeSpeech("speech_finished");
+      }
+    },
+    async cancel() {
+      if (speechRunId === runId) {
+        await cancelSpeech("speech-session-cancel");
+      } else {
+        await queue.cancel();
+      }
+      await finalizeSpeech("speech_cancelled");
+    },
+    get runId() {
+      return runId;
+    }
+  };
+}
+
+async function synthesizeSpeechChunk(text, runId, firstChunk) {
+  const ttsStartedAt = performance.now();
+  logVoice("kokoro_tts_start", `run=${runId}; first=${firstChunk}`);
+  try {
+    const response = await call("kokoro_tts_wav", {
+      text,
+      synthesisId: runId
+    });
+    if (!speechRunIsCurrent(runId, speechRunId, panicStopActive)) {
+      return null;
+    }
+    return {
+      bytes: new Uint8Array(response.wavBytes),
+      elapsedMs: response.elapsedMs,
+      ttsStartedAt,
+      voice: response.voice
+    };
+  } catch (error) {
+    if (!speechRunIsCurrent(runId, speechRunId, panicStopActive)) {
+      logVoice("kokoro_tts_cancelled", `run=${runId}`);
+      return null;
+    }
+    logVoice("kokoro_tts_error", String(error));
+    elements.voiceStatus.textContent = "Speech generation failed. Check diagnostics.";
+    return null;
+  }
+}
+
+function playPreparedSpeechChunk(prepared, runId, latencyTrace, firstChunk) {
   return new Promise((resolve) => {
     let resolved = false;
+    let playbackLease = null;
     const resolveOnce = (elapsedMs = 0) => {
       if (resolved) {
         return;
       }
       resolved = true;
-      if (activeSpeechResolve === cancelChunk) {
-        activeSpeechResolve = null;
+      if (playbackLease) {
+        activeSpeechPlayback.clear(playbackLease);
       }
       resolve(optionalTiming(elapsedMs) || 0);
     };
     const cancelChunk = () => resolveOnce();
-    activeSpeechResolve = cancelChunk;
-    const ttsStartedAt = performance.now();
-    logVoice("kokoro_tts_start", `run=${runId}; first=${firstChunk}`);
-    call("kokoro_tts_wav", { text })
-      .then((response) => {
-        if (speechRunId !== runId) {
-          resolveOnce();
-          return;
+    playbackLease = activeSpeechPlayback.claim(runId, cancelChunk);
+    if (speechRunId !== runId) {
+      resolveOnce();
+      return;
+    }
+    let speechMarkedPlaying = false;
+    const markSpeechPlaying = (method) => {
+      if (speechMarkedPlaying || speechRunId !== runId) {
+        return;
+      }
+      speechMarkedPlaying = true;
+      logVoice(
+        "speech_started",
+        `run=${runId}; method=${method}; voice=${prepared.voice}; tts_ms=${prepared.elapsedMs}`
+      );
+      if (latencyTrace && latencyTrace.ttsFirstAudioMs === null) {
+        latencyTrace.ttsFirstAudioMs = Math.round(
+          performance.now() - prepared.ttsStartedAt
+        );
+        latencyTrace.timeToFirstSpokenWordMs = Math.round(
+          performance.now() - latencyTrace.turnStartedAt
+        );
+      }
+      if (firstChunk) {
+        monitorSpeechInterruption(runId);
+      }
+    };
+    playNativeSpeech(prepared.bytes, runId, markSpeechPlaying)
+      .catch((nativeError) => {
+        if (!speechRunIsCurrent(runId, speechRunId, panicStopActive)) {
+          logVoice("speech_native_playback_cancelled", `run=${runId}`);
+          return null;
         }
-        const bytes = new Uint8Array(response.wavBytes);
-        let speechMarkedPlaying = false;
-        const markSpeechPlaying = (method) => {
-          if (speechMarkedPlaying || speechRunId !== runId) {
-            return;
+        logVoice("speech_native_playback_error", `run=${runId}; ${String(nativeError)}`);
+        return playWavBytes(prepared.bytes, {
+          clearActiveHandle: (handle) => {
+            if (activeAudio === handle) {
+              activeAudio = null;
+            }
+          },
+          onDiagnostic: (event, message) => {
+            logVoice(event, `run=${runId}; ${message}`);
+          },
+          isCancelled: () =>
+            !speechRunIsCurrent(runId, speechRunId, panicStopActive),
+          onPlaying: markSpeechPlaying,
+          setActiveHandle: (handle) => {
+            activeAudio = handle;
           }
-          speechMarkedPlaying = true;
+        });
+      })
+      .then((method) => {
+        if (!speechMarkedPlaying && speechRunId === runId) {
           logVoice(
-            "speech_started",
-            `run=${runId}; method=${method}; voice=${response.voice}; tts_ms=${response.elapsedMs}`
+            "speech_playback_onset_missing",
+            `run=${runId}; method=${method}`
           );
-          if (latencyTrace && latencyTrace.ttsFirstAudioMs === null) {
-            latencyTrace.ttsFirstAudioMs = Math.round(performance.now() - ttsStartedAt);
-            latencyTrace.timeToFirstSpokenWordMs = Math.round(
-              performance.now() - latencyTrace.turnStartedAt
-            );
-          }
-          if (firstChunk) {
-            monitorSpeechInterruption(runId);
-          }
-        };
-        playNativeSpeech(bytes, runId, markSpeechPlaying)
-          .catch((nativeError) => {
-            logVoice("speech_native_playback_error", `run=${runId}; ${String(nativeError)}`);
-            return playWavBytes(bytes, {
-              clearActiveHandle: (handle) => {
-                if (activeAudio === handle) {
-                  activeAudio = null;
-                }
-              },
-              onDiagnostic: (event, message) => {
-                logVoice(event, `run=${runId}; ${message}`);
-              },
-              onPlaying: markSpeechPlaying,
-              setActiveHandle: (handle) => {
-                activeAudio = handle;
-              }
-            });
-          })
-          .then((method) => {
-            if (!speechMarkedPlaying && speechRunId === runId) {
-              markSpeechPlaying(method);
-            }
-          })
-          .catch((error) => {
-            logVoice("speech_playback_error", String(error));
-            elements.voiceStatus.textContent =
-              "Speech output failed. Check the Windows audio output device and app volume.";
-          })
-          .finally(() => {
-            if (speechRunId === runId && speechMarkedPlaying) {
-              logVoice("speech_playback_finished", `run=${runId}`);
-            }
-            resolveOnce(response.elapsedMs);
-          });
+        }
       })
       .catch((error) => {
-        logVoice("kokoro_tts_error", String(error));
-        elements.voiceStatus.textContent = "Speech generation failed. Check diagnostics.";
-        resolveOnce();
+        if (!speechRunIsCurrent(runId, speechRunId, panicStopActive)) {
+          logVoice("speech_fallback_playback_cancelled", `run=${runId}`);
+          return;
+        }
+        logVoice("speech_playback_error", String(error));
+        elements.voiceStatus.textContent =
+          "Speech output failed. Check the Windows audio output device and app volume.";
+      })
+      .finally(() => {
+        if (speechRunId === runId && speechMarkedPlaying) {
+          logVoice("speech_playback_finished", `run=${runId}`);
+        }
+        resolveOnce(prepared.elapsedMs);
       });
   });
 }
@@ -1324,9 +1618,209 @@ async function playNativeSpeech(bytes, runId, markSpeechPlaying) {
   if (!invoke) {
     throw new Error("native playback is unavailable");
   }
-  markSpeechPlaying("native_cpal");
-  await call("play_tts_wav", { wavBytes: Array.from(bytes) });
-  return "native_cpal";
+  const onset = { runId, markSpeechPlaying };
+  activeNativePlaybackOnset = onset;
+  try {
+    await call("play_tts_wav", {
+      wavBytes: Array.from(bytes),
+      playbackId: runId
+    });
+    return "native_cpal";
+  } finally {
+    if (activeNativePlaybackOnset === onset) {
+      activeNativePlaybackOnset = null;
+    }
+  }
+}
+
+function handlePlaybackOnset(event) {
+  const payload = event?.payload ?? event;
+  const playbackId = Number(payload?.playbackId ?? payload?.playback_id);
+  const onset = activeNativePlaybackOnset;
+  if (!onset || playbackId !== onset.runId || playbackId !== speechRunId) {
+    if (playbackId > 0) {
+      logVoice("speech_native_stale_onset", `run=${playbackId}`);
+    }
+    return;
+  }
+  activeNativePlaybackOnset = null;
+  onset.markSpeechPlaying("native_cpal");
+  logVoice(
+    "speech_native_onset",
+    `run=${playbackId}; preroll_ms=${optionalTiming(payload?.prerollMs ?? payload?.preroll_ms) ?? "unknown"}`
+  );
+}
+
+async function initializePlaybackOnsetListener() {
+  if (!listenTauriEvent) {
+    logVoice("speech_native_onset_event_unavailable");
+    return;
+  }
+  try {
+    await listenTauriEvent(playbackOnsetEvent, handlePlaybackOnset);
+    logVoice("speech_native_onset_event_ready");
+  } catch (error) {
+    logVoice("speech_native_onset_event_error", String(error));
+  }
+}
+
+async function resumePlaybackAfterRejectedInterruption(runId, requestId, reason) {
+  if (pausedInterruptionRequestId !== requestId) {
+    return;
+  }
+  pausedInterruptionRequestId = 0;
+  const resumed = await setNativePlaybackPaused(false, runId, requestId);
+  rejectedInterruptionPauseCount += 1;
+  logVoice(
+    "speech_interruption_playback_resumed",
+    `run=${runId}; request=${requestId}; resumed=${resumed}; reason=${reason}; rejected_pauses=${rejectedInterruptionPauseCount}`
+  );
+  if (!interruptionCandidatePauseAllowed(rejectedInterruptionPauseCount)) {
+    logVoice(
+      "speech_interruption_pause_suppressed",
+      `run=${runId}; rejected_pauses=${rejectedInterruptionPauseCount}; aec=false`
+    );
+  }
+}
+
+async function handleInterruptionOnset(event) {
+  const signal = event?.payload ?? event;
+  if (
+    !interruptionSignalIsCurrent(signal, {
+      activeRunId: speechRunId,
+      activeRequestId: activeInterruptionRequestId,
+      speaking
+    })
+  ) {
+    logVoice(
+      "speech_interruption_stale_onset",
+      `run=${signal?.runId ?? signal?.run_id ?? "unknown"}; request=${signal?.requestId ?? signal?.request_id ?? "unknown"}`
+    );
+    return;
+  }
+
+  const runId = Number(signal.runId ?? signal.run_id);
+  const requestId = Number(signal.requestId ?? signal.request_id);
+  if (activeAudio) {
+    logVoice(
+      "speech_interruption_fallback_cancelled",
+      `run=${runId}; request=${requestId}; method=web-audio; aec=false`
+    );
+    await cancelSpeech("fallback-vad-barge-in");
+    wakeCommandArmed = false;
+    wakeCommandMissStreak = 0;
+    voiceLoop = true;
+    elements.hudOutput.textContent = "Stopped.";
+    elements.voiceStatus.textContent = "Interrupted. Listening.";
+    restartListeningIfReady(100);
+    return;
+  }
+  if (!interruptionCandidatePauseAllowed(rejectedInterruptionPauseCount)) {
+    logVoice(
+      "speech_interruption_vad_candidate_suppressed",
+      `run=${runId}; request=${requestId}; rejected_pauses=${rejectedInterruptionPauseCount}; aec=false`
+    );
+    return;
+  }
+  if (pausedInterruptionRequestId === requestId) {
+    return;
+  }
+  pausedInterruptionRequestId = requestId;
+  const eventReceivedAt = performance.now();
+  const captureToVadMs = optionalTiming(
+    signal.captureElapsedMs ?? signal.capture_elapsed_ms
+  );
+  logVoice(
+    "speech_interruption_vad_candidate",
+    `run=${runId}; request=${requestId}; capture_to_vad_ms=${captureToVadMs ?? "unknown"}; aec=false`
+  );
+  const paused = await setNativePlaybackPaused(true, runId, requestId);
+  const vadToPauseMs = Math.round(performance.now() - eventReceivedAt);
+  if (
+    !interruptionSignalIsCurrent(signal, {
+      activeRunId: speechRunId,
+      activeRequestId: activeInterruptionRequestId,
+      speaking
+    })
+  ) {
+    if (paused) {
+      await setNativePlaybackPaused(false, runId, requestId);
+    }
+    return;
+  }
+  logVoice(
+    "speech_interruption_vad_pause",
+    `run=${runId}; request=${requestId}; capture_to_vad_ms=${captureToVadMs ?? "unknown"}; vad_to_pause_ms=${vadToPauseMs}; paused=${paused}`
+  );
+}
+
+async function initializeInterruptionOnsetListener() {
+  if (!listenTauriEvent) {
+    logVoice("speech_interruption_event_unavailable");
+    return;
+  }
+  try {
+    await listenTauriEvent(interruptionOnsetEvent, handleInterruptionOnset);
+    logVoice("speech_interruption_event_ready");
+  } catch (error) {
+    logVoice("speech_interruption_event_error", String(error));
+  }
+}
+
+function appendModelStreamText(stream, text) {
+  const chunk = String(text || "");
+  if (
+    !chunk ||
+    activeModelStream !== stream ||
+    stream.cancelRequested
+  ) {
+    return;
+  }
+  if (stream.text.length === 0) {
+    stream.latencyTrace.llmFirstTokenMs = Math.round(
+      performance.now() - stream.modelStartedAt
+    );
+    logVoice(
+      "model_stream_first_token",
+      `request=${stream.requestId}; elapsed_ms=${stream.latencyTrace.llmFirstTokenMs}`
+    );
+  }
+  stream.text += chunk;
+  elements.hudOutput.textContent = `${stream.text}▍`;
+  if (!stream.speechSession) {
+    return;
+  }
+  const drained = drainCompletedSpeech(stream.speechRemainder + chunk);
+  stream.speechRemainder = drained.remainder;
+  for (const speechChunk of drained.chunks) {
+    stream.speechSession.push(speechChunk);
+  }
+}
+
+function handleModelChunk(event) {
+  const payload = event?.payload ?? event;
+  const requestId = Number(payload?.requestId ?? payload?.request_id);
+  const stream = activeModelStream;
+  if (!stream || requestId !== stream.requestId) {
+    if (requestId > 0) {
+      logVoice("model_stream_stale_chunk", `request=${requestId}`);
+    }
+    return;
+  }
+  appendModelStreamText(stream, payload?.text);
+}
+
+async function initializeModelStreamListener() {
+  if (!listenTauriEvent) {
+    logVoice("model_stream_event_unavailable");
+    return;
+  }
+  try {
+    await listenTauriEvent(modelChunkEvent, handleModelChunk);
+    logVoice("model_stream_event_ready");
+  } catch (error) {
+    logVoice("model_stream_event_error", String(error));
+  }
 }
 
 async function monitorSpeechInterruption(runId) {
@@ -1334,14 +1828,54 @@ async function monitorSpeechInterruption(runId) {
     return;
   }
 
+  const monitorGeneration = ++interruptionMonitorGeneration;
+  let completedAttempts = 0;
   interruptionListening = true;
   try {
-    while (speaking && speechRunId === runId) {
-      logVoice("speech_interruption_listen_start", `run=${runId}`);
-      const result = await call("native_asr_listen_interrupt");
+    while (
+      speaking &&
+      speechRunId === runId &&
+      monitorGeneration === interruptionMonitorGeneration &&
+      interruptionCaptureAttemptAllowed(completedAttempts)
+    ) {
+      completedAttempts += 1;
+      const requestId = ++interruptionRequestSequence;
+      activeInterruptionRequestId = requestId;
+      activeInterruptionCaptureStartedAt = performance.now();
+      logVoice("speech_interruption_listen_start", `run=${runId}; request=${requestId}`);
+      const result = await call("native_asr_listen_interrupt", { runId, requestId });
+      const signal = { runId, requestId };
+      if (
+        monitorGeneration !== interruptionMonitorGeneration ||
+        !interruptionSignalIsCurrent(signal, {
+          activeRunId: speechRunId,
+          activeRequestId: activeInterruptionRequestId,
+          speaking
+        })
+      ) {
+        logVoice("speech_interruption_stale_result", `run=${runId}; request=${requestId}`);
+        return;
+      }
       const transcript = String(result.text || "").trim();
-      logVoice("speech_interruption_result", `${result.elapsed_ms}ms; ${transcript}`);
+      const captureElapsedMs = result.captureElapsedMs ?? result.capture_elapsed_ms;
+      const sttElapsedMs = result.sttElapsedMs ?? result.stt_elapsed_ms;
+      const resolutionMs = Math.round(performance.now() - activeInterruptionCaptureStartedAt);
+      logVoice(
+        "speech_interruption_result",
+        `${result.elapsed_ms}ms; capture_ms=${captureElapsedMs ?? "unknown"}; stt_ms=${sttElapsedMs ?? "unknown"}; ${transcript}`
+      );
       if (!isUsableTranscript(transcript)) {
+        await resumePlaybackAfterRejectedInterruption(runId, requestId, "no-usable-transcript");
+        logVoice(
+          "speech_interruption_resolved",
+          `run=${runId}; request=${requestId}; resolution_ms=${resolutionMs}; action=ignore`
+        );
+        await new Promise((resolve) =>
+          window.setTimeout(
+            resolve,
+            interruptionRetryDelayMs(completedAttempts, rejectedInterruptionPauseCount)
+          )
+        );
         continue;
       }
       const decision = classifyVoiceTranscript(transcript, {
@@ -1352,22 +1886,65 @@ async function monitorSpeechInterruption(runId) {
       });
       logVoice("speech_interruption_decision", `${decision.action}:${decision.source}:${decision.prompt}`);
       if (decision.action === "interrupt" && speaking && speechRunId === runId) {
-        logVoice("speech_interruption_detected", transcript);
-        cancelSpeech();
+        logVoice(
+          "speech_interruption_detected",
+          `${transcript}; resolution_ms=${resolutionMs}; request=${requestId}`
+        );
+        await cancelSpeech("confirmed-interruption");
         wakeCommandArmed = false;
         wakeCommandMissStreak = 0;
         voiceLoop = true;
+        pendingInterruptionPrompt = String(decision.prompt || "").trim();
         elements.hudOutput.textContent = "Stopped.";
-        elements.voiceStatus.textContent = "Interrupted. Listening.";
+        elements.voiceStatus.textContent = pendingInterruptionPrompt
+          ? `Interrupted. Continuing with: ${pendingInterruptionPrompt}`
+          : "Interrupted. Listening.";
         restartListeningIfReady(250);
         return;
       }
+      await resumePlaybackAfterRejectedInterruption(runId, requestId, "decision-ignore");
+      logVoice(
+        "speech_interruption_resolved",
+        `run=${runId}; request=${requestId}; resolution_ms=${resolutionMs}; action=${decision.action}`
+      );
+      await new Promise((resolve) =>
+        window.setTimeout(
+          resolve,
+          interruptionRetryDelayMs(completedAttempts, rejectedInterruptionPauseCount)
+        )
+      );
+    }
+    if (
+      speaking &&
+      speechRunId === runId &&
+      monitorGeneration === interruptionMonitorGeneration &&
+      !interruptionCaptureAttemptAllowed(completedAttempts)
+    ) {
+      logVoice(
+        "speech_interruption_monitor_bounded",
+        `run=${runId}; attempts=${completedAttempts}; rejected_pauses=${rejectedInterruptionPauseCount}`
+      );
     }
   } catch (error) {
-    logVoice("speech_interruption_error", String(error));
+    if (monitorGeneration === interruptionMonitorGeneration) {
+      await resumePlaybackAfterRejectedInterruption(
+        runId,
+        activeInterruptionRequestId,
+        "capture-error"
+      );
+      logVoice("speech_interruption_error", String(error));
+    }
   } finally {
-    interruptionListening = false;
-    if (!speaking && speechRunId === runId) {
+    if (monitorGeneration === interruptionMonitorGeneration) {
+      interruptionListening = false;
+      activeInterruptionRequestId = 0;
+      activeInterruptionCaptureStartedAt = 0;
+    }
+    if (
+      monitorGeneration === interruptionMonitorGeneration &&
+      !speaking &&
+      speechRunId === runId
+    ) {
       restartListeningIfReady(100);
     }
   }
@@ -1424,15 +2001,7 @@ async function togglePanicStop() {
     pendingVoiceLatency = null;
     setListening(false);
     activeListenMode = "idle";
-    if (activeAudio) {
-      activeAudio.pause();
-      activeAudio = null;
-    }
-    if (activeSpeechResolve) {
-      activeSpeechResolve();
-      activeSpeechResolve = null;
-    }
-    speaking = false;
+    await cancelSpeech("panic-stop");
     elements.voiceStatus.textContent = "Iris paused.";
   } else {
     stopListeningRequested = false;
@@ -1494,6 +2063,12 @@ function restartListeningIfReady(delayMs = 650) {
   wakeRestartTimer = window.setTimeout(() => {
     wakeRestartTimer = null;
     if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
+      return;
+    }
+    if (pendingInterruptionPrompt) {
+      const prompt = pendingInterruptionPrompt;
+      pendingInterruptionPrompt = "";
+      void submitMessage(prompt, "interruption-followup");
       return;
     }
     const mode = nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop });
@@ -1866,6 +2441,11 @@ async function attachFile(file) {
 
 async function cancelActiveAsr() {
   listenGeneration += 1;
+  interruptionMonitorGeneration += 1;
+  activeInterruptionRequestId = 0;
+  activeInterruptionCaptureStartedAt = 0;
+  pausedInterruptionRequestId = 0;
+  interruptionListening = false;
   clearWakeRestartTimer();
   setListening(false);
   activeListenMode = "idle";
@@ -2302,5 +2882,8 @@ renderVoiceCapability();
 renderAttachmentSelection();
 renderPanicStop();
 logVoice("app_started");
+void initializeInterruptionOnsetListener();
+void initializePlaybackOnsetListener();
+void initializeModelStreamListener();
 refreshDashboard();
 warmRuntimeBeforeListening();

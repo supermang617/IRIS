@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "bootstrap": {
+    "repository": "supermang617/IRIS",
+    "tag": "v1",
+    "release_commit": "a3540eb5d30c29976947f65ff4cfe5d896fd5cbf",
+    "legacy_only": true,
+    "asset": {
+      "name": "iris-windows.zip",
+      "size": 662266179,
+      "sha256": "a2b29f79ab667ebe5bb0d89f79547dcafcf54969ccb0a2be8214af2d514f67d1"
+    }
+  },
+  "models": [
+    {
+      "path": "models/kokoro/kokoro-v1.0.onnx",
+      "size": 325532387,
+      "sha256": "7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5",
+      "role": "text_to_speech_model"
+    },
+    {
+      "path": "models/kokoro/voices-v1.0.bin",
+      "size": 28214398,
+      "sha256": "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+      "role": "text_to_speech_voices"
+    },
+    {
+      "path": "models/whisper/ggml-tiny.en.bin",
+      "size": 77704715,
+      "sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+      "role": "speech_to_text_model"
+    }
+  ]
+}

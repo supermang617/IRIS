@@ -7,9 +7,58 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $repoRoot
 
-$diagnosticsDir = Join-Path $repoRoot "diagnostics"
+$dataRootInitializer = Join-Path $repoRoot "scripts\initialize_iris_data_root.ps1"
+if (-not (Test-Path -LiteralPath $dataRootInitializer -PathType Leaf)) {
+    throw "Missing Iris data-root initializer: $dataRootInitializer"
+}
+$dataRoot = (& $dataRootInitializer -InstallRoot $repoRoot -PassThru | Select-Object -Last 1)
+if (-not $dataRoot) {
+    throw "Iris per-user data root initialization did not return a path."
+}
+$diagnosticsDir = Join-Path $dataRoot "diagnostics"
 New-Item -ItemType Directory -Force -Path $diagnosticsDir | Out-Null
 $logPath = Join-Path $diagnosticsDir "manual-launch.log"
+
+$script:irisOllamaServerDefaultsInitialized = $false
+
+function Set-IrisOllamaDefault {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [switch]$PersistForCurrentUser
+    )
+    $current = [Environment]::GetEnvironmentVariable($Name, "Process")
+    if (-not [string]::IsNullOrWhiteSpace($current)) {
+        return
+    }
+
+    $persisted = @(
+        [Environment]::GetEnvironmentVariable($Name, "User"),
+        [Environment]::GetEnvironmentVariable($Name, "Machine")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
+    if ($persisted) {
+        Set-Item -Path "Env:$Name" -Value $persisted
+        return
+    }
+
+    Set-Item -Path "Env:$Name" -Value $Value
+    if ($PersistForCurrentUser) {
+        $script:irisOllamaServerDefaultsInitialized = $true
+        try {
+            [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+            "[$(Get-Date -Format o)] Initialized CurrentUser $Name=$Value so the Ollama server can inherit Iris' measured memory default." |
+                Out-File -FilePath $logPath -Encoding utf8 -Append
+        } catch {
+            "[$(Get-Date -Format o)] WARNING: Could not persist CurrentUser $Name; this launch still uses $Value. $($_.Exception.Message)" |
+                Out-File -FilePath $logPath -Encoding utf8 -Append
+        }
+    }
+}
+
+Set-IrisOllamaDefault -Name "OLLAMA_FLASH_ATTENTION" -Value "1" -PersistForCurrentUser
+Set-IrisOllamaDefault -Name "OLLAMA_KV_CACHE_TYPE" -Value "q8_0" -PersistForCurrentUser
+Set-IrisOllamaDefault -Name "OLLAMA_NUM_PARALLEL" -Value "1"
+Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "1"
 
 function Test-CommandAvailable {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -117,10 +166,6 @@ function Use-IrisOllamaRuntimeSettings {
     "[$(Get-Date -Format o)] Ollama context length set to $requiredContext from manifest.json." | Out-File -FilePath $LogPath -Encoding utf8 -Append
 }
 
-function Stop-OllamaForIris {
-    Get-Process "ollama", "ollama app", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
-
 function Start-OllamaForIris {
     param([Parameter(Mandatory = $true)][string]$LogPath)
 
@@ -128,13 +173,16 @@ function Start-OllamaForIris {
     Use-IrisOllamaRuntimeSettings -LogPath $LogPath
 
     if (Test-OllamaReady) {
-        if ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
+        if ($script:irisOllamaServerDefaultsInitialized) {
+            "[$(Get-Date -Format o)] Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts." |
+                Out-File -FilePath $LogPath -Encoding utf8 -Append
+        } elseif ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
             "[$(Get-Date -Format o)] Ollama is already listening with the Iris model and required context." | Out-File -FilePath $LogPath -Encoding utf8 -Append
-            return
+        } else {
+            "[$(Get-Date -Format o)] Ollama is already listening. Iris will use the shared server without terminating it; self-check will report a missing model or incompatible runtime." |
+                Out-File -FilePath $LogPath -Encoding utf8 -Append
         }
-        "[$(Get-Date -Format o)] Restarting Ollama so Iris owns the configured model store and context." | Out-File -FilePath $LogPath -Encoding utf8 -Append
-        Stop-OllamaForIris
-        Start-Sleep -Seconds 2
+        return
     }
 
     if (-not (Test-CommandAvailable -Name "ollama")) {
@@ -189,7 +237,7 @@ try {
     $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Iris.lnk"
     $shortcutInstaller = Join-Path $repoRoot "Install Iris Shortcuts.ps1"
 
-    if ($SelfCheck) {
+    if ($SelfCheck -or $args -contains "--self-check") {
         "[$(Get-Date -Format o)] Running Iris launcher self-check." | Out-File -FilePath $logPath -Encoding utf8
         Start-OllamaForIris -LogPath $logPath
 

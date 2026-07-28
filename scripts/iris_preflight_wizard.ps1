@@ -14,7 +14,8 @@ Set-Location -LiteralPath $root
 $modelId = "huihui_ai/gemma-4-abliterated:e2b"
 $minimumRamGb = 16
 $recommendedFreeDiskGb = 12
-$reportDir = Join-Path $root "diagnostics"
+$reportRoot = if ($env:IRIS_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT) } else { $root }
+$reportDir = Join-Path $reportRoot "diagnostics"
 $reportPath = Join-Path $reportDir "preflight-report.txt"
 $jsonReportPath = if ($JsonPath) { $JsonPath } else { Join-Path $reportDir "preflight-report.json" }
 $fastLocalOnly = $env:IRIS_PREFLIGHT_FAST_LOCAL_ONLY -eq "1"
@@ -113,18 +114,224 @@ function Test-WebView2 {
     return $false
 }
 
-function Test-PythonPackage {
-    param([Parameter(Mandatory = $true)][string]$Package)
-    $python = Test-CommandAvailable -Name "python"
-    if (-not $python) {
-        return [pscustomobject]@{ Python = $null; Available = $false; Detail = "python was not found on PATH" }
+function Find-IrisBrowserExecutable {
+    if (-not [string]::IsNullOrWhiteSpace($env:IRIS_BROWSER_EXECUTABLE_PATH)) {
+        $configured = [System.IO.Path]::GetFullPath($env:IRIS_BROWSER_EXECUTABLE_PATH)
+        if (Test-Path -LiteralPath $configured -PathType Leaf) {
+            return [pscustomobject]@{
+                Available = $true
+                Path = $configured
+                Detail = "Found the configured browser from IRIS_BROWSER_EXECUTABLE_PATH at $configured."
+            }
+        }
+        return [pscustomobject]@{
+            Available = $false
+            Path = $configured
+            Detail = "IRIS_BROWSER_EXECUTABLE_PATH points to a missing file: $configured."
+        }
     }
-    $code = "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$Package') else 1)"
-    & python -c $code *> $null
+
+    $candidates = @(
+        @{ Root = ${env:ProgramFiles(x86)}; Relative = "Microsoft\Edge\Application\msedge.exe" },
+        @{ Root = $env:ProgramFiles; Relative = "Microsoft\Edge\Application\msedge.exe" },
+        @{ Root = $env:LOCALAPPDATA; Relative = "Microsoft\Edge\Application\msedge.exe" },
+        @{ Root = $env:ProgramFiles; Relative = "Google\Chrome\Application\chrome.exe" },
+        @{ Root = ${env:ProgramFiles(x86)}; Relative = "Google\Chrome\Application\chrome.exe" },
+        @{ Root = $env:LOCALAPPDATA; Relative = "Google\Chrome\Application\chrome.exe" }
+    )
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace([string]$candidate.Root)) {
+            continue
+        }
+        $path = Join-Path ([string]$candidate.Root) ([string]$candidate.Relative)
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            return [pscustomobject]@{
+                Available = $true
+                Path = [System.IO.Path]::GetFullPath($path)
+                Detail = "Found a supported system browser at $([System.IO.Path]::GetFullPath($path))."
+            }
+        }
+    }
+
     return [pscustomobject]@{
-        Python = $python
-        Available = ($LASTEXITCODE -eq 0)
-        Detail = if ($LASTEXITCODE -eq 0) { "$Package is importable" } else { "$Package is not importable" }
+        Available = $false
+        Path = ""
+        Detail = "Microsoft Edge or Google Chrome was not found in the supported Windows install locations."
+    }
+}
+
+function Find-Python313 {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($uv) {
+        try {
+            $uvPython = (& $uv.Source python find 3.13 2>$null | Select-Object -First 1)
+            if ($uvPython) {
+                $candidates.Add([string]$uvPython) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            $pyPython = (& $py.Source -3.13 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+            if ($pyPython) {
+                $candidates.Add([string]$pyPython) | Out-Null
+            }
+        } catch {
+        }
+    }
+
+    foreach ($commandName in @("python3.13", "python")) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($command -and $command.Source) {
+            $candidates.Add([string]$command.Source) | Out-Null
+        }
+    }
+
+    foreach ($base in @($env:APPDATA, $env:LOCALAPPDATA) | Where-Object { $_ }) {
+        $uvRoot = Join-Path $base "uv\python"
+        if (Test-Path -LiteralPath $uvRoot -PathType Container) {
+            foreach ($candidate in @(Get-ChildItem -LiteralPath $uvRoot -Directory -Filter "cpython-3.13*" -ErrorAction SilentlyContinue)) {
+                $candidates.Add((Join-Path $candidate.FullName "python.exe")) | Out-Null
+            }
+        }
+    }
+    if ($env:LOCALAPPDATA) {
+        $candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe")) | Out-Null
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+        try {
+            $probe = Invoke-PreflightProbe `
+                -FilePath ([System.IO.Path]::GetFullPath($candidate)) `
+                -Arguments '-c "import sys; print(f''{sys.version_info.major}.{sys.version_info.minor}'')"' `
+                -TimeoutSeconds 10
+            if ($probe.ExitCode -eq 0 -and $probe.Output.Trim() -eq "3.13") {
+                return [System.IO.Path]::GetFullPath($candidate)
+            }
+        } catch {
+            continue
+        }
+    }
+    return $null
+}
+
+function Test-IrisVoiceRuntime {
+    param(
+        [string]$PythonPath,
+        [Parameter(Mandatory = $true)][string]$SitePackages,
+        [Parameter(Mandatory = $true)][string]$LockPath,
+        [Parameter(Mandatory = $true)][string]$RuntimeLockPath,
+        [Parameter(Mandatory = $true)][string]$RuntimeManifestPath
+    )
+
+    if (-not $PythonPath) {
+        return [pscustomobject]@{
+            Available = $false
+            Detail = "Exact Python 3.13 was not found, so the Iris-owned voice layer could not be audited."
+        }
+    }
+    foreach ($required in @($SitePackages, $LockPath, $RuntimeLockPath)) {
+        if (-not (Test-Path -LiteralPath $required)) {
+            return [pscustomobject]@{
+                Available = $false
+                Detail = "The Iris-owned voice layer is incomplete; missing $required."
+            }
+        }
+    }
+
+    $lockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $LockPath).Hash.ToLowerInvariant()
+    $runtimeLockHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $RuntimeLockPath).Hash.ToLowerInvariant()
+    if ($lockHash -ne $runtimeLockHash) {
+        return [pscustomobject]@{
+            Available = $false
+            Detail = "The packaged voice runtime lock does not match profiles\iris_voice_python_3_13.lock.txt."
+        }
+    }
+    if (Test-Path -LiteralPath $RuntimeManifestPath -PathType Leaf) {
+        try {
+            $runtimeManifest = Get-Content -LiteralPath $RuntimeManifestPath -Raw | ConvertFrom-Json
+            if (
+                $runtimeManifest.voice_python.required_python -ne "3.13" -or
+                $runtimeManifest.voice_python.platform -ne "win_amd64" -or
+                $runtimeManifest.voice_python.bundled_site_packages -ne $true -or
+                $runtimeManifest.voice_python.bundled_interpreter -ne $false -or
+                $runtimeManifest.voice_python.lock_sha256 -ne $lockHash
+            ) {
+                return [pscustomobject]@{
+                    Available = $false
+                    Detail = "runtime-manifest.json does not match the Iris-owned voice lock and Python 3.13 contract."
+                }
+            }
+        } catch {
+            return [pscustomobject]@{
+                Available = $false
+                Detail = "Could not validate the packaged voice runtime manifest: $($_.Exception.Message)"
+            }
+        }
+    }
+
+    $siteEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([System.IO.Path]::GetFullPath($SitePackages)))
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([System.IO.Path]::GetFullPath($LockPath)))
+    $code = @"
+import base64
+import importlib.metadata as metadata
+import pathlib
+import re
+import sys
+
+site = pathlib.Path(base64.b64decode("$siteEncoded").decode()).resolve()
+lock_path = pathlib.Path(base64.b64decode("$lockEncoded").decode()).resolve()
+lock_text = lock_path.read_text(encoding="utf-8-sig")
+normalize = lambda name: re.sub(r"[-_.]+", "-", name).lower()
+expected = {
+    normalize(match.group(1)): match.group(2)
+    for match in re.finditer(r"^([a-z0-9][a-z0-9._-]*)==([^ \\\r\n]+) \\$", lock_text, re.MULTILINE)
+}
+actual = {
+    normalize(dist.metadata["Name"]): dist.version
+    for dist in metadata.distributions(path=[str(site)])
+}
+if actual != expected:
+    raise SystemExit("bundled distribution set does not match the voice lock")
+sys.path.insert(0, str(site))
+import kokoro_onnx
+import numpy
+import onnxruntime
+import soundfile
+for module in (kokoro_onnx, numpy, onnxruntime, soundfile):
+    module_path = pathlib.Path(module.__file__).resolve()
+    if site not in module_path.parents:
+        raise SystemExit(f"{module.__name__} escaped the Iris-owned voice layer: {module_path}")
+print(
+    "kokoro-onnx={}; soundfile={}; numpy={}; onnxruntime={}".format(
+        actual["kokoro-onnx"],
+        actual["soundfile"],
+        actual["numpy"],
+        actual["onnxruntime"],
+    )
+)
+"@
+    $codeEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($code))
+    $probe = Invoke-PreflightProbe `
+        -FilePath $PythonPath `
+        -Arguments "-S -c `"import base64;exec(base64.b64decode('$codeEncoded'))`"" `
+        -TimeoutSeconds 30
+
+    return [pscustomobject]@{
+        Available = ($probe.ExitCode -eq 0)
+        Detail = if ($probe.ExitCode -eq 0) {
+            "Hash-matched lock and isolated imports passed with $($probe.Output.Trim())."
+        } else {
+            "The bundled voice layer failed its isolated import/version audit: $($probe.Error.Trim())"
+        }
     }
 }
 
@@ -222,6 +429,13 @@ if (Test-WebView2) {
     Add-Check -Status "FAIL" -Name "WebView2 Runtime" -Detail "WebView2 was not found in the usual registry locations." -Repair "Install Microsoft Edge WebView2 Runtime from Microsoft, then rerun this preflight."
 }
 
+$systemBrowser = Find-IrisBrowserExecutable
+if ($systemBrowser.Available) {
+    Add-Check -Status "PASS" -Name "System browser executable" -Detail $systemBrowser.Detail -Repair "No action needed."
+} else {
+    Add-Check -Status "FAIL" -Name "System browser executable" -Detail $systemBrowser.Detail -Repair "Install Microsoft Edge (WinGet package Microsoft.Edge), or set IRIS_BROWSER_EXECUTABLE_PATH to an absolute Edge/Chrome executable path, then restart Iris."
+}
+
 $ollamaPath = Test-CommandAvailable -Name "ollama"
 if ($ollamaPath) {
     Add-Check -Status "PASS" -Name "Ollama executable" -Detail "Found ollama at $ollamaPath." -Repair "No action needed."
@@ -275,22 +489,35 @@ foreach ($asset in @(
     }
 }
 
-$kokoroOnnx = Test-PythonPackage -Package "kokoro_onnx"
-$soundfile = Test-PythonPackage -Package "soundfile"
-if ($kokoroOnnx.Python) {
-    Add-Check -Status "PASS" -Name "Python executable" -Detail "Found python at $($kokoroOnnx.Python)." -Repair "No action needed."
-} else {
-    Add-Check -Status "WARN" -Name "Python executable" -Detail $kokoroOnnx.Detail -Repair "Install Python if you want Kokoro speech output. Text and vision can still work without TTS."
-}
-foreach ($packageCheck in @(
-        @{ Name = "Python package kokoro-onnx"; Result = $kokoroOnnx },
-        @{ Name = "Python package soundfile"; Result = $soundfile }
+$hermesSitePackages = Join-Path $root ".iris-runtime\hermes\.venv\Lib\site-packages"
+foreach ($packageMetadata in @(
+        @{ Name = "Hermes Agent pinned package"; Path = (Join-Path $hermesSitePackages "hermes_agent-0.18.0.dist-info\METADATA") },
+        @{ Name = "Agent Client Protocol pinned package"; Path = (Join-Path $hermesSitePackages "agent_client_protocol-0.9.0.dist-info\METADATA") }
     )) {
-    if ($packageCheck.Result.Available) {
-        Add-Check -Status "PASS" -Name $packageCheck.Name -Detail $packageCheck.Result.Detail -Repair "No action needed."
+    if (Test-File -Path $packageMetadata.Path) {
+        Add-Check -Status "PASS" -Name $packageMetadata.Name -Detail "Found packaged metadata at $($packageMetadata.Path)." -Repair "No action needed."
     } else {
-        Add-Check -Status "WARN" -Name $packageCheck.Name -Detail $packageCheck.Result.Detail -Repair "Install this Python package if you want Kokoro speech output. This preflight will not install packages automatically."
+        Add-Check -Status "FAIL" -Name $packageMetadata.Name -Detail "$($packageMetadata.Path) is missing." -Repair "Re-extract the full Iris release; do not install an unpinned replacement package."
     }
+}
+
+$python313 = Find-Python313
+if ($python313) {
+    Add-Check -Status "PASS" -Name "Python executable" -Detail "Found exact Python 3.13 at $python313 for the Iris-owned Hermes and voice package layers." -Repair "No action needed."
+} else {
+    Add-Check -Status "FAIL" -Name "Python executable" -Detail "Exact Python 3.13 was not found." -Repair "Install Python 3.13 (WinGet package Python.Python.3.13), then rerun this preflight. Iris supplies its own pinned Hermes, image-provider, and voice package layers."
+}
+
+$voiceRuntime = Test-IrisVoiceRuntime `
+    -PythonPath $python313 `
+    -SitePackages (Join-Path $root ".iris-runtime\voice\Lib\site-packages") `
+    -LockPath (Join-Path $root "profiles\iris_voice_python_3_13.lock.txt") `
+    -RuntimeLockPath (Join-Path $root ".iris-runtime\voice\runtime-lock.txt") `
+    -RuntimeManifestPath (Join-Path $root ".iris-runtime\runtime-manifest.json")
+if ($voiceRuntime.Available) {
+    Add-Check -Status "PASS" -Name "Iris-owned voice Python layer" -Detail $voiceRuntime.Detail -Repair "No action needed."
+} else {
+    Add-Check -Status "FAIL" -Name "Iris-owned voice Python layer" -Detail $voiceRuntime.Detail -Repair "Re-extract or upgrade the complete Iris release. Do not repair this managed layer with global pip."
 }
 
 $zipPath = Join-Path $root "release\dist\iris-windows.zip"

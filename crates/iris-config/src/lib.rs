@@ -31,6 +31,7 @@ pub struct ModelPolicy {
     pub model_display_name: String,
     pub parameter_size: String,
     pub num_ctx_ceiling: u32,
+    /// Compatibility fallback for an automatic Ollama placement failure.
     pub num_gpu_layers: u32,
     pub architecture: String,
     pub single_model_only: bool,
@@ -165,7 +166,7 @@ impl ProjectManifest {
         )?;
         require(
             self.model_policy.num_gpu_layers == 1,
-            "Gemma 4 must limit Ollama GPU offload to one layer on this Windows target",
+            "Gemma 4 safe Ollama GPU fallback must remain one layer on this Windows target",
         )?;
         require(
             self.model_policy.architecture == "gemma4",

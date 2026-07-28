@@ -3,19 +3,32 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import socket
 import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
 from iris_action_tools import _approve_once, _path_risk, _workspace_for_task
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_ROOT = REPO_ROOT / ".iris-runtime" / "browser"
-DATA_ROOT = REPO_ROOT / ".iris-data" / "hermes-browser"
+def _root_from_env(name: str, fallback: Path) -> Path:
+    value = os.environ.get(name)
+    path = Path(value).expanduser() if value is not None else fallback
+    if not path.is_absolute():
+        raise RuntimeError(f"{name} must be an absolute path")
+    return path.resolve(strict=False)
+
+
+RESOURCE_ROOT = _root_from_env(
+    "IRIS_RESOURCE_ROOT",
+    Path(__file__).resolve().parents[2],
+)
+STATE_ROOT = _root_from_env("IRIS_DATA_ROOT", RESOURCE_ROOT)
+RUNTIME_ROOT = RESOURCE_ROOT / ".iris-runtime" / "browser"
+DATA_ROOT = STATE_ROOT / ".iris-data" / "hermes-browser"
 BROWSER_EXE = (
     RUNTIME_ROOT
     / "node_modules"
@@ -23,16 +36,13 @@ BROWSER_EXE = (
     / "bin"
     / "agent-browser-win32-x64.exe"
 )
-CHROME_EXE = (
-    RUNTIME_ROOT
-    / "browsers"
-    / "chrome-149.0.7827.115"
-    / "chrome.exe"
-)
 PROFILE_DIR = DATA_ROOT / "profile"
 DOWNLOAD_DIR = DATA_ROOT / "downloads"
-SCREENSHOT_DIR = REPO_ROOT / "diagnostics" / "browser"
-COMMAND_OUTPUT_DIR = RUNTIME_ROOT / "command-output"
+SCREENSHOT_DIR = STATE_ROOT / "diagnostics" / "browser"
+COMMAND_OUTPUT_DIR = _root_from_env(
+    "IRIS_BROWSER_COMMAND_OUTPUT_DIR",
+    DATA_ROOT / "command-output",
+)
 IRIS_BROWSER_TOOLSET = "iris-browser"
 IRIS_BROWSER_TOOLS = (
     "browser_open",
@@ -79,6 +89,46 @@ EXECUTABLE_EXTENSIONS = {".bat", ".cmd", ".exe", ".msi", ".msix", ".ps1"}
 _snapshot_refs: dict[str, dict[str, dict[str, Any]]] = {}
 _allowed_domains = ""
 _command_artifacts: set[Path] = set()
+AddressResolver = Callable[[str], Iterable[str]]
+
+
+def _browser_executable() -> Path:
+    override = str(os.environ.get("IRIS_BROWSER_EXECUTABLE_PATH") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            raise RuntimeError("IRIS_BROWSER_EXECUTABLE_PATH must be an absolute path")
+        if not path.is_file():
+            raise RuntimeError(
+                f"IRIS_BROWSER_EXECUTABLE_PATH does not name a file: {path}"
+            )
+        return path.resolve()
+
+    candidates: list[Path] = []
+    for variable, relative in (
+        ("ProgramFiles(x86)", "Microsoft/Edge/Application/msedge.exe"),
+        ("ProgramFiles", "Microsoft/Edge/Application/msedge.exe"),
+        ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
+        ("ProgramFiles", "Google/Chrome/Application/chrome.exe"),
+        ("ProgramFiles(x86)", "Google/Chrome/Application/chrome.exe"),
+        ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
+    ):
+        root = str(os.environ.get(variable) or "").strip()
+        if root:
+            candidates.append(Path(root) / relative)
+    # Keep source checkouts compatible with the pinned development browser while
+    # production releases use the WinGet-managed system browser.
+    candidates.append(
+        RUNTIME_ROOT / "browsers" / "chrome-149.0.7827.115" / "chrome.exe"
+    )
+    for path in candidates:
+        if path.is_file():
+            return path.resolve()
+    raise RuntimeError(
+        "Iris browser automation needs Microsoft Edge (recommended) or Google "
+        "Chrome. Install Edge with `winget install --id Microsoft.Edge -e`, "
+        "or set IRIS_BROWSER_EXECUTABLE_PATH to an absolute browser path."
+    )
 
 
 def _schema(
@@ -285,7 +335,11 @@ def browser_screenshot(args: dict[str, Any], **_: Any) -> str:
 
 
 def browser_get_url(_: dict[str, Any], **__: Any) -> str:
-    return json.dumps(_run_browser(["get", "url"]), ensure_ascii=False)
+    result = _run_browser(["get", "url"])
+    effective_url = _url_from_result(result)
+    if effective_url:
+        _validate_effective_url(effective_url)
+    return json.dumps(result, ensure_ascii=False)
 
 
 def browser_upload(args: dict[str, Any], **kwargs: Any) -> str:
@@ -347,8 +401,7 @@ def _run_browser(
 ) -> dict[str, Any]:
     if not BROWSER_EXE.is_file():
         raise RuntimeError(f"agent-browser runtime is missing: {BROWSER_EXE}")
-    if not CHROME_EXE.is_file():
-        raise RuntimeError(f"Iris browser executable is missing: {CHROME_EXE}")
+    browser_executable = _browser_executable()
     for directory in (PROFILE_DIR, DOWNLOAD_DIR, SCREENSHOT_DIR, COMMAND_OUTPUT_DIR):
         directory.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -356,7 +409,7 @@ def _run_browser(
         {
             "AGENT_BROWSER_SESSION": "iris-hermes",
             "AGENT_BROWSER_PROFILE": str(PROFILE_DIR),
-            "AGENT_BROWSER_EXECUTABLE_PATH": str(CHROME_EXE),
+            "AGENT_BROWSER_EXECUTABLE_PATH": str(browser_executable),
             "AGENT_BROWSER_CONTENT_BOUNDARIES": "1",
             "AGENT_BROWSER_MAX_OUTPUT": "20000",
             "AGENT_BROWSER_IDLE_TIMEOUT_MS": "120000",
@@ -379,7 +432,7 @@ def _run_browser(
     ):
         completed = subprocess.run(
             [str(BROWSER_EXE), "--json", *arguments],
-            cwd=str(REPO_ROOT),
+            cwd=str(RESOURCE_ROOT),
             env=env,
             stdout=stdout_file,
             stderr=stderr_file,
@@ -427,7 +480,10 @@ def _with_preview(
     capture: bool = True,
     screenshot_path: Path | None = None,
 ) -> str:
-    preview: dict[str, Any] = {"url": _current_url()}
+    effective_url = _current_url()
+    if effective_url:
+        _validate_effective_url(effective_url)
+    preview: dict[str, Any] = {"url": effective_url}
     if screenshot_path is None and capture:
         screenshot_path = _next_screenshot_path()
         _run_browser(["screenshot", str(screenshot_path)])
@@ -443,7 +499,10 @@ def _with_preview(
 
 
 def _current_url() -> str:
-    result = _run_browser(["get", "url"])
+    return _url_from_result(_run_browser(["get", "url"]))
+
+
+def _url_from_result(result: dict[str, Any]) -> str:
     data = result.get("data")
     if isinstance(data, dict):
         return str(data.get("url") or data.get("value") or "")
@@ -455,7 +514,7 @@ def _next_screenshot_path() -> Path:
     return SCREENSHOT_DIR / f"browser-{timestamp}-{uuid.uuid4().hex[:8]}.png"
 
 
-def _public_url(raw: str) -> str:
+def _public_url(raw: str, *, resolver: AddressResolver | None = None) -> str:
     value = raw.strip()
     parsed = urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -466,10 +525,88 @@ def _public_url(raw: str) -> str:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
-        return value
-    if not address.is_global:
-        raise ValueError("Browser navigation to private or local network addresses is blocked.")
+        addresses = _resolved_addresses(host, resolver or _resolve_host_addresses)
+    else:
+        addresses = (address,)
+    if any(not _is_public_address(address) for address in addresses):
+        raise ValueError(
+            "Browser navigation to private or local network addresses is blocked."
+        )
     return value
+
+
+def _resolve_host_addresses(host: str) -> tuple[str, ...]:
+    try:
+        records = socket.getaddrinfo(
+            host,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as error:
+        raise ValueError("Browser URL host could not be resolved.") from error
+    addresses: list[str] = []
+    for family, _, _, _, socket_address in records:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        candidate = str(socket_address[0]).split("%", 1)[0]
+        if candidate not in addresses:
+            addresses.append(candidate)
+    if not addresses:
+        raise ValueError("Browser URL host did not resolve to an IPv4 or IPv6 address.")
+    return tuple(addresses)
+
+
+def _resolved_addresses(
+    host: str,
+    resolver: AddressResolver,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    try:
+        raw_addresses = tuple(resolver(host))
+    except (OSError, socket.gaierror) as error:
+        raise ValueError("Browser URL host could not be resolved.") from error
+    if not raw_addresses:
+        raise ValueError("Browser URL host did not resolve to an IPv4 or IPv6 address.")
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for raw_address in raw_addresses:
+        candidate = str(raw_address).split("%", 1)[0]
+        try:
+            addresses.append(ipaddress.ip_address(candidate))
+        except ValueError as error:
+            raise ValueError("Browser URL host returned an invalid IP address.") from error
+    return tuple(addresses)
+
+
+def _is_public_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    return address.is_global and not (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    )
+
+
+def _validate_effective_url(url: str) -> None:
+    try:
+        _public_url(url)
+    except ValueError:
+        _close_unsafe_browser_session()
+        raise
+
+
+def _close_unsafe_browser_session() -> None:
+    global _allowed_domains
+    try:
+        _run_browser(["close"], timeout_seconds=5)
+    except RuntimeError:
+        pass
+    _snapshot_refs.clear()
+    _allowed_domains = ""
+    _cleanup_command_artifacts()
 
 
 def _is_ip_address(host: str) -> bool:

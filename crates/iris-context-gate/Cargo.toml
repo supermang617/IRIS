@@ -1,6 +1,6 @@
 [package]
 name = "iris-context-gate"
-version = "1.0.0"
+version.workspace = true
 edition = "2024"
 
 [dependencies]

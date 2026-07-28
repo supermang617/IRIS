@@ -128,3 +128,35 @@ test("playWavBytes falls back to HTML audio after Web Audio failure", async () =
     "playing:html_audio"
   ]);
 });
+
+test("cancellation during Web Audio decoding cannot start stale playback", async () => {
+  let cancelled = false;
+  let releaseDecode;
+  let sourceCreated = false;
+  const decodePending = new Promise((resolve) => {
+    releaseDecode = resolve;
+  });
+
+  const playback = playWavBytes(new Uint8Array([7, 8, 9]), {
+    getAudioContext: () => ({
+      state: "running",
+      destination: {},
+      createBufferSource() {
+        sourceCreated = true;
+        throw new Error("stale playback created a source");
+      },
+      async decodeAudioData() {
+        await decodePending;
+        return {};
+      }
+    }),
+    isCancelled: () => cancelled
+  });
+
+  await Promise.resolve();
+  cancelled = true;
+  releaseDecode();
+
+  assert.equal(await playback, "cancelled");
+  assert.equal(sourceCreated, false);
+});

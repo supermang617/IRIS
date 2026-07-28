@@ -1,0 +1,25 @@
+{
+  "package": "hermes-agent",
+  "version": "0.18.0",
+  "extra": "acp",
+  "release_tag": "v2026.7.1",
+  "release_commit": "7c1a029553d87c43ecff8a3821336bc95872213b",
+  "wheel": "hermes_agent-0.18.0-py3-none-any.whl",
+  "wheel_sha256": "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37",
+  "sigstore_transparency_entry": 2040635656,
+  "trusted_publishing": true,
+  "python": "3.13",
+  "agent_client_protocol": "0.9.0",
+  "pyjwt": "2.13.0",
+  "dependency_lock": "profiles/hermes_agent_python_3_13.lock.txt",
+  "dependency_lock_sha256": "faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47",
+  "dependency_count": 65,
+  "security_overrides": {
+    "profile": "profiles/hermes_agent_security_overrides.txt",
+    "cryptography": "48.0.1",
+    "pillow": "12.3.0",
+    "reason": "Upstream 0.18.0 pins versions with published vulnerabilities; Iris qualifies the fixed binary-compatible releases."
+  },
+  "runtime_root": ".iris-runtime/hermes",
+  "launcher": "plugins/hermes_acp/iris_acp.py"
+}

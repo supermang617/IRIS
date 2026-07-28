@@ -29,17 +29,24 @@ export function createSpeechStopHandle(stop) {
 
 export async function playWavBytes(bytes, options = {}) {
   const onDiagnostic = options.onDiagnostic || (() => {});
+  if (playbackCancelled(options)) {
+    return "cancelled";
+  }
   try {
     await playWithWebAudio(bytes, options);
     return "web_audio";
   } catch (error) {
+    if (playbackCancelled(options)) {
+      return "cancelled";
+    }
     onDiagnostic("speech_web_audio_error", errorMessage(error));
     await playWithHtmlAudio(bytes, options);
-    return "html_audio";
+    return playbackCancelled(options) ? "cancelled" : "html_audio";
   }
 }
 
 async function playWithWebAudio(bytes, options) {
+  throwIfPlaybackCancelled(options);
   const context = (options.getAudioContext || defaultAudioContext)();
   if (!context) {
     throw new Error("Web Audio is unavailable");
@@ -47,8 +54,10 @@ async function playWithWebAudio(bytes, options) {
   if (context.state === "suspended") {
     await context.resume();
   }
+  throwIfPlaybackCancelled(options);
 
   const decoded = await context.decodeAudioData(standaloneArrayBuffer(bytes));
+  throwIfPlaybackCancelled(options);
 
   await new Promise((resolve, reject) => {
     let finished = false;
@@ -90,6 +99,7 @@ async function playWithWebAudio(bytes, options) {
       });
       options.setActiveHandle?.(handle);
       source.onended = () => finish();
+      throwIfPlaybackCancelled(options);
       source.start(0);
       options.onPlaying?.("web_audio");
     } catch (error) {
@@ -129,6 +139,7 @@ function playWithHtmlAudio(bytes, options) {
     };
 
     try {
+      throwIfPlaybackCancelled(options);
       const blobFactory = options.createBlob || ((parts, init) => new Blob(parts, init));
       const createObjectUrl = options.createObjectUrl || URL.createObjectURL;
       url = createObjectUrl(blobFactory([bytes], { type: "audio/wav" }));
@@ -141,6 +152,7 @@ function playWithHtmlAudio(bytes, options) {
         finish();
       });
       options.setActiveHandle?.(handle);
+      throwIfPlaybackCancelled(options);
 
       playbackStartTimer = setTimeout(() => {
         if (!started) {
@@ -197,6 +209,16 @@ function formatMediaElementError(mediaError) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function playbackCancelled(options) {
+  return options.isCancelled?.() === true;
+}
+
+function throwIfPlaybackCancelled(options) {
+  if (playbackCancelled(options)) {
+    throw new Error("speech playback cancelled");
+  }
 }
 
 function safeDisconnect(node) {

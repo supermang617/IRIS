@@ -26,7 +26,7 @@ Hermes has Off, Safe, and Agentic Session modes. Safe is the startup default.
 
 - Safe uses `profiles/iris_restricted.json` and exposes Iris-owned memory query,
   staged proposal, and restricted research tools.
-- Agentic uses pinned Hermes Agent 0.16.0 over stdio ACP with
+- Agentic uses provenance-pinned Hermes Agent 0.18.0 over stdio ACP with
   `profiles/iris_agentic.json`.
 - Both modes use the existing Iris Ollama endpoint/model only.
 - Agentic exposes `iris_query_memory`, `iris_propose_memory`, `read_file`,

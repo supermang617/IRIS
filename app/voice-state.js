@@ -8,7 +8,23 @@ export function classifyVoiceTranscript(transcript, state) {
   }
 
   if (state.interruptionOnly) {
-    if (isInterruption(normalized) || isBareWakeWord(normalized) || findWakeMatch(normalized)) {
+    const interruption = interruptionMatch(normalized);
+    if (interruption) {
+      return {
+        action: "interrupt",
+        prompt: normalized.slice(interruption.end).trim(),
+        source: "interruption",
+        status: "Interrupted."
+      };
+    }
+    const wakeMatch = findWakeMatch(normalized);
+    if (wakeMatch) {
+      const prompt = wakeMatch.index === 0
+        ? normalized.slice(wakeMatch.length).trim()
+        : "";
+      return { action: "interrupt", prompt, source: "interruption", status: "Interrupted." };
+    }
+    if (isBareWakeWord(normalized)) {
       return { action: "interrupt", prompt: "", source: "interruption", status: "Interrupted." };
     }
 
@@ -126,8 +142,49 @@ export function shouldContinueVoiceSession(decision) {
   );
 }
 
+export function interruptionSignalIsCurrent(signal, state) {
+  const signalRunId = Number(signal?.runId ?? signal?.run_id);
+  const signalRequestId = Number(signal?.requestId ?? signal?.request_id);
+  const activeRunId = Number(state?.activeRunId);
+  const activeRequestId = Number(state?.activeRequestId);
+  return (
+    state?.speaking === true &&
+    Number.isSafeInteger(signalRunId) &&
+    Number.isSafeInteger(signalRequestId) &&
+    signalRunId > 0 &&
+    signalRequestId > 0 &&
+    signalRunId === activeRunId &&
+    signalRequestId === activeRequestId
+  );
+}
+
+export function interruptionCaptureAttemptAllowed(completedAttempts, maximumAttempts = 96) {
+  const attempts = Math.max(0, Number(completedAttempts) || 0);
+  const maximum = Math.max(1, Number(maximumAttempts) || 96);
+  return attempts < maximum;
+}
+
+export function interruptionCandidatePauseAllowed(rejectedPauses, maximumRejectedPauses = 2) {
+  const rejected = Math.max(0, Number(rejectedPauses) || 0);
+  const maximum = Math.max(1, Number(maximumRejectedPauses) || 2);
+  return rejected < maximum;
+}
+
+export function interruptionRetryDelayMs(completedAttempts, rejectedPauses) {
+  const attempts = Math.max(0, Number(completedAttempts) || 0);
+  const rejected = Math.max(0, Number(rejectedPauses) || 0);
+  return Math.min(600, 100 + attempts * 50 + rejected * 100);
+}
+
 function isInterruption(text) {
-  return /^(iris[\s,.:;!?-]+)?(stop|pause|quiet|cancel|interrupt)\b/i.test(text);
+  return interruptionMatch(text) !== null;
+}
+
+function interruptionMatch(text) {
+  const match = text.match(
+    /^(?:iris[\s,.:;!?-]+)?(?:stop|pause|quiet|cancel|interrupt)\b[\s,.:;!?-]*/i
+  );
+  return match ? { end: match[0].length } : null;
 }
 
 function isBareWakeWord(text) {

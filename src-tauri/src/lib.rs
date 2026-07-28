@@ -10,14 +10,14 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock, TryLockError,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{Manager, PhysicalPosition};
+use tauri::{Emitter, Manager, PhysicalPosition};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -32,7 +32,15 @@ static HERMES_TASK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DIAGNOSTIC_SESSION: OnceLock<Mutex<Option<DiagnosticSessionSummary>>> = OnceLock::new();
 static INSTANCE_LOCK: OnceLock<TcpListener> = OnceLock::new();
 static WHISPER_CONTEXT: OnceLock<Mutex<Option<whisper_rs::WhisperContext>>> = OnceLock::new();
+static MODEL_GENERATION: OnceLock<Mutex<ModelGenerationRegistry>> = OnceLock::new();
 static ASR_CAPTURE_EPOCH: AtomicU64 = AtomicU64::new(1);
+static TTS_PLAYBACK_EPOCH: AtomicU64 = AtomicU64::new(1);
+static TTS_ACTIVE_PLAYBACK_ID: AtomicU64 = AtomicU64::new(0);
+static TTS_ACTIVE_SYNTHESIS_ID: AtomicU64 = AtomicU64::new(0);
+static KOKORO_WORKER_PID: AtomicU32 = AtomicU32::new(0);
+static TTS_PLAYBACK_PAUSED: AtomicBool = AtomicBool::new(false);
+static TTS_PAUSE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static TTS_LAST_PAUSE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_STAGING_ITEMS: usize = 80;
 const MAX_HERMES_MEMORY_QUERY_CHARS: usize = 120;
@@ -48,9 +56,26 @@ const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
 const SCREEN_CAPTURE_HIDE_SETTLE_MS: u64 = 350;
 const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
 const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
-const TTS_NATIVE_PREROLL_MS: u64 = 350;
+const TTS_NATIVE_PREROLL_MS: u64 = 80;
 const TTS_NATIVE_TAIL_MS: u64 = 120;
+const TTS_NATIVE_PAUSE_ALLOWANCE_MS: u64 = 5_000;
+const INTERRUPTION_CAPTURE_MAX_MS: u64 = 1_200;
+const INTERRUPTION_CAPTURE_START_TIMEOUT_MS: u64 = 600;
+const INTERRUPTION_TRAILING_SILENCE_MS: u64 = 160;
+const INTERRUPTION_MIN_SPEECH_MS: u64 = 120;
+const INTERRUPTION_TRANSCRIPTION_BUDGET_MS: u64 = 1_500;
+const INTERRUPTION_EVENT_NAME: &str = "iris://voice/interruption-onset";
+const TTS_PLAYBACK_ONSET_EVENT_NAME: &str = "iris://voice/playback-onset";
+const MODEL_CHUNK_EVENT_NAME: &str = "iris://model/chunk";
+const OLLAMA_SERVER_DEFAULTS: [(&str, &str); 4] = [
+    ("OLLAMA_FLASH_ATTENTION", "1"),
+    ("OLLAMA_KV_CACHE_TYPE", "q8_0"),
+    ("OLLAMA_NUM_PARALLEL", "1"),
+    ("OLLAMA_MAX_LOADED_MODELS", "1"),
+];
+const OLLAMA_PERSISTED_DEFAULT_COUNT: usize = 2;
 type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
+type IrisAppHandle = tauri::AppHandle<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
 
 #[derive(Debug, Clone, Copy)]
 struct WindowRect {
@@ -72,7 +97,52 @@ struct MonitorRect {
 struct HudCommandResponse {
     text: String,
     cancelled: bool,
+    error: Option<String>,
     model_elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelChunkEvent {
+    request_id: u64,
+    text: String,
+}
+
+#[derive(Default)]
+struct ModelGenerationRegistry {
+    active: Option<(u64, Arc<AtomicBool>)>,
+}
+
+impl ModelGenerationRegistry {
+    fn begin(&mut self, request_id: u64) -> Arc<AtomicBool> {
+        if let Some((_, cancellation)) = self.active.take() {
+            cancellation.store(true, Ordering::Release);
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        self.active = Some((request_id, Arc::clone(&cancellation)));
+        cancellation
+    }
+
+    fn cancel(&self, request_id: u64) -> bool {
+        let Some((active_request_id, cancellation)) = &self.active else {
+            return false;
+        };
+        if request_id == 0 || *active_request_id != request_id {
+            return false;
+        }
+        cancellation.store(true, Ordering::Release);
+        true
+    }
+
+    fn finish(&mut self, request_id: u64) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|(active_request_id, _)| *active_request_id == request_id)
+        {
+            self.active = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -513,6 +583,57 @@ struct AsrCaptureProfile {
     min_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AsrTranscriptionProfile {
+    budget_ms: Option<u64>,
+    audio_ctx: Option<i32>,
+    max_len: Option<i32>,
+    max_tokens: Option<i32>,
+    abort_is_empty: bool,
+}
+
+impl AsrTranscriptionProfile {
+    const DEFAULT: Self = Self {
+        budget_ms: None,
+        audio_ctx: None,
+        max_len: None,
+        max_tokens: None,
+        abort_is_empty: false,
+    };
+
+    const WAKE: Self = Self {
+        budget_ms: Some(4_000),
+        audio_ctx: Some(128),
+        max_len: Some(24),
+        max_tokens: Some(24),
+        abort_is_empty: true,
+    };
+
+    const INTERRUPTION: Self = Self {
+        budget_ms: Some(INTERRUPTION_TRANSCRIPTION_BUDGET_MS),
+        audio_ctx: Some(64),
+        max_len: Some(24),
+        max_tokens: Some(12),
+        abort_is_empty: true,
+    };
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InterruptionOnsetEvent {
+    run_id: u64,
+    request_id: u64,
+    capture_elapsed_ms: u64,
+    aec_applied: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TtsPlaybackOnsetEvent {
+    playback_id: u64,
+    preroll_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalRuntimePreparation {
@@ -539,7 +660,8 @@ struct PcmWav {
 
 #[derive(Debug, Clone)]
 struct KokoroSettings {
-    workspace_root: std::path::PathBuf,
+    resource_root: std::path::PathBuf,
+    state_root: std::path::PathBuf,
     model_path: std::path::PathBuf,
     voices_path: std::path::PathBuf,
     helper_path: std::path::PathBuf,
@@ -613,6 +735,8 @@ struct VoiceLatencyTrace {
     llm_first_token_ms: Option<u128>,
     llm_full_response_ms: Option<u128>,
     tts_first_audio_ms: Option<u128>,
+    tts_synthesis_ms: Option<u128>,
+    tts_playback_ms: Option<u128>,
     tts_full_ms: Option<u128>,
     time_to_first_spoken_word_ms: Option<u128>,
     total_turn_time_ms: Option<u128>,
@@ -624,9 +748,9 @@ fn dashboard_snapshot() -> Result<iris_status::DashboardSnapshot, String> {
 }
 
 fn current_dashboard_snapshot() -> Result<iris_status::DashboardSnapshot, String> {
-    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
-    let manifest_path = iris_config::find_manifest_path(&cwd)?;
-    let manifest = iris_config::load_manifest_from_workspace(&cwd)?;
+    let root = resource_root()?;
+    let manifest_path = iris_config::find_manifest_path(&root)?;
+    let manifest = iris_config::load_manifest_from_workspace(&root)?;
     let hardware = iris_hardware::scan_system();
     let _workspace_root = manifest_path
         .parent()
@@ -645,10 +769,70 @@ async fn submit_typed_hud(
     })
     .await
     .unwrap_or_else(|err| HudCommandResponse {
-        text: format!("Local model unavailable: {err}"),
+        text: String::new(),
         cancelled: false,
+        error: Some(format!("Local model unavailable: {err}")),
         model_elapsed_ms: 0,
     })
+}
+
+fn model_generation_registry() -> &'static Mutex<ModelGenerationRegistry> {
+    MODEL_GENERATION.get_or_init(|| Mutex::new(ModelGenerationRegistry::default()))
+}
+
+#[tauri::command]
+async fn submit_typed_hud_stream(
+    app: IrisAppHandle,
+    text: String,
+    history: Option<Vec<ConversationTurn>>,
+    style_text: Option<String>,
+    request_id: u64,
+) -> HudCommandResponse {
+    if request_id == 0 {
+        return HudCommandResponse {
+            text: String::new(),
+            cancelled: false,
+            error: Some(
+                "Local model unavailable: invalid streaming request identifier".to_string(),
+            ),
+            model_elapsed_ms: 0,
+        };
+    }
+    let cancellation = model_generation_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .begin(request_id);
+    let worker_cancellation = Arc::clone(&cancellation);
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        submit_typed_hud_stream_blocking(
+            &app,
+            text,
+            history,
+            style_text,
+            request_id,
+            &worker_cancellation,
+        )
+    })
+    .await
+    .unwrap_or_else(|err| HudCommandResponse {
+        text: String::new(),
+        cancelled: false,
+        error: Some(format!("Local model unavailable: {err}")),
+        model_elapsed_ms: 0,
+    });
+    model_generation_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .finish(request_id);
+    response
+}
+
+#[tauri::command]
+fn cancel_model_generation(request_id: u64) -> bool {
+    model_generation_registry()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .cancel(request_id)
 }
 
 #[tauri::command]
@@ -686,13 +870,13 @@ fn dynamic_context_reset() -> Result<iris_dynamic_context::DynamicContextSummary
 
 #[tauri::command]
 fn record_feedback(capture: feedback::FeedbackCapture) -> Result<feedback::FeedbackEvent, String> {
-    let root = workspace_root()?;
+    let root = state_root()?;
     feedback::capture_feedback(&root, capture, timestamp_ms()?)
 }
 
 #[tauri::command]
 fn feedback_status() -> Result<FeedbackStatusResponse, String> {
-    let root = workspace_root()?;
+    let root = state_root()?;
     let events = feedback::load_events(&root)?;
     let summary = feedback::summarize(&events);
     let instruction_active = feedback::instruction_block(&events).is_some();
@@ -708,7 +892,7 @@ fn feedback_status() -> Result<FeedbackStatusResponse, String> {
 
 #[tauri::command]
 fn export_feedback_preference_pairs() -> Result<feedback::PreferenceExport, String> {
-    let root = workspace_root()?;
+    let root = state_root()?;
     let events = feedback::load_events(&root)?;
     feedback::export_preference_pairs(&root, &events)
 }
@@ -743,8 +927,11 @@ fn hermes_start_sidecar() -> Result<HermesStatusResponse, String> {
 
 #[tauri::command]
 fn hermes_mode_status() -> Result<hermes_policy::HermesPolicySnapshot, String> {
-    let root = workspace_root()?;
-    hermes_policy::set_agentic_runtime_available(hermes_acp::runtime_status(&root).installed);
+    let resources = resource_root()?;
+    let state = state_root_for(&resources)?;
+    hermes_policy::set_agentic_runtime_available(
+        hermes_acp::runtime_status(&resources, &state).installed,
+    );
     hermes_policy::snapshot(timestamp_ms()?)
 }
 
@@ -773,8 +960,9 @@ fn hermes_create_agentic_session(
     workspace_path: String,
 ) -> Result<hermes_policy::HermesPolicySnapshot, String> {
     stop_hermes_sidecar()?;
-    let root = workspace_root()?;
-    let runtime = hermes_acp::runtime_status(&root);
+    let resources = resource_root()?;
+    let state = state_root_for(&resources)?;
+    let runtime = hermes_acp::runtime_status(&resources, &state);
     hermes_policy::set_agentic_runtime_available(runtime.installed);
     if !runtime.installed {
         return Err(
@@ -817,21 +1005,22 @@ fn hermes_clear_panic_stop() -> Result<hermes_policy::HermesPolicySnapshot, Stri
 
 #[tauri::command]
 fn hermes_agentic_runtime_status() -> Result<hermes_acp::HermesAcpRuntimeStatus, String> {
-    let root = workspace_root()?;
-    let status = hermes_acp::runtime_status(&root);
+    let resources = resource_root()?;
+    let state = state_root_for(&resources)?;
+    let status = hermes_acp::runtime_status(&resources, &state);
     hermes_policy::set_agentic_runtime_available(status.installed);
     Ok(status)
 }
 
 #[tauri::command]
 fn browser_preview_data_url(screenshot_path: String) -> Result<String, String> {
-    let root = workspace_root()?;
+    let root = state_root()?;
     browser_preview_data_url_for(&root, std::path::Path::new(screenshot_path.trim()))
 }
 
 #[tauri::command]
 fn generated_image_data_url(saved_path: String) -> Result<String, String> {
-    let root = workspace_root()?;
+    let root = state_root()?;
     generated_image_data_url_for(&root, std::path::Path::new(saved_path.trim()))
 }
 
@@ -845,17 +1034,17 @@ async fn hermes_generate_image(
 }
 
 fn browser_preview_data_url_for(
-    workspace_root: &std::path::Path,
+    state_root: &std::path::Path,
     screenshot_path: &std::path::Path,
 ) -> Result<String, String> {
-    let allowed_root = workspace_root
+    let allowed_root = state_root
         .join("diagnostics/browser")
         .canonicalize()
         .map_err(|err| format!("browser preview directory is unavailable: {err}"))?;
     let candidate = if screenshot_path.is_absolute() {
         screenshot_path.to_path_buf()
     } else {
-        workspace_root.join(screenshot_path)
+        state_root.join(screenshot_path)
     };
     let candidate = candidate
         .canonicalize()
@@ -884,16 +1073,16 @@ fn browser_preview_data_url_for(
 }
 
 fn generated_image_data_url_for(
-    workspace_root: &std::path::Path,
+    state_root: &std::path::Path,
     saved_path: &std::path::Path,
 ) -> Result<String, String> {
-    let allowed_root = generated_images_dir(workspace_root)?
+    let allowed_root = generated_images_dir(state_root)?
         .canonicalize()
         .map_err(|err| format!("generated image directory is unavailable: {err}"))?;
     let candidate = if saved_path.is_absolute() {
         saved_path.to_path_buf()
     } else {
-        workspace_root.join(saved_path)
+        state_root.join(saved_path)
     };
     let candidate = candidate
         .canonicalize()
@@ -934,10 +1123,12 @@ async fn hermes_submit_agentic_task(
         let session = policy
             .agentic_session
             .ok_or_else(|| "Agentic Hermes session is unavailable".to_string())?;
-        let root = workspace_root()?;
-        let manifest = iris_config::load_manifest_from_workspace(&root)?;
+        let resources = resource_root()?;
+        let state = state_root_for(&resources)?;
+        let manifest = iris_config::load_manifest_from_workspace(&resources)?;
         let result = hermes_acp::submit_task(
-            &root,
+            &resources,
+            &state,
             &session.workspace_path,
             &manifest.model_policy.model_id,
             &text,
@@ -1064,7 +1255,66 @@ fn submit_typed_hud_blocking(
     HudCommandResponse {
         text: response.text,
         cancelled: response.cancelled,
+        error: None,
         model_elapsed_ms: started.elapsed().as_millis(),
+    }
+}
+
+fn submit_typed_hud_stream_blocking(
+    app: &IrisAppHandle,
+    text: String,
+    history: Option<Vec<ConversationTurn>>,
+    style_text: Option<String>,
+    request_id: u64,
+    cancellation: &AtomicBool,
+) -> HudCommandResponse {
+    let started = Instant::now();
+    let history = history.unwrap_or_default();
+    let style_text = style_text.unwrap_or_else(|| text.clone());
+    let now = timestamp_ms_u64().unwrap_or(0);
+    let dynamic_context = dynamic_context_instruction(now);
+    let result = model_response_streaming(
+        &text,
+        &history,
+        dynamic_context.as_deref(),
+        cancellation,
+        |chunk| {
+            let _ = app.emit(
+                MODEL_CHUNK_EVENT_NAME,
+                ModelChunkEvent {
+                    request_id,
+                    text: chunk.to_string(),
+                },
+            );
+        },
+    );
+    observe_dynamic_context_nonfatal(&style_text, now);
+    streaming_hud_response(result, started.elapsed().as_millis())
+}
+
+fn streaming_hud_response(
+    result: Result<iris_ollama::StreamingOutcome, String>,
+    model_elapsed_ms: u128,
+) -> HudCommandResponse {
+    match result {
+        Ok(iris_ollama::StreamingOutcome::Completed(text)) => HudCommandResponse {
+            text,
+            cancelled: false,
+            error: None,
+            model_elapsed_ms,
+        },
+        Ok(iris_ollama::StreamingOutcome::Cancelled(text)) => HudCommandResponse {
+            text,
+            cancelled: true,
+            error: None,
+            model_elapsed_ms,
+        },
+        Err(error) => HudCommandResponse {
+            text: String::new(),
+            cancelled: false,
+            error: Some(format!("Local model unavailable: {error}")),
+            model_elapsed_ms,
+        },
     }
 }
 
@@ -1161,6 +1411,12 @@ async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandRespon
             capture_epoch,
             transcription_hint,
             mode.as_deref() == Some("wake"),
+            if mode.as_deref() == Some("wake") {
+                AsrTranscriptionProfile::WAKE
+            } else {
+                AsrTranscriptionProfile::DEFAULT
+            },
+            None,
         )
     })
     .await
@@ -1168,15 +1424,36 @@ async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandRespon
 }
 
 #[tauri::command]
-async fn native_asr_listen_interrupt() -> Result<AsrCommandResponse, String> {
+async fn native_asr_listen_interrupt(
+    window: IrisWindow,
+    run_id: u64,
+    request_id: u64,
+) -> Result<AsrCommandResponse, String> {
     let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
+        let mut emit_onset = move |capture_elapsed_ms| {
+            let _ = window.emit(
+                INTERRUPTION_EVENT_NAME,
+                InterruptionOnsetEvent {
+                    run_id,
+                    request_id,
+                    capture_elapsed_ms,
+                    aec_applied: false,
+                },
+            );
+        };
         native_asr_listen_for(
-            1_500,
-            CaptureEndpoint::Fixed,
+            INTERRUPTION_CAPTURE_MAX_MS,
+            CaptureEndpoint::Speech {
+                min_ms: INTERRUPTION_MIN_SPEECH_MS,
+                trailing_silence_ms: INTERRUPTION_TRAILING_SILENCE_MS,
+                start_timeout_ms: INTERRUPTION_CAPTURE_START_TIMEOUT_MS,
+            },
             capture_epoch,
             whisper_initial_prompt(Some("interrupt")),
             false,
+            AsrTranscriptionProfile::INTERRUPTION,
+            Some(&mut emit_onset),
         )
     })
     .await
@@ -1229,10 +1506,17 @@ fn native_asr_listen_for(
     capture_epoch: u64,
     transcription_hint: Option<&'static str>,
     skip_low_confidence_wake: bool,
+    transcription_profile: AsrTranscriptionProfile,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
 ) -> Result<AsrCommandResponse, String> {
     let started = Instant::now();
     let capture_started = Instant::now();
-    let audio = record_microphone_mono_16khz(duration_ms, endpoint, capture_epoch)?;
+    let audio = record_microphone_mono_16khz(
+        duration_ms,
+        endpoint,
+        capture_epoch,
+        on_likely_near_field_speech,
+    )?;
     let capture_elapsed_ms = capture_started.elapsed().as_millis();
     if !audio.speech_detected {
         return Ok(AsrCommandResponse {
@@ -1251,10 +1535,22 @@ fn native_asr_listen_for(
         });
     }
     let stt_started = Instant::now();
-    let wake_budget_ms = skip_low_confidence_wake.then_some(4_000);
-    let text = match transcribe_local_whisper(&audio.samples, transcription_hint, wake_budget_ms) {
+    let text = match transcribe_local_whisper(
+        &audio.samples,
+        transcription_hint,
+        capture_epoch,
+        transcription_profile,
+    ) {
         Ok(text) => text,
-        Err(error) if skip_low_confidence_wake && is_whisper_abort_error(&error) => String::new(),
+        Err(error) if transcription_profile.abort_is_empty && is_whisper_abort_error(&error) => {
+            String::new()
+        }
+        Err(error)
+            if ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) != capture_epoch
+                && is_whisper_abort_error(&error) =>
+        {
+            String::new()
+        }
         Err(error) => return Err(error),
     };
     let stt_elapsed_ms = stt_started.elapsed().as_millis();
@@ -1267,17 +1563,108 @@ fn native_asr_listen_for(
 }
 
 #[tauri::command]
-async fn kokoro_tts_wav(text: String) -> Result<TtsCommandResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || kokoro_tts_wav_blocking(text))
-        .await
-        .map_err(|err| err.to_string())?
+async fn kokoro_tts_wav(text: String, synthesis_id: u64) -> Result<TtsCommandResponse, String> {
+    if synthesis_id == 0 {
+        return Err("speech synthesis ID must be non-zero".to_string());
+    }
+    TTS_ACTIVE_SYNTHESIS_ID.store(synthesis_id, Ordering::SeqCst);
+    let result =
+        tauri::async_runtime::spawn_blocking(move || kokoro_tts_wav_blocking(text, synthesis_id))
+            .await
+            .map_err(|err| err.to_string())?;
+    let still_current = TTS_ACTIVE_SYNTHESIS_ID
+        .compare_exchange(synthesis_id, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    if !still_current {
+        return Err("speech synthesis cancelled".to_string());
+    }
+    result
 }
 
 #[tauri::command]
-async fn play_tts_wav(wav_bytes: Vec<u8>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || play_tts_wav_blocking(&wav_bytes))
-        .await
-        .map_err(|err| err.to_string())?
+async fn play_tts_wav(
+    window: IrisWindow,
+    wav_bytes: Vec<u8>,
+    playback_id: u64,
+) -> Result<(), String> {
+    let playback_epoch = TTS_PLAYBACK_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+    TTS_ACTIVE_PLAYBACK_ID.store(playback_id, Ordering::SeqCst);
+    TTS_PLAYBACK_PAUSED.store(false, Ordering::SeqCst);
+    TTS_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+    TTS_LAST_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        play_tts_wav_blocking_with_onset(&wav_bytes, playback_epoch, || {
+            let _ = window.emit(
+                TTS_PLAYBACK_ONSET_EVENT_NAME,
+                TtsPlaybackOnsetEvent {
+                    playback_id,
+                    preroll_ms: TTS_NATIVE_PREROLL_MS,
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    if TTS_PLAYBACK_EPOCH.load(Ordering::SeqCst) == playback_epoch
+        && TTS_ACTIVE_PLAYBACK_ID.load(Ordering::SeqCst) == playback_id
+    {
+        TTS_ACTIVE_PLAYBACK_ID.store(0, Ordering::SeqCst);
+        TTS_PLAYBACK_PAUSED.store(false, Ordering::SeqCst);
+        TTS_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+        TTS_LAST_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+    }
+    result
+}
+
+#[tauri::command]
+fn set_tts_playback_paused(paused: bool, playback_id: u64, request_id: u64) -> bool {
+    if !playback_command_matches(TTS_ACTIVE_PLAYBACK_ID.load(Ordering::SeqCst), playback_id) {
+        return false;
+    }
+    if pause_command_is_stale(TTS_LAST_PAUSE_REQUEST_ID.load(Ordering::SeqCst), request_id) {
+        return false;
+    }
+    if paused {
+        if TTS_LAST_PAUSE_REQUEST_ID.load(Ordering::SeqCst) == request_id
+            && TTS_PAUSE_REQUEST_ID.load(Ordering::SeqCst) == 0
+        {
+            return false;
+        }
+        TTS_LAST_PAUSE_REQUEST_ID.store(request_id, Ordering::SeqCst);
+        TTS_PAUSE_REQUEST_ID.store(request_id, Ordering::SeqCst);
+        TTS_PLAYBACK_PAUSED.store(true, Ordering::SeqCst);
+        return true;
+    }
+    if TTS_PAUSE_REQUEST_ID.load(Ordering::SeqCst) != request_id {
+        return false;
+    }
+    TTS_LAST_PAUSE_REQUEST_ID.store(request_id, Ordering::SeqCst);
+    TTS_PLAYBACK_PAUSED.store(false, Ordering::SeqCst);
+    TTS_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+    true
+}
+
+#[tauri::command]
+fn cancel_tts_playback(playback_id: u64) -> bool {
+    let playback_matches =
+        playback_command_matches(TTS_ACTIVE_PLAYBACK_ID.load(Ordering::SeqCst), playback_id);
+    let synthesis_matches =
+        playback_command_matches(TTS_ACTIVE_SYNTHESIS_ID.load(Ordering::SeqCst), playback_id);
+    if !playback_matches && !synthesis_matches {
+        return false;
+    }
+    if playback_matches {
+        TTS_PLAYBACK_EPOCH.fetch_add(1, Ordering::SeqCst);
+        TTS_ACTIVE_PLAYBACK_ID.store(0, Ordering::SeqCst);
+        TTS_PLAYBACK_PAUSED.store(false, Ordering::SeqCst);
+        TTS_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+        TTS_LAST_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
+    }
+    if synthesis_matches {
+        TTS_ACTIVE_SYNTHESIS_ID.store(0, Ordering::SeqCst);
+        cancel_active_kokoro_process();
+    }
+    true
 }
 
 #[tauri::command]
@@ -1302,8 +1689,8 @@ async fn warm_kokoro_tts() -> Result<(), String> {
 #[tauri::command]
 async fn warm_ollama_model() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let workspace_root = workspace_root()?;
-        let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+        let resource_root = resource_root()?;
+        let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
         let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
         let client = iris_ollama::OllamaClient::new(settings)?;
         let gated_context = iris_ui::gate_typed_text("warm up");
@@ -1326,7 +1713,7 @@ async fn prepare_local_runtime() -> Result<LocalRuntimePreparation, String> {
 
 fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
     let started = Instant::now();
-    let root = workspace_root()?;
+    let root = resource_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&root)?;
     if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
         return Ok(LocalRuntimePreparation {
@@ -1336,8 +1723,18 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             message: "Local model service is ready.".to_string(),
         });
     }
+    let models_root =
+        find_ollama_models_root(&manifest.model_policy.model_id).ok_or_else(|| {
+            format!(
+                "Iris model is not installed. Run: ollama pull {}",
+                manifest.model_policy.model_id
+            )
+        })?;
     if ollama_loopback_ready() {
-        stop_ollama_for_iris();
+        return Err(format!(
+            "Ollama is already running on 127.0.0.1:11434, but Iris could not use {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` and restart Ollama, then try again.",
+            manifest.model_policy.model_id, manifest.model_policy.model_id
+        ));
     }
 
     let executable = find_ollama_executable()?;
@@ -1351,9 +1748,8 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             "OLLAMA_CONTEXT_LENGTH",
             manifest.model_policy.num_ctx_ceiling.to_string(),
         );
-    if let Some(models_root) = find_ollama_models_root(&manifest.model_policy.model_id) {
-        command.env("OLLAMA_MODELS", models_root);
-    }
+    apply_ollama_server_defaults(&mut command);
+    command.env("OLLAMA_MODELS", models_root);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command
@@ -1386,19 +1782,50 @@ fn configured_ollama_model_ready(manifest: &iris_config::ProjectManifest) -> boo
         .is_ok()
 }
 
-fn stop_ollama_for_iris() {
-    #[cfg(windows)]
-    {
-        for image in ["ollama.exe", "ollama app.exe", "llama-server.exe"] {
-            let _ = Command::new("taskkill")
-                .args(["/F", "/T", "/IM", image])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .status();
-        }
+fn select_ollama_server_setting(current_value: Option<String>, default_value: &str) -> String {
+    current_value
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| default_value.to_string())
+}
+
+fn ollama_server_setting(name: &str, default_value: &str) -> String {
+    select_ollama_server_setting(std::env::var(name).ok(), default_value)
+}
+
+fn apply_ollama_server_defaults(command: &mut Command) {
+    for (name, default_value) in OLLAMA_SERVER_DEFAULTS {
+        command.env(name, ollama_server_setting(name, default_value));
     }
+}
+
+#[cfg(windows)]
+fn initialize_persisted_ollama_defaults() -> bool {
+    let mut initialized = false;
+    for (name, default_value) in OLLAMA_SERVER_DEFAULTS
+        .iter()
+        .take(OLLAMA_PERSISTED_DEFAULT_COUNT)
+    {
+        if std::env::var(name)
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            continue;
+        }
+        let status = Command::new("setx.exe")
+            .args([*name, *default_value])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        initialized |= status.is_ok_and(|status| status.success());
+    }
+    initialized
+}
+
+#[cfg(not(windows))]
+fn initialize_persisted_ollama_defaults() -> bool {
+    false
 }
 
 fn ollama_loopback_ready() -> bool {
@@ -1453,7 +1880,7 @@ fn is_local_model_unavailable_response(text: &str) -> bool {
     text.trim_start().starts_with("Local model unavailable:")
 }
 
-fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
+fn kokoro_tts_wav_blocking(text: String, synthesis_id: u64) -> Result<TtsCommandResponse, String> {
     let started = Instant::now();
     let text = text.trim();
     if text.is_empty() {
@@ -1464,8 +1891,16 @@ fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
     }
 
     let settings = kokoro_settings()?;
-    let wav_bytes = synthesize_with_warm_kokoro(&settings, text)
-        .or_else(|_| synthesize_with_one_shot_kokoro(&settings, text))?;
+    let wav_bytes = match synthesize_with_warm_kokoro(&settings, text) {
+        Ok(wav_bytes) => wav_bytes,
+        Err(_) if synthesis_is_current(synthesis_id) => {
+            synthesize_with_one_shot_kokoro(&settings, text)?
+        }
+        Err(_) => return Err("speech synthesis cancelled".to_string()),
+    };
+    if !synthesis_is_current(synthesis_id) {
+        return Err("speech synthesis cancelled".to_string());
+    }
     Ok(TtsCommandResponse {
         wav_bytes,
         elapsed_ms: started.elapsed().as_millis(),
@@ -1474,12 +1909,13 @@ fn kokoro_tts_wav_blocking(text: String) -> Result<TtsCommandResponse, String> {
 }
 
 fn kokoro_settings() -> Result<KokoroSettings, String> {
-    let workspace_root = workspace_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+    let resource_root = resource_root()?;
+    let state_root = state_root_for(&resource_root)?;
+    let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
     let tts = manifest.tts_policy;
-    let model_path = workspace_root.join(&tts.model_path);
-    let voices_path = workspace_root.join(&tts.voices_path);
-    let helper_path = workspace_root.join(&tts.helper_path);
+    let model_path = resource_root.join(&tts.model_path);
+    let voices_path = resource_root.join(&tts.voices_path);
+    let helper_path = resource_root.join(&tts.helper_path);
     if !model_path.exists() {
         return Err(format!("missing Kokoro model: {}", model_path.display()));
     }
@@ -1491,7 +1927,8 @@ fn kokoro_settings() -> Result<KokoroSettings, String> {
     }
 
     Ok(KokoroSettings {
-        workspace_root,
+        resource_root,
+        state_root,
         model_path,
         voices_path,
         helper_path,
@@ -1519,12 +1956,13 @@ fn synthesize_with_warm_kokoro(settings: &KokoroSettings, text: &str) -> Result<
 }
 
 fn start_kokoro_worker(settings: &KokoroSettings) -> Result<KokoroWorker, String> {
-    let python = std::env::var("IRIS_PYTHON").unwrap_or_else(|_| "python".to_string());
-    let mut command = Command::new(python);
+    let mut command = hermes_acp::python313_voice_command_for_script(
+        &settings.resource_root,
+        &settings.helper_path,
+    )?;
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
-        .arg(&settings.helper_path)
         .arg("--model")
         .arg(&settings.model_path)
         .arg("--voices")
@@ -1536,12 +1974,16 @@ fn start_kokoro_worker(settings: &KokoroSettings) -> Result<KokoroWorker, String
         .arg("--speed")
         .arg(settings.speed.to_string())
         .arg("--server")
-        .current_dir(&settings.workspace_root)
+        .current_dir(&settings.resource_root)
+        .env("IRIS_RESOURCE_ROOT", &settings.resource_root)
+        .env("IRIS_DATA_ROOT", &settings.state_root)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|err| format!("failed to start warm Kokoro helper: {err}"))?;
+    KOKORO_WORKER_PID.store(child.id(), Ordering::SeqCst);
 
     let stdin = child
         .stdin
@@ -1601,8 +2043,36 @@ impl KokoroWorker {
 
 impl Drop for KokoroWorker {
     fn drop(&mut self) {
+        let pid = self.child.id();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = KOKORO_WORKER_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+fn synthesis_is_current(synthesis_id: u64) -> bool {
+    synthesis_id > 0 && TTS_ACTIVE_SYNTHESIS_ID.load(Ordering::SeqCst) == synthesis_id
+}
+
+fn cancel_active_kokoro_process() -> bool {
+    let pid = KOKORO_WORKER_PID.swap(0, Ordering::SeqCst);
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        Command::new("taskkill.exe")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -1618,15 +2088,16 @@ fn synthesize_with_one_shot_kokoro(
     settings: &KokoroSettings,
     text: &str,
 ) -> Result<Vec<u8>, String> {
-    let tmp_dir = settings.workspace_root.join("tmp/tts");
+    let tmp_dir = settings.state_root.join("tmp/tts");
     fs::create_dir_all(&tmp_dir).map_err(|err| err.to_string())?;
     let output_path = tmp_dir.join(format!("iris-{}.wav", timestamp_ms()?));
-    let python = std::env::var("IRIS_PYTHON").unwrap_or_else(|_| "python".to_string());
-    let mut command = Command::new(python);
+    let mut command = hermes_acp::python313_voice_command_for_script(
+        &settings.resource_root,
+        &settings.helper_path,
+    )?;
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
-        .arg(&settings.helper_path)
         .arg("--model")
         .arg(&settings.model_path)
         .arg("--voices")
@@ -1639,12 +2110,17 @@ fn synthesize_with_one_shot_kokoro(
         .arg(settings.speed.to_string())
         .arg("--output")
         .arg(&output_path)
-        .current_dir(&settings.workspace_root)
+        .current_dir(&settings.resource_root)
+        .env("IRIS_RESOURCE_ROOT", &settings.resource_root)
+        .env("IRIS_DATA_ROOT", &settings.state_root)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to start Kokoro helper: {err}"))?;
+    let child_pid = child.id();
+    KOKORO_WORKER_PID.store(child_pid, Ordering::SeqCst);
 
     child
         .stdin
@@ -1656,7 +2132,9 @@ fn synthesize_with_one_shot_kokoro(
 
     let output = child
         .wait_with_output()
-        .map_err(|err| format!("failed to wait for Kokoro helper: {err}"))?;
+        .map_err(|err| format!("failed to wait for Kokoro helper: {err}"));
+    let _ = KOKORO_WORKER_PID.compare_exchange(child_pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+    let output = output?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let _ = fs::remove_file(&output_path);
@@ -1752,8 +2230,8 @@ fn _old_signature_anchor() {
 
 #[tauri::command]
 fn log_voice_diagnostic(event: VoiceDiagnosticEvent) -> Result<(), String> {
-    let workspace_root = workspace_root()?;
-    let diagnostics_dir = workspace_root.join("diagnostics");
+    let state_root = state_root()?;
+    let diagnostics_dir = state_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
     let session_id = record_diagnostic_activity(&diagnostics_dir, Some(&event.event), false)?;
     let log_path = diagnostics_dir.join("voice-events.jsonl");
@@ -1793,8 +2271,8 @@ fn voice_diagnostic_jsonl(
 
 #[tauri::command]
 fn log_voice_latency_report(trace: VoiceLatencyTrace) -> Result<String, String> {
-    let workspace_root = workspace_root()?;
-    let diagnostics_dir = workspace_root.join("diagnostics");
+    let state_root = state_root()?;
+    let diagnostics_dir = state_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
     let session_id = record_diagnostic_activity(&diagnostics_dir, None, true)?;
     let report = format_voice_latency_report(&session_id, &trace);
@@ -1819,7 +2297,9 @@ fn format_voice_latency_report(session_id: &str, trace: &VoiceLatencyTrace) -> S
 - LLM first token: {}\n\
 - LLM full response: {}\n\
 - TTS first audio: {}\n\
-- TTS full: {}\n\
+- TTS synthesis: {}\n\
+- TTS playback: {}\n\
+- TTS pipeline full: {}\n\
 - time to first spoken word: {}\n\
 - total turn time: {}",
         format_optional_ms(trace.speech_capture_ms),
@@ -1827,6 +2307,8 @@ fn format_voice_latency_report(session_id: &str, trace: &VoiceLatencyTrace) -> S
         format_optional_ms(trace.llm_first_token_ms),
         format_optional_ms(trace.llm_full_response_ms),
         format_optional_ms(trace.tts_first_audio_ms),
+        format_optional_ms(trace.tts_synthesis_ms),
+        format_optional_ms(trace.tts_playback_ms),
         format_optional_ms(trace.tts_full_ms),
         format_optional_ms(trace.time_to_first_spoken_word_ms),
         format_optional_ms(trace.total_turn_time_ms)
@@ -1972,13 +2454,13 @@ fn json_capped(value: &str) -> String {
 }
 
 fn memory_file_path() -> Result<std::path::PathBuf, String> {
-    Ok(workspace_root()?.join(".iris-data/memories.json"))
+    Ok(state_root()?.join(".iris-data/memories.json"))
 }
 
 fn dynamic_context_file_path(
     policy: &iris_config::DynamicContextPolicy,
 ) -> Result<std::path::PathBuf, String> {
-    Ok(workspace_root()?.join(&policy.storage_path))
+    state_relative_path(std::path::Path::new(&policy.storage_path))
 }
 
 fn load_dynamic_context_profile_or_default() -> Result<
@@ -1988,7 +2470,7 @@ fn load_dynamic_context_profile_or_default() -> Result<
     ),
     String,
 > {
-    let root = workspace_root()?;
+    let root = resource_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&root)?;
     let policy = manifest.dynamic_context_policy;
     let path = dynamic_context_file_path(&policy)?;
@@ -2057,7 +2539,7 @@ fn dynamic_context_instruction(now_ms: u64) -> Option<String> {
 }
 
 fn feedback_instruction_nonfatal() -> Option<String> {
-    match workspace_root()
+    match state_root()
         .and_then(|root| feedback::load_events(&root))
         .map(|events| feedback::instruction_block(&events))
     {
@@ -2108,7 +2590,7 @@ fn save_memories(memories: &[MemoryItem]) -> Result<(), String> {
 }
 
 fn staging_memory_file_path() -> Result<std::path::PathBuf, String> {
-    Ok(workspace_root()?.join(".iris-data/hermes_staging.json"))
+    Ok(state_root()?.join(".iris-data/hermes_staging.json"))
 }
 
 fn memory_archive_policy_snapshot() -> MemoryArchivePolicyResponse {
@@ -2586,7 +3068,7 @@ fn validate_hermes_provider_policy() -> Result<(), String> {
     if hermes_inference_provider() != "ollama" {
         return Err("Hermes inference provider must be ollama".to_string());
     }
-    let manifest = iris_config::load_manifest_from_workspace(workspace_root()?)?;
+    let manifest = iris_config::load_manifest_from_workspace(resource_root()?)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     settings.validate_loopback()?;
     Ok(())
@@ -2818,8 +3300,9 @@ fn json_error(status: &'static str, error: &str) -> (&'static str, String) {
 }
 
 fn hermes_status_snapshot() -> Result<HermesStatusResponse, String> {
-    let root = workspace_root()?;
-    let agentic_runtime = hermes_acp::runtime_status(&root);
+    let resources = resource_root()?;
+    let state = state_root_for(&resources)?;
+    let agentic_runtime = hermes_acp::runtime_status(&resources, &state);
     hermes_policy::set_agentic_runtime_available(agentic_runtime.installed);
     let policy = hermes_policy::snapshot(timestamp_ms()?)?;
     let (profile, tools, acting_tools) = match policy.mode {
@@ -2886,7 +3369,7 @@ fn hermes_status_snapshot() -> Result<HermesStatusResponse, String> {
 
 fn hermes_safety_audit_snapshot() -> Result<HermesSafetyAuditResponse, String> {
     validate_hermes_provider_policy()?;
-    let manifest = iris_config::load_manifest_from_workspace(workspace_root()?)?;
+    let manifest = iris_config::load_manifest_from_workspace(resource_root()?)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let runtime = if hermes_sidecar_running() {
         audit_hermes_runtime_tool_registry()?
@@ -2989,24 +3472,33 @@ fn start_hermes_sidecar() -> Result<(), String> {
         return Ok(());
     }
 
-    let root = workspace_root()?;
-    let script = root.join("plugins/hermes_sidecar/sidecar.py");
+    let resources = resource_root()?;
+    let writable = state_root_for(&resources)?;
+    let script = resources.join("plugins/hermes_sidecar/sidecar.py");
     if !script.exists() {
         return Err(format!(
             "Hermes sidecar script missing: {}",
             script.display()
         ));
     }
-    let python = std::env::var("IRIS_PYTHON").unwrap_or_else(|_| "python".to_string());
-    let mut command = Command::new(python);
+    let diagnostics = writable.join("diagnostics");
+    fs::create_dir_all(&diagnostics).map_err(|err| err.to_string())?;
+    let stderr = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(diagnostics.join("hermes-sidecar-stderr.log"))
+        .map_err(|err| format!("failed to open Hermes sidecar diagnostics: {err}"))?;
+    let mut command = hermes_acp::python313_command_for_script(&resources, &script)?;
     command
-        .arg(&script)
-        .current_dir(&root)
+        .current_dir(&resources)
+        .env("IRIS_RESOURCE_ROOT", &resources)
+        .env("IRIS_DATA_ROOT", &writable)
         .env("IRIS_HERMES_PROFILE", "iris_restricted")
         .env("IRIS_HERMES_BROKER_URL", "http://127.0.0.1:48731")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(stderr));
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
@@ -3143,7 +3635,7 @@ fn audit_hermes_runtime_tool_registry() -> Result<HermesRuntimeStatus, String> {
     if status.provider != "ollama_local" || status.model_source != "manifest.json" {
         return Err("Hermes runtime must use Iris manifest Ollama provider".to_string());
     }
-    let manifest = iris_config::load_manifest_from_workspace(workspace_root()?)?;
+    let manifest = iris_config::load_manifest_from_workspace(resource_root()?)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     if status.endpoint != settings.generate_url || status.model != settings.model_id {
         return Err(
@@ -3212,20 +3704,88 @@ fn trim_memory_cap(memories: &mut Vec<MemoryItem>) {
     }
 }
 
-fn workspace_root() -> Result<std::path::PathBuf, String> {
-    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
-    let manifest_path = iris_config::find_manifest_path(&cwd).or_else(|_| {
-        let exe = std::env::current_exe().map_err(|err| err.to_string())?;
-        iris_config::find_manifest_path(exe)
-    })?;
+fn resource_root() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    resource_root_from_executable(&exe)
+}
+
+fn resource_root_from_executable(
+    executable: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let executable_directory = executable
+        .parent()
+        .ok_or_else(|| "Iris executable path has no parent".to_string())?;
+    let manifest_path = iris_config::find_manifest_path(executable_directory)?;
     manifest_path
         .parent()
         .map(std::path::Path::to_path_buf)
         .ok_or_else(|| "manifest path has no parent".to_string())
 }
 
-fn generated_images_dir(workspace_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let dir = workspace_root.join(".iris-data/generated-images");
+fn state_root() -> Result<std::path::PathBuf, String> {
+    let resources = resource_root()?;
+    state_root_for(&resources)
+}
+
+fn state_root_for(resource_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    resolve_state_root(
+        resource_root,
+        std::env::var_os("IRIS_DATA_ROOT").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+        std::env::var_os("USERPROFILE").as_deref(),
+        &std::env::temp_dir(),
+    )
+}
+
+fn resolve_state_root(
+    resource_root: &std::path::Path,
+    configured_data_root: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+    user_profile: Option<&std::ffi::OsStr>,
+    temp_root: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(configured) = configured_data_root {
+        let configured = std::path::PathBuf::from(configured);
+        if configured.as_os_str().is_empty() || !configured.is_absolute() {
+            return Err("IRIS_DATA_ROOT must be a non-empty absolute path".to_string());
+        }
+        return Ok(configured);
+    }
+    if resource_root.join(".git").exists() {
+        return Ok(resource_root.to_path_buf());
+    }
+    for (base, leaf) in [(local_app_data, "Iris"), (user_profile, ".iris")] {
+        if let Some(base) = base {
+            let base = std::path::PathBuf::from(base);
+            if base.is_absolute() {
+                return Ok(base.join(leaf));
+            }
+        }
+    }
+    if temp_root.is_absolute() {
+        return Ok(temp_root.join("Iris"));
+    }
+    Err("Iris could not resolve a safe writable state directory".to_string())
+}
+
+fn state_relative_path(relative: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err("Iris state paths must stay relative to IRIS_DATA_ROOT".to_string());
+    }
+    Ok(state_root()?.join(relative))
+}
+
+fn generated_images_dir(state_root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let dir = state_root.join(".iris-data/generated-images");
     fs::create_dir_all(&dir).map_err(|err| format!("failed to create image output dir: {err}"))?;
     Ok(dir)
 }
@@ -3248,7 +3808,7 @@ fn save_camera_snapshot_diagnostic(
             MAX_IMAGE_PROBE_BYTES
         ));
     }
-    let diagnostics_root = workspace_root()?.join("diagnostics");
+    let diagnostics_root = state_root()?.join("diagnostics");
     write_camera_snapshot_diagnostic(
         &diagnostics_root,
         &image_bytes,
@@ -3264,7 +3824,7 @@ fn save_camera_capture_error_diagnostic(
     message: String,
     attempts: Vec<CameraDeviceAttemptDiagnostic>,
 ) -> Result<CameraCaptureErrorDiagnostic, String> {
-    let diagnostics_root = workspace_root()?.join("diagnostics");
+    let diagnostics_root = state_root()?.join("diagnostics");
     write_camera_capture_error_diagnostic(&diagnostics_root, message, attempts)
 }
 
@@ -3348,29 +3908,32 @@ fn generate_image_with_provider(
     }
 
     let prompt = normalize_image_generation_prompt(&request.prompt)?;
-    let root = workspace_root()?;
-    let provider_output = run_image_provider(&root, &prompt)?;
-    write_generated_image_response(&root, &prompt, provider_output, timestamp_ms()?)
+    let resources = resource_root()?;
+    let writable = state_root_for(&resources)?;
+    let provider_output = run_image_provider(&resources, &writable, &prompt)?;
+    write_generated_image_response(&writable, &prompt, provider_output, timestamp_ms()?)
 }
 
 fn run_image_provider(
-    workspace_root: &std::path::Path,
+    resource_root: &std::path::Path,
+    state_root: &std::path::Path,
     prompt: &str,
 ) -> Result<ImageProviderOutput, String> {
-    let script = workspace_root.join("tools/iris_image_provider.py");
+    let script = resource_root.join("tools/iris_image_provider.py");
     if !script.is_file() {
         return Err(format!(
             "Iris image provider helper is missing: {}",
             script.display()
         ));
     }
-    let python = image_provider_python(workspace_root);
-    let mut command = Command::new(python);
+    let mut command = hermes_acp::python313_command_for_script(resource_root, &script)?;
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
-        .arg(&script)
-        .current_dir(workspace_root)
+        .current_dir(resource_root)
+        .env("IRIS_RESOURCE_ROOT", resource_root)
+        .env("IRIS_DATA_ROOT", state_root)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -3410,21 +3973,8 @@ fn run_image_provider(
     Ok(parsed)
 }
 
-fn image_provider_python(workspace_root: &std::path::Path) -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("IRIS_PYTHON")
-        && !path.trim().is_empty()
-    {
-        return std::path::PathBuf::from(path);
-    }
-    let packaged = workspace_root.join(".iris-runtime/hermes/.venv/Scripts/python.exe");
-    if packaged.is_file() {
-        return packaged;
-    }
-    std::path::PathBuf::from("python")
-}
-
 fn write_generated_image_response(
-    workspace_root: &std::path::Path,
+    state_root: &std::path::Path,
     prompt: &str,
     provider_output: ImageProviderOutput,
     now_ms: u128,
@@ -3448,7 +3998,7 @@ fn write_generated_image_response(
         std::process::id(),
         extension
     );
-    let output_dir = generated_images_dir(workspace_root)?;
+    let output_dir = generated_images_dir(state_root)?;
     let output_path = output_dir.join(file_name);
     fs::write(&output_path, &image_bytes)
         .map_err(|err| format!("failed to write generated image: {err}"))?;
@@ -3542,8 +4092,8 @@ fn model_response(
     history: &[ConversationTurn],
     dynamic_context: Option<&str>,
 ) -> Result<iris_core_types::AssistantResponse, String> {
-    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
-    let manifest = iris_config::load_manifest_from_workspace(&cwd)?;
+    let resources = resource_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&resources)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
     let gated_context = iris_ui::gate_typed_text(text);
@@ -3567,6 +4117,42 @@ fn model_response(
         &memories,
         dynamic_context,
     ))
+}
+
+fn model_response_streaming(
+    text: &str,
+    history: &[ConversationTurn],
+    dynamic_context: Option<&str>,
+    cancellation: &AtomicBool,
+    on_chunk: impl FnMut(&str),
+) -> Result<iris_ollama::StreamingOutcome, String> {
+    let resources = resource_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&resources)?;
+    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+    let client = iris_ollama::OllamaClient::new(settings)?;
+    let gated_context = iris_ui::gate_typed_text(text);
+    let ollama_history = history
+        .iter()
+        .map(|turn| iris_ollama::ConversationTurn {
+            role: match turn.role {
+                ConversationRole::User => iris_ollama::ConversationRole::User,
+                ConversationRole::Iris => iris_ollama::ConversationRole::Iris,
+            },
+            text: turn.text.clone(),
+        })
+        .collect::<Vec<_>>();
+    let memories = load_memories()?
+        .into_iter()
+        .map(|memory| memory.text)
+        .collect::<Vec<_>>();
+    client.stream_response_with_dynamic_context_cancellable(
+        &gated_context,
+        &ollama_history,
+        &memories,
+        dynamic_context,
+        cancellation,
+        on_chunk,
+    )
 }
 
 fn image_probe_response(
@@ -3593,8 +4179,8 @@ fn image_probe_response(
         return Err("image probe supports png, jpg, jpeg, and webp files".to_string());
     }
 
-    let workspace_root = workspace_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+    let resource_root = resource_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
     Ok(client.respond_to_image_bytes_with_context(image_bytes, clean_prompt, dynamic_context))
@@ -3628,8 +4214,8 @@ fn screen_area_probe_response(
         ));
     }
 
-    let workspace_root = workspace_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&workspace_root)?;
+    let resource_root = resource_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
     Ok((
@@ -3659,7 +4245,7 @@ fn capture_screen_area_under_window(window: &IrisWindow) -> Result<ScreenAreaCap
     let _ = window.show();
     let _ = window.set_focus();
     let region = result?;
-    let diagnostics_root = workspace_root()?.join("diagnostics");
+    let diagnostics_root = state_root()?.join("diagnostics");
     let diagnostic_path = write_screen_capture_diagnostic(
         &diagnostics_root,
         position.x,
@@ -3982,7 +4568,6 @@ fn is_supported_image_name(image_name: &str) -> bool {
 
 #[derive(Debug, Clone, Copy)]
 enum CaptureEndpoint {
-    Fixed,
     Speech {
         min_ms: u64,
         trailing_silence_ms: u64,
@@ -4009,6 +4594,7 @@ fn record_microphone_mono_16khz(
     duration_ms: u64,
     endpoint: CaptureEndpoint,
     capture_epoch: u64,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
 ) -> Result<CapturedMicrophoneAudio, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -4070,8 +4656,14 @@ fn record_microphone_mono_16khz(
     stream
         .play()
         .map_err(|err| format!("failed to start microphone stream: {err}"))?;
-    let endpoint_result =
-        wait_for_capture_endpoint(&captured, sample_rate, duration_ms, endpoint, capture_epoch);
+    let endpoint_result = wait_for_capture_endpoint(
+        &captured,
+        sample_rate,
+        duration_ms,
+        endpoint,
+        capture_epoch,
+        on_likely_near_field_speech,
+    );
     drop(stream);
 
     if let Some(error) = error_state.lock().map_err(|err| err.to_string())?.clone() {
@@ -4114,22 +4706,9 @@ fn wait_for_capture_endpoint(
     max_ms: u64,
     endpoint: CaptureEndpoint,
     capture_epoch: u64,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
 ) -> SpeechEndpointResult {
     match endpoint {
-        CaptureEndpoint::Fixed => {
-            let started = Instant::now();
-            while started.elapsed().as_millis() < u128::from(max_ms)
-                && ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) == capture_epoch
-            {
-                thread::sleep(std::time::Duration::from_millis(30));
-            }
-            let end_sample = captured.lock().map(|samples| samples.len()).unwrap_or(0);
-            SpeechEndpointResult {
-                speech_detected: ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) == capture_epoch,
-                start_sample: 0,
-                end_sample,
-            }
-        }
         CaptureEndpoint::Speech {
             min_ms,
             trailing_silence_ms,
@@ -4137,11 +4716,14 @@ fn wait_for_capture_endpoint(
         } => wait_for_speech_endpoint(
             captured,
             sample_rate,
-            max_ms,
-            min_ms,
-            trailing_silence_ms,
-            start_timeout_ms,
+            AsrCaptureProfile {
+                duration_ms: max_ms,
+                min_ms,
+                trailing_silence_ms,
+                start_timeout_ms,
+            },
             capture_epoch,
+            on_likely_near_field_speech,
         ),
     }
 }
@@ -4149,20 +4731,24 @@ fn wait_for_capture_endpoint(
 fn wait_for_speech_endpoint(
     captured: &Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
-    max_ms: u64,
-    min_ms: u64,
-    trailing_silence_ms: u64,
-    start_timeout_ms: u64,
+    profile: AsrCaptureProfile,
     capture_epoch: u64,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
 ) -> SpeechEndpointResult {
     let started = Instant::now();
     let frame_samples = ((u128::from(sample_rate) * 30) / 1_000).max(1) as usize;
     let pre_roll_samples = ((u128::from(sample_rate) * 420) / 1_000) as usize;
-    let mut tracker =
-        SpeechEndpointTracker::new(sample_rate, min_ms, trailing_silence_ms, start_timeout_ms);
+    let mut tracker = SpeechEndpointTracker::new(
+        sample_rate,
+        profile.min_ms,
+        profile.trailing_silence_ms,
+        profile.start_timeout_ms,
+    );
+    let mut interruption_gate = InterruptionPauseGate::new();
+    let mut on_likely_near_field_speech = on_likely_near_field_speech;
     let mut processed_samples = 0_usize;
 
-    while started.elapsed().as_millis() < u128::from(max_ms) {
+    while started.elapsed().as_millis() < u128::from(profile.duration_ms) {
         if ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) != capture_epoch {
             return SpeechEndpointResult {
                 speech_detected: false,
@@ -4180,6 +4766,11 @@ fn wait_for_speech_endpoint(
             let frame_end = processed_samples + frame_samples;
             let frame = &snapshot[processed_samples..frame_end];
             processed_samples = frame_end;
+            if interruption_gate.observe(frame)
+                && let Some(onset) = on_likely_near_field_speech.as_deref_mut()
+            {
+                onset(started.elapsed().as_millis() as u64);
+            }
             if let Some(end_sample) = tracker.observe(frame, frame_end) {
                 return SpeechEndpointResult {
                     speech_detected: true,
@@ -4206,6 +4797,43 @@ fn wait_for_speech_endpoint(
             .unwrap_or(0)
             .saturating_sub(pre_roll_samples),
         end_sample: tracker.last_voice_sample.unwrap_or(processed_samples),
+    }
+}
+
+struct InterruptionPauseGate {
+    noise_floor: f32,
+    consecutive_frames: u8,
+    emitted: bool,
+}
+
+impl InterruptionPauseGate {
+    fn new() -> Self {
+        Self {
+            noise_floor: 0.003,
+            consecutive_frames: 0,
+            emitted: false,
+        }
+    }
+
+    fn observe(&mut self, frame: &[f32]) -> bool {
+        if self.emitted {
+            return false;
+        }
+        let frame_rms = rms(frame);
+        let frame_peak = peak_abs(frame);
+        let near_field_rms = (self.noise_floor * 4.0 + 0.004).clamp(0.018, 0.065);
+        let likely_near_field = frame_rms >= near_field_rms && frame_peak >= 0.065;
+        if likely_near_field {
+            self.consecutive_frames = self.consecutive_frames.saturating_add(1);
+        } else {
+            self.consecutive_frames = 0;
+            self.noise_floor = (self.noise_floor * 0.94 + frame_rms * 0.06).clamp(0.001, 0.035);
+        }
+        if self.consecutive_frames < 3 {
+            return false;
+        }
+        self.emitted = true;
+        true
     }
 }
 
@@ -4387,7 +5015,53 @@ fn whisper_initial_prompt(mode: Option<&str>) -> Option<&'static str> {
     }
 }
 
-fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackFrameAction {
+    Play,
+    Pause,
+    Cancel,
+}
+
+fn playback_frame_action(
+    playback_epoch: u64,
+    active_epoch: u64,
+    paused: bool,
+) -> PlaybackFrameAction {
+    if playback_epoch != active_epoch {
+        PlaybackFrameAction::Cancel
+    } else if paused {
+        PlaybackFrameAction::Pause
+    } else {
+        PlaybackFrameAction::Play
+    }
+}
+
+fn current_playback_frame_action(playback_epoch: u64) -> PlaybackFrameAction {
+    playback_frame_action(
+        playback_epoch,
+        TTS_PLAYBACK_EPOCH.load(Ordering::SeqCst),
+        TTS_PLAYBACK_PAUSED.load(Ordering::SeqCst),
+    )
+}
+
+fn playback_command_matches(active_playback_id: u64, requested_playback_id: u64) -> bool {
+    active_playback_id > 0 && active_playback_id == requested_playback_id
+}
+
+fn pause_command_is_stale(last_request_id: u64, requested_request_id: u64) -> bool {
+    requested_request_id == 0 || requested_request_id < last_request_id
+}
+
+#[cfg(test)]
+fn play_tts_wav_blocking(wav_bytes: &[u8], playback_epoch: u64) -> Result<(), String> {
+    play_tts_wav_blocking_with_onset(wav_bytes, playback_epoch, || {})
+}
+
+fn play_tts_wav_blocking_with_onset(
+    wav_bytes: &[u8],
+    playback_epoch: u64,
+    on_first_non_silent_frame: impl FnOnce(),
+) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let wav = parse_pcm_wav(wav_bytes)?;
@@ -4410,6 +5084,7 @@ fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
 
     let config = supported_config.config();
     let samples = Arc::new(samples);
+    let onset_sample_index = first_non_silent_sample_index(&samples);
     let cursor = Arc::new(AtomicUsize::new(0));
     let completion_sent = Arc::new(AtomicBool::new(false));
     let error_state = Arc::new(Mutex::new(None::<String>));
@@ -4424,7 +5099,14 @@ fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
             device.build_output_stream(
                 config,
                 move |data: &mut [f32], _| {
-                    fill_output_f32(data, &samples, &cursor, &completion_sent, &done_tx)
+                    fill_output_f32(
+                        data,
+                        &samples,
+                        &cursor,
+                        &completion_sent,
+                        &done_tx,
+                        playback_epoch,
+                    )
                 },
                 output_error_handler(Arc::clone(&error_state)),
                 None,
@@ -4438,7 +5120,14 @@ fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
             device.build_output_stream(
                 config,
                 move |data: &mut [i16], _| {
-                    fill_output_i16(data, &samples, &cursor, &completion_sent, &done_tx)
+                    fill_output_i16(
+                        data,
+                        &samples,
+                        &cursor,
+                        &completion_sent,
+                        &done_tx,
+                        playback_epoch,
+                    )
                 },
                 output_error_handler(Arc::clone(&error_state)),
                 None,
@@ -4452,7 +5141,14 @@ fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
             device.build_output_stream(
                 config,
                 move |data: &mut [u16], _| {
-                    fill_output_u16(data, &samples, &cursor, &completion_sent, &done_tx)
+                    fill_output_u16(
+                        data,
+                        &samples,
+                        &cursor,
+                        &completion_sent,
+                        &done_tx,
+                        playback_epoch,
+                    )
                 },
                 output_error_handler(Arc::clone(&error_state)),
                 None,
@@ -4466,17 +5162,51 @@ fn play_tts_wav_blocking(wav_bytes: &[u8]) -> Result<(), String> {
         .play()
         .map_err(|err| format!("failed to start output audio stream: {err}"))?;
     let output_frames = samples.len() / output_channels;
-    let timeout_ms =
-        ((output_frames as f64 / f64::from(output_rate)) * 1000.0).ceil() as u64 + 3_000;
-    done_rx
-        .recv_timeout(Duration::from_millis(timeout_ms.max(1_000)))
-        .map_err(|err| format!("timed out waiting for TTS playback to finish: {err}"))?;
+    let timeout_ms = ((output_frames as f64 / f64::from(output_rate)) * 1000.0).ceil() as u64
+        + 3_000
+        + TTS_NATIVE_PAUSE_ALLOWANCE_MS;
+    let timeout = Duration::from_millis(timeout_ms.max(1_000));
+    let deadline = Instant::now() + timeout;
+    let mut playback_finished_before_onset = false;
+    loop {
+        if cursor.load(Ordering::SeqCst) > onset_sample_index {
+            on_first_non_silent_frame();
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("timed out waiting for TTS playback onset".to_string());
+        }
+        match done_rx.recv_timeout(remaining.min(Duration::from_millis(5))) {
+            Ok(()) => {
+                playback_finished_before_onset = true;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("TTS playback completion channel disconnected".to_string());
+            }
+        }
+    }
+    if !playback_finished_before_onset {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        done_rx
+            .recv_timeout(remaining)
+            .map_err(|err| format!("timed out waiting for TTS playback to finish: {err}"))?;
+    }
     drop(stream);
 
     if let Some(error) = error_state.lock().map_err(|err| err.to_string())?.clone() {
         return Err(format!("output audio stream error: {error}"));
     }
     Ok(())
+}
+
+fn first_non_silent_sample_index(samples: &[f32]) -> usize {
+    samples
+        .iter()
+        .position(|sample| sample.abs() > 0.000_01)
+        .unwrap_or(0)
 }
 
 fn prepare_tts_output_samples(wav: &PcmWav, output_rate: u32, output_channels: usize) -> Vec<f32> {
@@ -4524,7 +5254,20 @@ fn fill_output_f32(
     cursor: &AtomicUsize,
     completion_sent: &AtomicBool,
     done_tx: &mpsc::Sender<()>,
+    playback_epoch: u64,
 ) {
+    match current_playback_frame_action(playback_epoch) {
+        PlaybackFrameAction::Cancel => {
+            data.fill(0.0);
+            notify_playback_stopped(completion_sent, done_tx);
+            return;
+        }
+        PlaybackFrameAction::Pause => {
+            data.fill(0.0);
+            return;
+        }
+        PlaybackFrameAction::Play => {}
+    }
     for sample in data {
         let index = cursor.fetch_add(1, Ordering::SeqCst);
         *sample = output_sample_at(samples, index);
@@ -4538,7 +5281,20 @@ fn fill_output_i16(
     cursor: &AtomicUsize,
     completion_sent: &AtomicBool,
     done_tx: &mpsc::Sender<()>,
+    playback_epoch: u64,
 ) {
+    match current_playback_frame_action(playback_epoch) {
+        PlaybackFrameAction::Cancel => {
+            data.fill(0);
+            notify_playback_stopped(completion_sent, done_tx);
+            return;
+        }
+        PlaybackFrameAction::Pause => {
+            data.fill(0);
+            return;
+        }
+        PlaybackFrameAction::Play => {}
+    }
     for sample in data {
         let index = cursor.fetch_add(1, Ordering::SeqCst);
         *sample = (output_sample_at(samples, index) * f32::from(i16::MAX)).round() as i16;
@@ -4552,7 +5308,20 @@ fn fill_output_u16(
     cursor: &AtomicUsize,
     completion_sent: &AtomicBool,
     done_tx: &mpsc::Sender<()>,
+    playback_epoch: u64,
 ) {
+    match current_playback_frame_action(playback_epoch) {
+        PlaybackFrameAction::Cancel => {
+            data.fill(u16::MAX / 2);
+            notify_playback_stopped(completion_sent, done_tx);
+            return;
+        }
+        PlaybackFrameAction::Pause => {
+            data.fill(u16::MAX / 2);
+            return;
+        }
+        PlaybackFrameAction::Play => {}
+    }
     for sample in data {
         let index = cursor.fetch_add(1, Ordering::SeqCst);
         let normalized = (output_sample_at(samples, index) + 1.0) * 0.5;
@@ -4572,6 +5341,12 @@ fn notify_playback_complete(
     done_tx: &mpsc::Sender<()>,
 ) {
     if index >= samples.len() && !completion_sent.swap(true, Ordering::SeqCst) {
+        let _ = done_tx.send(());
+    }
+}
+
+fn notify_playback_stopped(completion_sent: &AtomicBool, done_tx: &mpsc::Sender<()>) {
+    if !completion_sent.swap(true, Ordering::SeqCst) {
         let _ = done_tx.send(());
     }
 }
@@ -4666,11 +5441,12 @@ fn parse_pcm_wav(bytes: &[u8]) -> Result<PcmWav, String> {
 fn transcribe_local_whisper(
     audio: &[f32],
     initial_prompt: Option<&str>,
-    abort_after_ms: Option<u64>,
+    capture_epoch: u64,
+    profile: AsrTranscriptionProfile,
 ) -> Result<String, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-    let model_path = workspace_root()?.join("models/whisper/ggml-tiny.en.bin");
+    let model_path = resource_root()?.join("models/whisper/ggml-tiny.en.bin");
     if !model_path.exists() {
         return Err(format!("missing local ASR model: {}", model_path.display()));
     }
@@ -4679,12 +5455,31 @@ fn transcribe_local_whisper(
         .to_str()
         .ok_or_else(|| "ASR model path is not valid UTF-8".to_string())?;
     let slot = WHISPER_CONTEXT.get_or_init(|| Mutex::new(None));
-    let mut guard = slot.lock().map_err(|err| err.to_string())?;
+    let transcription_started = Instant::now();
+    let mut guard = loop {
+        match slot.try_lock() {
+            Ok(guard) => break guard,
+            Err(TryLockError::WouldBlock) => {
+                if asr_transcription_should_abort(
+                    transcription_started,
+                    profile.budget_ms,
+                    capture_epoch,
+                ) {
+                    return Err("Whisper transcription aborted while waiting for the model".into());
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(TryLockError::Poisoned(error)) => return Err(error.to_string()),
+        }
+    };
     if guard.is_none() {
         *guard = Some(
             WhisperContext::new_with_params(model_path_str, WhisperContextParameters::default())
                 .map_err(|err| format!("failed to load Whisper model: {err}"))?,
         );
+    }
+    if asr_transcription_should_abort(transcription_started, profile.budget_ms, capture_epoch) {
+        return Err("Whisper transcription aborted after model initialization".into());
     }
     let context = guard
         .as_ref()
@@ -4704,20 +5499,21 @@ fn transcribe_local_whisper(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
-    if abort_after_ms.is_some() {
-        params.set_audio_ctx(128);
-        params.set_max_len(24);
-        params.set_max_tokens(24);
+    if let Some(audio_ctx) = profile.audio_ctx {
+        params.set_audio_ctx(audio_ctx);
+    }
+    if let Some(max_len) = profile.max_len {
+        params.set_max_len(max_len);
+    }
+    if let Some(max_tokens) = profile.max_tokens {
+        params.set_max_tokens(max_tokens);
     }
     if let Some(initial_prompt) = initial_prompt {
         params.set_initial_prompt(initial_prompt);
     }
-    if let Some(abort_after_ms) = abort_after_ms {
-        let abort_started = Instant::now();
-        params.set_abort_callback_safe(move || {
-            abort_started.elapsed() >= Duration::from_millis(abort_after_ms)
-        });
-    }
+    params.set_abort_callback_safe(move || {
+        asr_transcription_should_abort(transcription_started, profile.budget_ms, capture_epoch)
+    });
 
     state
         .full(params, audio)
@@ -4730,6 +5526,15 @@ fn transcribe_local_whisper(
         .trim()
         .to_string();
     Ok(text)
+}
+
+fn asr_transcription_should_abort(
+    started: Instant,
+    budget_ms: Option<u64>,
+    capture_epoch: u64,
+) -> bool {
+    ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) != capture_epoch
+        || budget_ms.is_some_and(|budget_ms| started.elapsed() >= Duration::from_millis(budget_ms))
 }
 
 fn is_whisper_abort_error(error: &str) -> bool {
@@ -4850,6 +5655,7 @@ pub fn run() {
     {
         return;
     }
+    let _ = initialize_persisted_ollama_defaults();
     start_hermes_memory_broker_if_enabled();
     let result = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
         .setup(|app| {
@@ -4891,7 +5697,10 @@ pub fn run() {
             hermes_submit_agentic_task,
             hermes_submit_task,
             kokoro_tts_wav,
+            cancel_tts_playback,
+            cancel_model_generation,
             play_tts_wav,
+            set_tts_playback_paused,
             list_memories,
             log_voice_diagnostic,
             log_voice_latency_report,
@@ -4906,6 +5715,7 @@ pub fn run() {
             submit_image_probe,
             submit_screen_area_probe,
             submit_typed_hud,
+            submit_typed_hud_stream,
             validate_memory_archive_destination,
             warm_ollama_model,
             warm_kokoro_tts
@@ -4999,9 +5809,68 @@ mod tests {
     fn live_native_tts_playback_uses_default_output_device() {
         let _cleanup = KokoroTestCleanup;
         stop_kokoro_worker();
-        let response = kokoro_tts_wav_blocking("A B C D E F G. Iris audio test.".to_string())
-            .expect("synthesize native playback test wav");
-        play_tts_wav_blocking(&response.wav_bytes).expect("play synthesized speech natively");
+        let synthesis_id = 77;
+        TTS_ACTIVE_SYNTHESIS_ID.store(synthesis_id, Ordering::SeqCst);
+        let response =
+            kokoro_tts_wav_blocking("A B C D E F G. Iris audio test.".to_string(), synthesis_id)
+                .expect("synthesize native playback test wav");
+        TTS_ACTIVE_SYNTHESIS_ID.store(0, Ordering::SeqCst);
+        let playback_epoch = TTS_PLAYBACK_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+        play_tts_wav_blocking(&response.wav_bytes, playback_epoch)
+            .expect("play synthesized speech natively");
+    }
+
+    #[test]
+    fn tts_cancel_interrupts_synthesis_before_playback_starts() {
+        let synthesis_id = 91_337;
+        TTS_ACTIVE_PLAYBACK_ID.store(0, Ordering::SeqCst);
+        TTS_ACTIVE_SYNTHESIS_ID.store(synthesis_id, Ordering::SeqCst);
+        KOKORO_WORKER_PID.store(0, Ordering::SeqCst);
+
+        assert!(cancel_tts_playback(synthesis_id));
+        assert_eq!(TTS_ACTIVE_SYNTHESIS_ID.load(Ordering::SeqCst), 0);
+        assert!(!cancel_tts_playback(synthesis_id));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tts_cancel_terminates_only_the_owned_inflight_helper() {
+        let mut helper = Command::new("powershell.exe");
+        helper
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 20"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
+        let mut helper = helper.spawn().expect("spawn owned test helper");
+        let synthesis_id = 91_338;
+        TTS_ACTIVE_PLAYBACK_ID.store(0, Ordering::SeqCst);
+        TTS_ACTIVE_SYNTHESIS_ID.store(synthesis_id, Ordering::SeqCst);
+        KOKORO_WORKER_PID.store(helper.id(), Ordering::SeqCst);
+        let started = Instant::now();
+
+        assert!(cancel_tts_playback(synthesis_id));
+        let status = helper.wait().expect("wait for cancelled helper");
+
+        assert!(!status.success());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "owned synthesis helper cancellation was not prompt"
+        );
+    }
+
+    #[test]
+    fn streaming_model_errors_are_terminal_and_not_assistant_text() {
+        let response =
+            streaming_hud_response(Err("response ended before done marker".to_string()), 42);
+
+        assert!(response.text.is_empty());
+        assert!(!response.cancelled);
+        assert_eq!(response.model_elapsed_ms, 42);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("Local model unavailable: response ended before done marker")
+        );
     }
 
     #[test]
@@ -5263,7 +6132,9 @@ mod tests {
                 llm_first_token_ms: None,
                 llm_full_response_ms: Some(700),
                 tts_first_audio_ms: None,
-                tts_full_ms: Some(250),
+                tts_synthesis_ms: Some(90),
+                tts_playback_ms: Some(260),
+                tts_full_ms: Some(350),
                 time_to_first_spoken_word_ms: None,
                 total_turn_time_ms: Some(1_100),
             },
@@ -5278,7 +6149,9 @@ mod tests {
 - LLM first token: n/a\n\
 - LLM full response: 700ms\n\
 - TTS first audio: n/a\n\
-- TTS full: 250ms\n\
+- TTS synthesis: 90ms\n\
+- TTS playback: 260ms\n\
+- TTS pipeline full: 350ms\n\
 - time to first spoken word: n/a\n\
 - total turn time: 1100ms"
         );
@@ -5326,6 +6199,8 @@ mod tests {
         assert_eq!(output[preroll_samples + 1], 0.5);
         assert_eq!(output[preroll_samples + 2], -0.25);
         assert_eq!(output[preroll_samples + 3], -0.25);
+        assert_eq!(first_non_silent_sample_index(&output), preroll_samples);
+        assert_eq!(TTS_NATIVE_PREROLL_MS, 80);
     }
 
     #[test]
@@ -5441,6 +6316,110 @@ mod tests {
         assert_eq!(adaptive_speech_threshold(0.0), 0.010);
         assert!(adaptive_speech_threshold(0.02) > 0.04);
         assert_eq!(adaptive_speech_threshold(1.0), 0.055);
+    }
+
+    #[test]
+    fn interruption_pause_gate_requires_sustained_near_field_energy() {
+        let mut gate = InterruptionPauseGate::new();
+        let ambient = vec![0.006; 480];
+        for _ in 0..20 {
+            assert!(!gate.observe(&ambient));
+        }
+
+        let near_field = (0..480)
+            .map(|index| if index % 2 == 0 { 0.09 } else { -0.09 })
+            .collect::<Vec<_>>();
+        assert!(!gate.observe(&near_field));
+        assert!(!gate.observe(&near_field));
+        assert!(gate.observe(&near_field));
+        assert!(!gate.observe(&near_field));
+    }
+
+    #[test]
+    fn playback_control_rejects_stale_runs_and_pauses_without_cancelling() {
+        assert_eq!(
+            playback_frame_action(7, 7, false),
+            PlaybackFrameAction::Play
+        );
+        assert_eq!(
+            playback_frame_action(7, 7, true),
+            PlaybackFrameAction::Pause
+        );
+        assert_eq!(
+            playback_frame_action(7, 8, false),
+            PlaybackFrameAction::Cancel
+        );
+        assert!(playback_command_matches(42, 42));
+        assert!(!playback_command_matches(42, 41));
+        assert!(!playback_command_matches(0, 0));
+        assert!(!pause_command_is_stale(12, 13));
+        assert!(!pause_command_is_stale(13, 13));
+        assert!(pause_command_is_stale(13, 12));
+        assert!(pause_command_is_stale(0, 0));
+    }
+
+    #[test]
+    fn interruption_asr_has_strict_capture_and_decode_bounds() {
+        assert_eq!(INTERRUPTION_CAPTURE_MAX_MS, 1_200);
+        assert_eq!(INTERRUPTION_CAPTURE_START_TIMEOUT_MS, 600);
+        assert_eq!(INTERRUPTION_TRAILING_SILENCE_MS, 160);
+        assert_eq!(INTERRUPTION_MIN_SPEECH_MS, 120);
+        assert_eq!(
+            AsrTranscriptionProfile::INTERRUPTION,
+            AsrTranscriptionProfile {
+                budget_ms: Some(1_500),
+                audio_ctx: Some(64),
+                max_len: Some(24),
+                max_tokens: Some(12),
+                abort_is_empty: true,
+            }
+        );
+    }
+
+    #[test]
+    fn interruption_onset_event_exposes_ids_without_claiming_aec() {
+        let event = InterruptionOnsetEvent {
+            run_id: 9,
+            request_id: 17,
+            capture_elapsed_ms: 93,
+            aec_applied: false,
+        };
+        let json = serde_json::to_value(event).expect("serialize interruption onset");
+        assert_eq!(json["runId"], 9);
+        assert_eq!(json["requestId"], 17);
+        assert_eq!(json["captureElapsedMs"], 93);
+        assert_eq!(json["aecApplied"], false);
+    }
+
+    #[test]
+    fn model_chunk_event_exposes_request_id_and_exact_text() {
+        let event = ModelChunkEvent {
+            request_id: 42,
+            text: "Hello, ".to_string(),
+        };
+        let json = serde_json::to_value(event).expect("serialize model chunk");
+        assert_eq!(json["requestId"], 42);
+        assert_eq!(json["text"], "Hello, ");
+    }
+
+    #[test]
+    fn newer_model_generation_cancels_stale_work_without_cross_run_cancellation() {
+        let mut registry = ModelGenerationRegistry::default();
+        let first = registry.begin(11);
+        assert!(!first.load(Ordering::Acquire));
+
+        let second = registry.begin(12);
+        assert!(first.load(Ordering::Acquire));
+        assert!(!second.load(Ordering::Acquire));
+        assert!(!registry.cancel(11));
+        assert!(!second.load(Ordering::Acquire));
+        assert!(registry.cancel(12));
+        assert!(second.load(Ordering::Acquire));
+
+        registry.finish(11);
+        assert!(registry.cancel(12));
+        registry.finish(12);
+        assert!(!registry.cancel(12));
     }
 
     #[test]
@@ -5856,6 +6835,166 @@ mod tests {
     }
 
     #[test]
+    fn read_only_resources_remain_untouched_with_separate_writable_state() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-root-split-test-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        let resources = root.join("installed-resources");
+        let state = root.join("user-state");
+        fs::create_dir_all(&resources).expect("resource root");
+        fs::create_dir_all(&state).expect("state root");
+        let resource_marker = resources.join("manifest.json");
+        fs::write(&resource_marker, b"immutable").expect("resource marker");
+        let mut permissions = fs::metadata(&resource_marker)
+            .expect("resource marker metadata")
+            .permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&resource_marker, permissions).expect("read-only resource marker");
+
+        let resolved = resolve_state_root(
+            &resources,
+            Some(state.as_os_str()),
+            None,
+            None,
+            &root.join("temp"),
+        )
+        .expect("explicit state root");
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+        let generated = write_generated_image_response(
+            &resolved,
+            "state-root test",
+            ImageProviderOutput {
+                ok: true,
+                error: None,
+                image_b64: Some(png_b64.to_string()),
+                provider: Some("test".to_string()),
+                model: Some("test".to_string()),
+                size: Some("1x1".to_string()),
+                quality: Some("test".to_string()),
+                mime: Some("image/png".to_string()),
+                revised_prompt: None,
+            },
+            42,
+        )
+        .expect("generated image in state root");
+        feedback::capture_feedback(
+            &resolved,
+            feedback::FeedbackCapture {
+                rating: feedback::FeedbackRating::Up,
+                reason: Some("root split".to_string()),
+                correction: None,
+                user_text: "test".to_string(),
+                assistant_text: "test response".to_string(),
+                metadata: feedback::FeedbackTurnMetadata {
+                    turn_id: "root-split".to_string(),
+                    source: "test".to_string(),
+                    model_id: "test-model".to_string(),
+                    provider: "test-provider".to_string(),
+                    tools: Vec::new(),
+                    latency_ms: None,
+                },
+            },
+            42,
+        )
+        .expect("feedback in state root");
+
+        assert!(std::path::Path::new(&generated.saved_path).starts_with(&state));
+        assert!(state.join(".iris-data/feedback-events.jsonl").is_file());
+        assert!(!resources.join(".iris-data").exists());
+        assert!(!resources.join("diagnostics").exists());
+        assert!(!resources.join("tmp").exists());
+        assert_eq!(
+            fs::read(&resource_marker).expect("unchanged resource marker"),
+            b"immutable"
+        );
+
+        #[allow(clippy::permissions_set_readonly_false)]
+        {
+            let mut permissions = fs::metadata(&resource_marker)
+                .expect("resource marker metadata")
+                .permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(&resource_marker, permissions).expect("restore marker permissions");
+        }
+        fs::remove_dir_all(root).expect("remove root split test directory");
+    }
+
+    #[test]
+    fn state_root_resolution_preserves_source_compatibility_and_installed_fallbacks() {
+        let root =
+            std::env::temp_dir().join(format!("iris-state-resolution-test-{}", std::process::id()));
+        let source = root.join("source");
+        let installed = root.join("installed");
+        let local = root.join("local");
+        let profile = root.join("profile");
+        let temp = root.join("temp");
+        fs::create_dir_all(source.join(".git")).expect("source marker");
+        fs::create_dir_all(&installed).expect("installed root");
+
+        assert_eq!(
+            resolve_state_root(
+                &source,
+                None,
+                Some(local.as_os_str()),
+                Some(profile.as_os_str()),
+                &temp,
+            )
+            .expect("source state"),
+            source
+        );
+        assert_eq!(
+            resolve_state_root(
+                &installed,
+                None,
+                Some(local.as_os_str()),
+                Some(profile.as_os_str()),
+                &temp,
+            )
+            .expect("installed state"),
+            local.join("Iris")
+        );
+        assert!(
+            resolve_state_root(
+                &installed,
+                Some(std::ffi::OsStr::new("relative/path")),
+                Some(local.as_os_str()),
+                Some(profile.as_os_str()),
+                &temp,
+            )
+            .is_err()
+        );
+
+        fs::remove_dir_all(root).expect("remove state resolution test directory");
+    }
+
+    #[test]
+    fn resource_root_is_anchored_to_the_executable_not_the_process_cwd() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-resource-resolution-test-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        let installed = root.join("installed");
+        let attacker_cwd = root.join("untrusted-cwd");
+        let executable = installed.join("bin/iris-tauri.exe");
+        fs::create_dir_all(executable.parent().expect("executable parent")).expect("installed bin");
+        fs::create_dir_all(&attacker_cwd).expect("untrusted cwd");
+        fs::write(installed.join("manifest.json"), b"trusted package manifest")
+            .expect("installed manifest");
+        fs::write(attacker_cwd.join("manifest.json"), b"untrusted manifest")
+            .expect("untrusted manifest");
+
+        assert_eq!(
+            resource_root_from_executable(&executable).expect("resource root"),
+            installed
+        );
+
+        fs::remove_dir_all(root).expect("remove resource resolution test directory");
+    }
+
+    #[test]
     fn memory_archive_policy_is_disabled_encrypted_and_iris_owned() {
         let policy = memory_archive_policy_snapshot();
 
@@ -5908,6 +7047,24 @@ mod tests {
             "Local model unavailable: HTTP status client error (404 Not Found)"
         ));
         assert!(!is_local_model_unavailable_response("ready"));
+    }
+
+    #[test]
+    fn ollama_server_defaults_preserve_explicit_user_settings() {
+        assert_eq!(
+            select_ollama_server_setting(Some("0".to_string()), "1"),
+            "0"
+        );
+        assert_eq!(
+            select_ollama_server_setting(Some("f16".to_string()), "q8_0"),
+            "f16"
+        );
+        assert_eq!(
+            select_ollama_server_setting(Some("  ".to_string()), "q8_0"),
+            "q8_0"
+        );
+        assert_eq!(select_ollama_server_setting(None, "1"), "1");
+        assert_eq!(OLLAMA_PERSISTED_DEFAULT_COUNT, 2);
     }
 
     fn observe_level(

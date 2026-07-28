@@ -17,6 +17,18 @@ jobs:
     runs-on: windows-latest
     env:
       CARGO_TERM_COLOR: always
+      GGML_AVX: "ON"
+      GGML_AVX2: "ON"
+      GGML_AVX_VNNI: "OFF"
+      GGML_AVX512: "OFF"
+      GGML_AVX512_BF16: "OFF"
+      GGML_AVX512_VBMI: "OFF"
+      GGML_AVX512_VNNI: "OFF"
+      GGML_BMI2: "ON"
+      GGML_F16C: "ON"
+      GGML_FMA: "ON"
+      GGML_NATIVE: "OFF"
+      GGML_SSE42: "ON"
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
 
     steps:
@@ -32,7 +44,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install LLVM for whisper-rs bindgen
         shell: pwsh
@@ -50,24 +62,40 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      - name: Provision pinned Hermes runtimes
+      - name: Provision pinned Iris runtimes
         shell: pwsh
         run: |
-          python -m pip install uv
+          python -m pip install --disable-pip-version-check --no-input "uv==0.11.12"
+          $uvVersion = (& uv --version | Select-Object -First 1)
+          if ($uvVersion -notmatch "^uv 0\.11\.12\b") {
+            throw "Expected uv 0.11.12, found: $uvVersion"
+          }
           .\scripts\provision_hermes_acp.ps1
+          .\scripts\provision_iris_voice_runtime.ps1 -PythonPath (Get-Command python).Source
           .\scripts\provision_iris_browser.ps1
+
+      - name: Audit dependencies
+        shell: pwsh
+        run: |
+          .\scripts\test_model_asset_lock.ps1
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+          npm audit --audit-level=high
+          npm --prefix .\.iris-runtime\browser audit --audit-level=high
+          uvx --from pip-audit==2.10.1 pip-audit --require-hashes --disable-pip --progress-spinner off -r profiles\hermes_agent_python_3_13.lock.txt
+          uvx --from pip-audit==2.10.1 pip-audit --require-hashes --disable-pip --progress-spinner off -r profiles\iris_voice_python_3_13.lock.txt
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
       - name: Build Rust workspace
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       - name: Test Rust workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Run Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --locked -- -D warnings
 
       - name: Run voice tests
         run: npm run test:voice
@@ -75,13 +103,25 @@ jobs:
       - name: Run Python tests
         run: npm run test:python
 
+      - name: Run Windows delivery tests
+        shell: pwsh
+        run: |
+          npm run test:site
+          .\scripts\test_iris_data_root.ps1
+          .\scripts\test_iris_windows_update.ps1
+          .\scripts\test_windows_installer_path_safety.ps1
+          .\scripts\test_windows_launcher_defaults.ps1
+          .\scripts\test_windows_browser_payload.ps1
+          .\scripts\test_winget_manifests.ps1
+          .\scripts\test_windows_signed_installer_readiness.ps1
+
       - name: Run repository audit
-        run: cargo run -p xtask
+        run: cargo run --locked -p xtask
 
       - name: Run deterministic runtime checks
         shell: pwsh
         run: |
-          cargo run -p iris-runtime -- --dashboard-json
+          cargo run --locked -p iris-runtime -- --dashboard-json
           $stdoutPath = Join-Path $env:RUNNER_TEMP "iris-self-check-stdout.txt"
           $stderrPath = Join-Path $env:RUNNER_TEMP "iris-self-check-stderr.txt"
           $process = Start-Process -FilePath ".\target\debug\iris-runtime.exe" `
@@ -103,9 +143,11 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
-          cargo metadata --format-version 1 | Set-Content diagnostics\cargo-metadata.json
+          cargo metadata --locked --format-version 1 | Set-Content diagnostics\cargo-metadata.json
           npm ls --all --json | Set-Content diagnostics\npm-dependencies.json
+          npm --prefix .\.iris-runtime\browser ls --all --json | Set-Content diagnostics\browser-npm-dependencies.json
           uv pip list --python .\.iris-runtime\hermes\.venv\Scripts\python.exe --format freeze | Set-Content diagnostics\hermes-python-dependencies.txt
+          python -m pip list --path .\.iris-runtime\voice\Lib\site-packages --format freeze | Set-Content diagnostics\voice-python-dependencies.txt
 
       - name: Upload dependency inventory
         uses: actions/upload-artifact@v6
@@ -114,7 +156,9 @@ jobs:
           path: |
             diagnostics/cargo-metadata.json
             diagnostics/npm-dependencies.json
+            diagnostics/browser-npm-dependencies.json
             diagnostics/hermes-python-dependencies.txt
+            diagnostics/voice-python-dependencies.txt
 
       - name: Check whitespace
         run: git diff --check

@@ -13,7 +13,7 @@
   },
   "runtime": {
     "provider": "hermes_agent",
-    "version": "0.16.0",
+    "version": "0.18.0",
     "transport": "acp_stdio",
     "lifecycle_owner": "iris",
     "local_ollama_only": true,

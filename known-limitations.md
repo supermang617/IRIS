@@ -13,6 +13,11 @@ This repository is a Windows-only v1 local-first release.
 - Voice input requires the local Whisper model at `models/whisper/ggml-tiny.en.bin`.
 - Spoken output requires local Kokoro assets at `models/kokoro/kokoro-v1.0.onnx` and `models/kokoro/voices-v1.0.bin`.
 - Spoken output currently uses the Python `kokoro-onnx` helper with the `af_heart` voice.
+- Iris now starts interruption monitoring from measured native playback onset
+  and can cancel its owned synthesis helper before playback. It does not yet
+  implement true acoustic echo cancellation (AEC). Near-field energy gating
+  reduces self-triggering but cannot guarantee it on every speaker, room, and
+  microphone arrangement; headset use is the most reliable current path.
 - Ollama `/api/tags` may omit capability metadata for `huihui_ai/gemma-4-abliterated:e2b`; use `ollama show` or `/api/show` for the authoritative local capability check. The current manual-test machine verifies `completion`, `vision`, `audio`, `tools`, and `thinking` through `/api/show`. Voice capture remains handled by Iris ASR.
 - The configured Ollama model can inspect images, but open-ended geometric shape naming is not fully reliable. Manual release tests use a constrained known-fixture prompt for red-circle validation.
 - Dynamic system context uses deterministic lexical metrics rather than a
@@ -22,15 +27,17 @@ This repository is a Windows-only v1 local-first release.
 - Native Whisper ASR and Kokoro TTS are present.
 - Local memory exists, but active-memory promotion is intentionally bounded.
 - Safe Hermes is enabled by default for restricted local reasoning, RAG, staged memory proposals, and explicit web research. It is not an acting plugin system.
-- Off/Safe/Agentic Session policy, expiry, and the pinned Hermes Agent 0.16.0 ACP bridge are implemented. Agentic performs supervised local text, file, PowerShell, process, and isolated browser tasks, queries Iris-owned approved memory, and stages memory proposals with provenance.
+- Off/Safe/Agentic Session policy, expiry, and the provenance-pinned Hermes Agent 0.18.0 ACP bridge are implemented. Agentic performs supervised local text, file, PowerShell, process, and isolated browser tasks, queries Iris-owned approved memory, and stages memory proposals with provenance.
 - Agentic workspace containment is advisory rather than an OS sandbox. Scope-expanding and high-risk actions require separate approval and are recorded in a redacted audit.
 - Memory archive export is policy-gated and unavailable until real local encryption is implemented.
 - The preflight wizard is read-only. The setup wizard can run allowlisted installs/downloads only when the user explicitly approves them.
 - No system control in Safe mode. Agentic control is limited to the reviewed
   file, PowerShell, process, and isolated browser tools.
 - No clipboard access.
-- Agentic browser automation uses a dedicated Iris-owned Chrome for Testing
-  profile. It does not use the user's normal Chrome or Edge profile.
+- Agentic browser automation uses the WinGet-managed Microsoft Edge engine
+  with a dedicated Iris-owned profile. It never opens the user's normal Edge
+  or Chrome profile. `IRIS_BROWSER_EXECUTABLE_PATH` can select another
+  Chromium-compatible executable explicitly.
 - Safe mode has no general external network. Agentic browser research and
   recognized Safe primary-source release lookup are the documented exceptions.
 - Redaction is a defense layer, not a complete security boundary.

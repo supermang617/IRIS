@@ -21,9 +21,8 @@ assignees: ""
 - Ollama installed: PASS / FAIL / BLOCKED
 - Ollama reachable on `127.0.0.1:11434`: PASS / FAIL / BLOCKED
 - `huihui_ai/gemma-4-abliterated:e2b` available: PASS / FAIL / BLOCKED
-- Python installed: PASS / FAIL / BLOCKED
-- `kokoro_onnx` importable: PASS / FAIL / BLOCKED
-- `soundfile` importable: PASS / FAIL / BLOCKED
+- Exact Python 3.13 installed: PASS / FAIL / BLOCKED
+- Iris-owned voice layer audit: PASS / FAIL / BLOCKED
 - Microphone available: PASS / FAIL / BLOCKED
 - Speakers available: PASS / FAIL / BLOCKED
 - Camera available: PASS / FAIL / BLOCKED
@@ -37,13 +36,31 @@ assignees: ""
 | Extracted files present | PASS / FAIL / BLOCKED |  |
 | `.\Check Iris Preflight.bat` | PASS / FAIL / BLOCKED |  |
 | `.\Iris Setup Wizard.bat` | PASS / FAIL / BLOCKED |  |
-| `.\Start Iris.ps1 --self-check` | PASS / FAIL / BLOCKED |  |
+| `.\Start Iris.ps1 -SelfCheck` | PASS / FAIL / BLOCKED |  |
 | `.\Start Iris.bat` desktop launch | PASS / FAIL / BLOCKED |  |
 | Local Ollama text ask | PASS / FAIL / BLOCKED |  |
 | Image probe | PASS / FAIL / BLOCKED |  |
 | Voice/Kokoro speech | PASS / FAIL / BLOCKED |  |
+| Speech interruption before playback | PASS / FAIL / BLOCKED |  |
+| Speech interruption during playback | PASS / FAIL / BLOCKED |  |
 | Hermes/local-only boundary | PASS / FAIL / BLOCKED |  |
 | Shutdown/relaunch | PASS / FAIL / BLOCKED |  |
+
+## Acoustic Interruption Matrix
+
+Test the word `Iris`, `stop`, and `Iris stop` while Iris is speaking. Record
+false self-interruptions as well as missed interruptions.
+
+| Output / microphone setup | Volume | Distance | Result | False self-interruptions / latency notes |
+| --- | --- | --- | --- | --- |
+| Headset | 25% / 50% / 75% | normal | PASS / FAIL / BLOCKED |  |
+| Laptop speakers + built-in mic | 25% / 50% / 75% | normal | PASS / FAIL / BLOCKED |  |
+| External speakers + microphone | 25% / 50% / 75% | near / far | PASS / FAIL / BLOCKED |  |
+| Noisy room | 25% / 50% / 75% | near / far | PASS / FAIL / BLOCKED |  |
+
+Iris reports `aec=false` today. Do not record the acoustic matrix as fully
+passed unless every tested configuration is named; near-field gating is not
+the same as true acoustic echo cancellation.
 
 ## Failure Details
 

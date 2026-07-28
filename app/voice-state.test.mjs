@@ -3,6 +3,10 @@ import { test } from "node:test";
 import {
   classifyAsrError,
   classifyVoiceTranscript,
+  interruptionCandidatePauseAllowed,
+  interruptionCaptureAttemptAllowed,
+  interruptionRetryDelayMs,
+  interruptionSignalIsCurrent,
   nextVoiceListenMode,
   noSpeechStatusForMode,
   shouldDisarmWakeFollowupAfterMisses,
@@ -175,6 +179,34 @@ test("bare Iris interrupts only during speech interruption listening", () => {
   assert.equal(decision.source, "interruption");
 });
 
+test("wake-word interruption keeps the user's immediate correction", () => {
+  const decision = classifyVoiceTranscript(
+    "Iris, actually give me the shorter version",
+    {
+      voiceLoop: true,
+      wakeWord: true,
+      wakeCommandArmed: false,
+      interruptionOnly: true
+    }
+  );
+
+  assert.equal(decision.action, "interrupt");
+  assert.equal(decision.prompt, "actually give me the shorter version");
+  assert.equal(decision.source, "interruption");
+});
+
+test("stop interruption keeps an explicit follow-up request", () => {
+  const decision = classifyVoiceTranscript("stop, tell me just the answer", {
+    voiceLoop: true,
+    wakeWord: true,
+    wakeCommandArmed: false,
+    interruptionOnly: true
+  });
+
+  assert.equal(decision.action, "interrupt");
+  assert.equal(decision.prompt, "tell me just the answer");
+});
+
 test("embedded Iris interrupts during speech interruption listening", () => {
   const decision = classifyVoiceTranscript("- Stamps it. - Iris. - And these.", {
     voiceLoop: false,
@@ -184,6 +216,7 @@ test("embedded Iris interrupts during speech interruption listening", () => {
   });
 
   assert.equal(decision.action, "interrupt");
+  assert.equal(decision.prompt, "");
   assert.equal(decision.source, "interruption");
 });
 
@@ -197,6 +230,42 @@ test("speech interruption mode ignores non-interruption transcripts", () => {
 
   assert.equal(decision.action, "ignore");
   assert.equal(decision.source, "interruption");
+});
+
+test("current interruption onset belongs to the active speech capture", () => {
+  assert.equal(
+    interruptionSignalIsCurrent(
+      { runId: 8, requestId: 13 },
+      { activeRunId: 8, activeRequestId: 13, speaking: true }
+    ),
+    true
+  );
+});
+
+test("stale interruption signals cannot affect another speech run", () => {
+  const current = { activeRunId: 8, activeRequestId: 13, speaking: true };
+  assert.equal(interruptionSignalIsCurrent({ runId: 7, requestId: 13 }, current), false);
+  assert.equal(interruptionSignalIsCurrent({ runId: 8, requestId: 12 }, current), false);
+  assert.equal(
+    interruptionSignalIsCurrent(
+      { run_id: 8, request_id: 13 },
+      { ...current, speaking: false }
+    ),
+    false
+  );
+  assert.equal(interruptionSignalIsCurrent({ runId: "not-a-run", requestId: 13 }, current), false);
+});
+
+test("interruption retries and speculative pauses are bounded", () => {
+  assert.equal(interruptionCaptureAttemptAllowed(0), true);
+  assert.equal(interruptionCaptureAttemptAllowed(95), true);
+  assert.equal(interruptionCaptureAttemptAllowed(96), false);
+  assert.equal(interruptionCandidatePauseAllowed(0), true);
+  assert.equal(interruptionCandidatePauseAllowed(1), true);
+  assert.equal(interruptionCandidatePauseAllowed(2), false);
+  assert.equal(interruptionRetryDelayMs(0, 0), 100);
+  assert.equal(interruptionRetryDelayMs(6, 2), 600);
+  assert.equal(interruptionRetryDelayMs(500, 500), 600);
 });
 
 test("ambient captions are ignored in voice loop", () => {

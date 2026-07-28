@@ -15,6 +15,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    # A Windows PowerShell child started from PowerShell 7 can inherit PS7-only
+    # module roots ahead of the inbox Windows modules, which breaks autoloading.
+    # Keep this installer on the Windows PowerShell module set it was built for.
+    $windowsModuleRoots = @(
+        (Join-Path ([Environment]::GetFolderPath("MyDocuments")) "WindowsPowerShell\Modules"),
+        (Join-Path $env:ProgramFiles "WindowsPowerShell\Modules"),
+        (Join-Path $PSHOME "Modules")
+    ) | Select-Object -Unique
+    $env:PSModulePath = $windowsModuleRoots -join [System.IO.Path]::PathSeparator
+    Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+    Import-Module Microsoft.PowerShell.Archive -ErrorAction Stop
+}
+
 function Resolve-DefaultInstallRoot {
     if ($env:LOCALAPPDATA) {
         return (Join-Path $env:LOCALAPPDATA "Programs\Iris")
@@ -44,13 +58,21 @@ function Assert-ManagedInstallPath {
         $env:APPDATA,
         $env:USERPROFILE,
         ([System.IO.Path]::GetTempPath())
-    ) | Where-Object { $_ } | ForEach-Object { [System.IO.Path]::GetFullPath($_) }
+    ) |
+        Where-Object { $_ } |
+        ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd("\") } |
+        Select-Object -Unique
     foreach ($allowed in $allowedRoots) {
-        if ($resolved.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($resolved -ieq $allowed) {
+            throw "InstallRoot must be a dedicated child directory inside the current user's profile or temp folder: $resolved"
+        }
+    }
+    foreach ($allowed in $allowedRoots) {
+        if ($resolved.StartsWith($allowed + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
             return $resolved.TrimEnd("\")
         }
     }
-    throw "InstallRoot must be inside the current user's profile or temp folder: $resolved"
+    throw "InstallRoot must be a dedicated child directory inside the current user's profile or temp folder: $resolved"
 }
 
 function Read-ExpectedHash {
@@ -67,15 +89,22 @@ function Test-ReleaseRoot {
         "Iris Setup Wizard.ps1",
         "Iris Preflight.ps1",
         "Iris Document OCR.ps1",
+        "Initialize Iris Data Root.ps1",
+        "Update Iris.ps1",
         "manifest.json",
         "bin\iris-runtime.exe",
         "bin\iris-tauri.exe",
         "models\kokoro\kokoro-v1.0.onnx",
         "models\kokoro\voices-v1.0.bin",
         "models\whisper\ggml-tiny.en.bin"
-        ".iris-runtime\hermes\.venv\Scripts\python.exe"
+        ".iris-runtime\hermes\.venv\Lib\site-packages\hermes_agent-0.18.0.dist-info\METADATA"
+        ".iris-runtime\voice\Lib\site-packages\kokoro_onnx-0.5.0.dist-info\METADATA"
+        ".iris-runtime\voice\Lib\site-packages\soundfile-0.14.0.dist-info\METADATA"
+        ".iris-runtime\voice\Lib\site-packages\numpy-2.5.1.dist-info\METADATA"
+        ".iris-runtime\voice\Lib\site-packages\onnxruntime-1.28.0.dist-info\METADATA"
+        ".iris-runtime\voice\runtime-lock.txt"
+        "profiles\iris_voice_python_3_13.lock.txt"
         ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
-        ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe"
         ".iris-runtime\runtime-manifest.json"
     )) {
         Require-File -Path (Join-Path $Root $relative)
@@ -116,6 +145,7 @@ function Copy-ReleaseFiles {
         "Check Iris Preflight.bat",
         "Iris Preflight.ps1",
         "Iris Document OCR.ps1",
+        "Initialize Iris Data Root.ps1",
         "Iris Setup Wizard.bat",
         "Iris Setup Wizard.ps1",
         "LICENSE",
@@ -124,6 +154,8 @@ function Copy-ReleaseFiles {
         "SECURITY.md",
         "Start Iris.bat",
         "Start Iris.ps1",
+        "Update Iris.bat",
+        "Update Iris.ps1",
         "known-limitations.md",
         "manifest.json"
     )) {
@@ -131,145 +163,6 @@ function Copy-ReleaseFiles {
         if (Test-Path -LiteralPath $source -PathType Leaf) {
             Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $relative) -Force
         }
-    }
-}
-
-function Find-Python311Home {
-    $candidateExecutables = New-Object System.Collections.Generic.List[string]
-
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uv) {
-        try {
-            $uvPython = (& $uv.Source python find 3.11 2>$null | Select-Object -First 1)
-            if ($uvPython) {
-                $candidateExecutables.Add([string]$uvPython) | Out-Null
-            }
-        } catch {
-        }
-    }
-
-    try {
-        $pyPython = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-        if ($pyPython) {
-            $candidateExecutables.Add([string]$pyPython) | Out-Null
-        }
-    } catch {
-    }
-
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) {
-        try {
-            $pathPython = (& $python.Source -c "import sys; print(sys.executable if sys.version_info[:2] == (3, 11) else '')" 2>$null | Select-Object -First 1)
-            if ($pathPython) {
-                $candidateExecutables.Add([string]$pathPython) | Out-Null
-            }
-        } catch {
-        }
-    }
-
-    foreach ($globRoot in @(
-        (Join-Path $env:APPDATA "uv\python"),
-        (Join-Path $env:LOCALAPPDATA "uv\python")
-    )) {
-        if (Test-Path -LiteralPath $globRoot -PathType Container) {
-            foreach ($candidate in @(Get-ChildItem -LiteralPath $globRoot -Directory -Filter "cpython-3.11*" -ErrorAction SilentlyContinue)) {
-                $candidateExecutables.Add((Join-Path $candidate.FullName "python.exe")) | Out-Null
-            }
-        }
-    }
-    $candidateExecutables.Add((Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe")) | Out-Null
-
-    foreach ($candidate in @($candidateExecutables)) {
-        if (-not $candidate -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            continue
-        }
-        try {
-            $version = (& $candidate -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null | Select-Object -First 1)
-            if ($version -eq "3.11") {
-                return (Split-Path -Parent ([System.IO.Path]::GetFullPath($candidate)))
-            }
-        } catch {
-            continue
-        }
-    }
-
-    throw "Python 3.11 is required to repair the bundled Hermes Agent runtime. Install Python 3.11 or run uv python install 3.11, then run the Iris installer again."
-}
-
-function Invoke-InstallerProbe {
-    param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string]$Arguments,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [int]$TimeoutSeconds = 30
-    )
-
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $FilePath
-    $startInfo.WorkingDirectory = $WorkingDirectory
-    $startInfo.Arguments = $Arguments
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-
-    [void]$process.Start()
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        Stop-ProcessTree -ProcessId $process.Id
-        return [pscustomobject]@{
-            ExitCode = 124
-            Output = ""
-            Error = "timed out after $TimeoutSeconds seconds"
-        }
-    }
-
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        Output = $process.StandardOutput.ReadToEnd()
-        Error = $process.StandardError.ReadToEnd()
-    }
-}
-
-function Test-HermesVenv {
-    param([Parameter(Mandatory = $true)][string]$Root)
-    $python = Join-Path $Root ".iris-runtime\hermes\.venv\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        return $false
-    }
-    try {
-        $probe = Invoke-InstallerProbe `
-            -FilePath $python `
-            -Arguments '-c "import importlib.metadata as m; print(m.version(''hermes-agent'')); print(m.version(''agent-client-protocol''))"' `
-            -WorkingDirectory $Root `
-            -TimeoutSeconds 30
-        $normalized = $probe.Output.Trim().Replace("`r`n", "`n")
-        return ($probe.ExitCode -eq 0 -and $normalized -eq "0.16.0`n0.9.0")
-    } catch {
-        return $false
-    }
-}
-
-function Repair-HermesVenv {
-    param([Parameter(Mandatory = $true)][string]$Root)
-    if (Test-HermesVenv -Root $Root) {
-        return
-    }
-
-    $cfg = Join-Path $Root ".iris-runtime\hermes\.venv\pyvenv.cfg"
-    Require-File -Path (Join-Path $Root ".iris-runtime\hermes\.venv\Scripts\python.exe")
-    Require-File -Path $cfg
-
-    $pythonHome = Find-Python311Home
-    @(
-        "home = $pythonHome",
-        "implementation = CPython",
-        "version_info = 3.11",
-        "include-system-site-packages = false"
-    ) | Set-Content -LiteralPath $cfg -Encoding ascii
-
-    if (-not (Test-HermesVenv -Root $Root)) {
-        throw "Bundled Hermes Agent runtime could not be repaired against local Python 3.11."
     }
 }
 
@@ -303,6 +196,7 @@ param([switch]`$Quiet)
 foreach (`$shortcut in @(
     (Join-Path "$MenuDir" "Iris.lnk"),
     (Join-Path "$MenuDir" "Iris Setup Wizard.lnk"),
+    (Join-Path "$MenuDir" "Update Iris.lnk"),
     (Join-Path "$MenuDir" "Uninstall Iris.lnk"),
     (Join-Path "$DeskDir" "Iris.lnk")
 )) {
@@ -315,6 +209,7 @@ foreach (`$relative in @(
     "Check Iris Preflight.bat",
     "Iris Preflight.ps1",
     "Iris Document OCR.ps1",
+    "Initialize Iris Data Root.ps1",
     "Iris Setup Wizard.bat",
     "Iris Setup Wizard.ps1",
     "LICENSE",
@@ -323,6 +218,8 @@ foreach (`$relative in @(
     "SECURITY.md",
     "Start Iris.bat",
     "Start Iris.ps1",
+    "Update Iris.bat",
+    "Update Iris.ps1",
     "known-limitations.md",
     "manifest.json",
     "install-manifest.json"
@@ -359,13 +256,14 @@ function Invoke-InstalledSelfCheck {
 
     $launcher = Join-Path $InstallRoot "Start Iris.ps1"
     $powershell = (Get-Command powershell.exe).Source
-    $outputPath = Join-Path $InstallRoot "diagnostics\installer-self-check.log"
+    $selfCheckRoot = if ($env:IRIS_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT) } else { $InstallRoot }
+    $outputPath = Join-Path $selfCheckRoot "diagnostics\installer-self-check.log"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outputPath) | Out-Null
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $powershell
     $startInfo.WorkingDirectory = $InstallRoot
-    $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" --self-check"
+    $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`" -SelfCheck"
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
@@ -434,8 +332,16 @@ try {
     Write-Host "Target: $installRootResolved"
 
     Copy-ReleaseFiles -SourceRoot $sourceRoot -DestinationRoot $installRootResolved
-    Repair-HermesVenv -Root $installRootResolved
-
+    $dataRootInitializer = Join-Path $installRootResolved "Initialize Iris Data Root.ps1"
+    $defaultInstallRootResolved = [System.IO.Path]::GetFullPath((Resolve-DefaultInstallRoot)).TrimEnd("\")
+    if ($installRootResolved -ieq $defaultInstallRootResolved) {
+        $dataRoot = (& $dataRootInitializer -InstallRoot $installRootResolved -PersistForCurrentUser -PassThru | Select-Object -Last 1)
+    } else {
+        $dataRoot = (& $dataRootInitializer -InstallRoot $installRootResolved -PassThru | Select-Object -Last 1)
+    }
+    if (-not $dataRoot) {
+        throw "Iris per-user data root initialization did not return a path."
+    }
     if (-not $StartMenuDir) {
         $StartMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Iris"
     }
@@ -451,6 +357,7 @@ try {
         $powershell = (Get-Command powershell.exe).Source
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris Setup Wizard.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Iris Setup Wizard.ps1`"" -WorkingDirectory $installRootResolved
+        New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Update Iris.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Update Iris.ps1`"" -WorkingDirectory $installRootResolved
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Uninstall Iris.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Uninstall Iris.ps1`"" -WorkingDirectory $installRootResolved
         New-Shortcut -ShortcutPath (Join-Path $DesktopDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
     }
@@ -462,6 +369,7 @@ try {
         source_zip = $SourceZip
         start_menu_dir = $StartMenuDir
         desktop_dir = $DesktopDir
+        data_root = $dataRoot
         local_only_runtime = $true
         installer_dependency = "none"
     }
