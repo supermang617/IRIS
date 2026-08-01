@@ -19,6 +19,7 @@ foreach ($generatorFragment in @(
         "MSIX package identity must be ProjectIris.LocalAssistant",
         "MSIX processor architecture must be x64",
         "must contain exactly the three manifests",
+        '$manifestVersion = "1.10.0"',
         '$wingetManifestValidationWarning = -1978335192',
         '$PSNativeCommandUseErrorActionPreference = $false',
         "Manifest has the following dependencies that were not validated",

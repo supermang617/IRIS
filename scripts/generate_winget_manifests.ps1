@@ -13,7 +13,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $packageIdentifier = "AlejandroPinto.Iris"
-$manifestVersion = "1.12.0"
+$manifestVersion = "1.10.0"
 
 if ($PackageVersion -notmatch "^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$") {
     throw "PackageVersion must be a three-part numeric version such as 1.0.0. Mutable tags such as v1 cannot support WinGet upgrades."
