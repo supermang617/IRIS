@@ -25,7 +25,8 @@ Current public release rule:
 
 - Keep the existing `v1` release and verifier as a historical,
   backward-compatible download path.
-- Publish all new upgradeable releases under immutable monotonically increasing
+- Publish the first production-signed release as immutable `v1.0.0`, matching
+  the source version. Publish later releases under monotonically increasing
   semantic tags such as `v1.0.1`, `v1.0.2`, and `v1.1.0`.
 - Never move or replace a semantic tag after publication. WinGet cannot safely
   upgrade from repeatedly replaced `v1` assets.
@@ -58,6 +59,7 @@ cargo install cargo-audit --locked
 
 npm run test:voice
 npm run test:python
+npm run test:site
 cargo fmt --all -- --check
 cargo build --workspace --locked
 cargo test --workspace --locked
@@ -75,10 +77,16 @@ scripts\test_release_model_e2e.ps1
 scripts\test_windows_release_download.ps1
 scripts\test_windows_beginner_installer.ps1
 scripts\test_windows_installer.ps1
+scripts\test_windows_installer_path_safety.ps1
+scripts\test_windows_launcher_defaults.ps1
 scripts\test_iris_data_root.ps1
 scripts\test_iris_windows_update.ps1
 scripts\test_windows_browser_payload.ps1
+scripts\test_release_workflow.ps1
+scripts\test_voice_interruption_diagnostics.ps1
 scripts\test_winget_manifests.ps1
+scripts\test_windows_msix_lifecycle_guest_static.ps1
+scripts\test_windows_signed_installer_readiness.ps1
 git diff --check
 ```
 
@@ -164,9 +172,17 @@ Exit criteria:
 - Commit the release candidate atomically.
 - Push the verified commit.
 - Wait for CI and CodeQL success on that exact SHA.
-- Create a new immutable `vMAJOR.MINOR.PATCH` tag after verification.
+- Protect `main`, configure the owner-reviewed `iris-production-release`
+  environment, place signing values only in that environment, set
+  `IRIS_PRODUCTION_GATE_CONFIGURED=true`, and enable GitHub immutable releases.
+- Create a new protected `vMAJOR.MINOR.PATCH` tag after verification; the tag
+  becomes immutable only when its verified release is published.
 - Confirm the version is greater than every published WinGet package version.
 - Do not move or replace the tag after publishing it.
+- Owner-dispatch `.github/workflows/release.yml` with the existing tag. Confirm
+  its unsigned build, protected read-only signing, and credential-isolated
+  draft jobs all pass; it must produce a verified private draft and must not
+  publish it.
 - Confirm the release workflow uploads:
   - `iris-windows-installer.zip`
   - `iris-windows-installer.zip.sha256`
@@ -175,7 +191,29 @@ Exit criteria:
   - `install-iris-windows.ps1`
   - `install-iris-windows.ps1.sha256`
   - `iris-windows.msix` and SHA256 for a signed semantic release
+  - `iris-msix-signing.cer` and SHA256
   - `iris-winget-manifests.zip` and SHA256 for WinGet submission
+  - `iris-unsigned-build.json` with runner, tool, and dependency-lock provenance
+  - `iris-signed-build.json` from the protected signing run
+- Download the exact full production draft MSIX and run the documented Windows
+  App Certification Kit and lifecycle gate in an elevated active disposable
+  guest session; retain `iris-windows-wack-report.xml` whose
+  `REPORT.OVERALL_RESULT` is `PASS`.
+- Retain `iris-msix-lifecycle-evidence.json` schema 3, which must bind WACK to
+  the exact MSIX SHA-256 and report SHA-256 and prove exact-package install,
+  registered Windows activation, uninstall, and survival of Iris-created
+  `%LOCALAPPDATA%\Iris` state.
+- Do not manufacture a lower package for the first release. Test in-place
+  upgrade only when the first genuine higher semantic release exists, using
+  the previously published signed release as its baseline.
+- Publish with `scripts\publish_github_versioned_release.ps1`, supplying the
+  exact tag commit, successful protected workflow run ID, owner-pinned
+  certificate subject/thumbprint, lifecycle evidence, and the bound WACK PASS
+  report. The publisher binds every draft asset to that run's immutable
+  provenance, attaches both external evidence files and checksums, cleanly
+  validates WinGet, confirms protection and immutability settings before
+  publication, then verifies the public release, GitHub attestation, Latest
+  state, and immutability.
 - Download the assets back from GitHub and verify all published hashes.
 - For the existing historical release, retain
   `scripts\test_github_v1_release.ps1 -ExpectedCommit <release-sha>`.
@@ -183,14 +221,24 @@ Exit criteria:
 
   ```powershell
   scripts\test_github_versioned_release.ps1 `
-    -Tag v1.0.1 `
+    -Tag v1.0.0 `
     -ExpectedCommit <release-sha> `
+    -ExpectedPublisher "<exact certificate subject>" `
+    -ExpectedSignerThumbprint "<40-hex certificate thumbprint>" `
     -RequireSignedMsix `
     -RequireWingetBundle `
+    -RequireBuildProvenance `
+    -RequireLifecycleEvidence `
+    -RequireWackReport `
+    -RequireWingetClientValidation `
     -DownloadPayloads
   ```
 - Run the beginner install once from the downloaded GitHub asset, not a local
   build.
+- After public endpoint verification, update the site release manifest, page
+  metadata, JSON-LD, `llms.txt`, sitemap date, semantic asset URLs, and hashes
+  in a separate verified commit. Keep the site on truthful historical `v1`
+  metadata until that step is complete.
 - Update release notes with prerequisites, safety boundaries, known
   limitations, and uninstall instructions.
 
@@ -206,8 +254,11 @@ single-user release:
 
 - Obtain a production-trusted code-signing path.
 - Build and sign MSIX/App Installer assets.
-- Verify install, upgrade, uninstall, publisher identity, SmartScreen behavior,
-  and update rollback on a clean Windows VM.
+- For `v1.0.0`, verify install, registered launch, uninstall, state
+  preservation, publisher identity, and SmartScreen behavior on a clean
+  Windows VM.
+- For the first genuine higher release, additionally verify in-place upgrade
+  and update rollback from the prior published signed version.
 - Publish signed assets only after signature and package checks pass.
 - Generate and validate the WinGet submission bundle.
 - Submit the version folder to `microsoft/winget-pkgs`; do not claim

@@ -4,10 +4,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if ($Tag -notmatch "^v(?<version>[0-9]+\.[0-9]+\.[0-9]+)$") {
+if ($Tag -notmatch "^v(?<major>0|[1-9][0-9]*)\.(?<minor>0|[1-9][0-9]*)\.(?<patch>0|[1-9][0-9]*)$") {
     throw "Release tag must be immutable semantic version vMAJOR.MINOR.PATCH."
 }
-$expected = $Matches.version
+$expected = "$($Matches.major).$($Matches.minor).$($Matches.patch)"
+foreach ($component in @($Matches.major, $Matches.minor, $Matches.patch)) {
+    if ([uint64]$component -gt 65535) {
+        throw "Every release version component must fit the MSIX range 0-65535."
+    }
+}
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 
 $package = Get-Content -LiteralPath (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json

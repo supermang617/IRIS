@@ -34,9 +34,9 @@ This repository is a Windows-only v1 local-first release.
 - No system control in Safe mode. Agentic control is limited to the reviewed
   file, PowerShell, process, and isolated browser tools.
 - No clipboard access.
-- Agentic browser automation uses the WinGet-managed Microsoft Edge engine
-  with a dedicated Iris-owned profile. It never opens the user's normal Edge
-  or Chrome profile. `IRIS_BROWSER_EXECUTABLE_PATH` can select another
+- Agentic browser automation uses the WinGet-managed Google Chrome engine
+  with a dedicated Iris-owned profile. It never opens the user's normal Chrome
+  profile. `IRIS_BROWSER_EXECUTABLE_PATH` can select another
   Chromium-compatible executable explicitly.
 - Safe mode has no general external network. Agentic browser research and
   recognized Safe primary-source release lookup are the documented exceptions.

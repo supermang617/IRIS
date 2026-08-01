@@ -105,7 +105,10 @@ declares the required `unvirtualizedResources` restricted capability. This
 keeps the desktop app, external Python workers, portable updater, and future
 MSIX versions on the same real `%LOCALAPPDATA%\Iris` tree instead of a
 package-private copy that Windows could remove. A signed two-version upgrade
-and uninstall on a clean Windows VM remains a production release gate.
+and uninstall test is appropriate only after a genuine higher production
+version exists. The first signed release gate instead installs the exact full
+MSIX on a clean VM, launches Iris through its registered Windows identity,
+uninstalls it, and proves Iris-created state survives unchanged.
 
 Developer source checkouts remain repo-local when `.git` is present, preserving
 the existing source/debug workflow. Explicit `IRIS_DATA_ROOT` overrides both
@@ -169,12 +172,13 @@ multi-gigabyte network operation inside application startup. The pinned voice
 packages ship as an Iris-owned layer and update with Iris itself.
 
 WinGet upgrades require monotonically increasing package versions and immutable
-release URLs. New upgradeable releases therefore use tags such as `v1.0.1`;
-the historical mutable `v1` download remains a backward-compatible legacy path
-and must not be used in a WinGet manifest.
+release URLs. The first production package therefore uses `v1.0.0`, later
+upgradeable releases use tags such as `v1.0.1`, and the historical mutable
+`v1` download remains a backward-compatible legacy path that must not be used
+in a WinGet manifest.
 
 The Iris manifest declares only actual catalog-installable runtime packages:
-Microsoft Edge, WebView2, Ollama, exact Python 3.13, and Tesseract. Rust is a
+Google Chrome, WebView2, Ollama, exact Python 3.13, and Tesseract. Rust is a
 developer/build dependency. Hermes and voice Python packages ship inside Iris
 and run through the external Python 3.13 interpreter, while llama.cpp is
 managed inside Ollama. The multi-gigabyte Ollama model remains an explicit
@@ -192,13 +196,18 @@ Windows packaging removes the six macOS/Linux Agent Browser executables and
 retains the required Windows x64 executable. The release test fails if a
 foreign-platform binary returns.
 
+Automated release acceptance caps `iris-windows.zip` at 600 MiB and both the
+single-download beginner bundle and signed MSIX at 610 MiB. A deliberate
+capability or model change that cannot fit those ceilings requires a reviewed
+packaging decision, not silent release growth.
+
 Hermes packaging retains only `.venv\Lib\site-packages`. The unused virtual
 environment launcher, `pyvenv.cfg`, locale copies, and cache metadata are
 omitted; the release uses the independently updateable exact Python 3.13
 runtime instead of pretending the build-machine interpreter is portable.
 
 The release ships the pinned Windows agent-browser controller but not a
-duplicate browser engine. WinGet installs and updates Microsoft Edge; Iris
+duplicate browser engine. WinGet installs and updates Google Chrome; Iris
 launches it with a separate Iris-owned profile and never reuses the user's
 normal browser profile. This removes roughly 415 MiB uncompressed (about
 188 MiB from the ZIP in the measured v1 staging build) while retaining the

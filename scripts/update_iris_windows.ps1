@@ -86,7 +86,7 @@ if ($installedPackageExitCode -eq $wingetNoApplicationsFound) {
 
 if ($IncludeRuntimeDependencies) {
     foreach ($dependency in @(
-        "Microsoft.Edge",
+        "Google.Chrome",
         "Microsoft.EdgeWebView2Runtime",
         "Ollama.Ollama",
         "Python.Python.3.13",

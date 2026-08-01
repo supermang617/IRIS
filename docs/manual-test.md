@@ -78,6 +78,97 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 31. Enter `dynamic context off`, send another prompt, then confirm the
     observation count does not increase. Re-enable it with `dynamic context on`.
 
+## Speaker And Headset Interruption Matrix
+
+Run this matrix on physical hardware before a signed public release. Automated
+voice-state tests do not prove acoustic behavior. Use three fresh Iris
+processes and retain three separate logs per hardware condition; never mix
+silent, intended-interruption, and non-command trials in one session because
+their errors can numerically cancel each other:
+
+| Condition | Trials |
+| --- | --- |
+| Built-in speakers at 25% | 5 uninterrupted replies, 5 explicit interruptions, 2 non-command utterances |
+| Built-in speakers at 60% | 5 uninterrupted replies, 5 explicit interruptions, 2 non-command utterances |
+| Built-in speakers at 90% | 5 uninterrupted replies, 5 explicit interruptions, 2 non-command utterances |
+| Wired or USB headset | Same trials |
+| Bluetooth headset, if supported | Same trials |
+
+For each condition:
+
+1. Ask Iris for a response long enough to speak for at least 10 seconds.
+2. Start a fresh process for five silent replies. Iris must not pause or cancel
+   itself. Close Iris, retain the log as `<condition>-silent`, and summarize it
+   with `-ExpectedInterruptions 0`.
+3. Start a fresh process for five intended interruptions. Alternate `Iris`, `stop`, and
+   `Iris, actually explain the other option` near the beginning, middle, and end
+   of speech. Iris must pause promptly, confirm the utterance locally, stop, and
+   retain a spoken follow-up. Close Iris, retain the log as
+   `<condition>-intended`, and summarize it with `-ExpectedInterruptions 5`.
+4. Start a fresh process and twice speak a phrase that is not an interruption
+   command. A speculative
+   pause may occur, but playback must resume and must not be permanently
+   cancelled. Close Iris, retain the log as `<condition>-noncommand`, and
+   summarize it with `-ExpectedInterruptions 0`.
+5. Retain each fresh
+   `%LOCALAPPDATA%\Iris\diagnostics\voice-events.jsonl` before starting the next
+   run. Source runs use the configured `IRIS_DATA_ROOT`, normally the repository
+   `diagnostics` directory.
+6. Summarize each retained file:
+
+```powershell
+.\scripts\summarize_voice_interruption.ps1 `
+  -Path C:\IrisTest\speaker-60-intended\voice-events.jsonl `
+  -Label speaker-60-intended `
+  -ExpectedInterruptions 5
+```
+
+Release targets for each separate run are:
+
+- silent and non-command runs: zero cancellations and zero interruption errors;
+- intended run: all five intended interruptions detected and zero errors;
+- no permanent cancellation for either non-command utterance;
+- median capture-to-VAD at or below 350 ms;
+- median VAD-to-pause at or below 150 ms; and
+- median confirmed-interruption resolution at or below 1,200 ms.
+
+Do not add or claim acoustic echo cancellation merely because a VAD candidate
+occurred. Evidence supports true AEC work only when silent speaker trials
+reproducibly create unexpected pauses/cancellations, the rate rises with speaker
+volume, and the same trials do not fail on a headset. If speaker and headset
+conditions both fail, investigate microphone input, ASR, device routing, or
+thresholds first. Any true AEC implementation must use the native microphone
+capture plus the actual playback reference signal and must rerun this entire
+matrix; a browser `echoCancellation` flag alone is not proof of AEC.
+
+## Signed MSIX Certification Gate
+
+Run the release-only guest gauntlet in an elevated, active user session on the
+disposable Windows VM. It invokes the Windows App Certification Kit itself
+against the exact resolved signed draft MSIX before installation, requires a
+fresh report path, and refuses to create lifecycle evidence unless WACK reports
+`REPORT.OVERALL_RESULT=PASS`:
+
+```powershell
+$testContext = "iris-disposable-guest-$([guid]::NewGuid().ToString('N'))"
+$report = "C:\IrisTest\iris-v1.0.0-wack.xml"
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\test_windows_msix_lifecycle_guest.ps1 `
+  -MsixPath "C:\IrisTest\iris-windows.msix" `
+  -ExpectedPublisher "CN=YOUR EXACT CERTIFICATE SUBJECT" `
+  -ExpectedVersion "1.0.0.0" `
+  -TestContextId $testContext `
+  -WackReportPath $report `
+  -EvidencePath "C:\IrisTest\iris-msix-lifecycle-evidence.json" `
+  -ConfirmDisposableTestGuest
+```
+
+Both output paths must be new. Retain the XML report with the lifecycle
+evidence. Lifecycle schema 3 records the exact MSIX SHA-256 as both
+`release_sha256` and `wack_package_sha256`, plus the WACK report SHA-256 and
+length. The kit requires administrator rights and an active user session; a
+non-elevated source checkout is not a substitute for this signed-package gate.
+
 ## Hermes and Memory Boundary Checks
 
 Run these from `C:\Projects\IRIS` before opening the desktop shell:

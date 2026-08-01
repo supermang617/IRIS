@@ -8,6 +8,38 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $repoRoot
 
+function Get-PngDimensionsFromStream {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $header = New-Object byte[] 24
+    if ($Stream.Read($header, 0, $header.Length) -ne $header.Length) {
+        throw "PNG is too short to contain an IHDR header: $Name"
+    }
+    $signature = @(137, 80, 78, 71, 13, 10, 26, 10)
+    for ($index = 0; $index -lt $signature.Count; $index++) {
+        if ($header[$index] -ne $signature[$index]) {
+            throw "MSIX asset is not a valid PNG: $Name"
+        }
+    }
+    [pscustomobject]@{
+        Width = (
+            ($header[16] * 16777216) +
+            ($header[17] * 65536) +
+            ($header[18] * 256) +
+            $header[19]
+        )
+        Height = (
+            ($header[20] * 16777216) +
+            ($header[21] * 65536) +
+            ($header[22] * 256) +
+            $header[23]
+        )
+    }
+}
+
 $msixPath = Join-Path $repoRoot "release\dist\iris-windows.msix"
 $shaPath = "$msixPath.sha256"
 $certPath = Join-Path $repoRoot "release\dist\iris-msix-signing.cer"
@@ -17,6 +49,12 @@ foreach ($path in @($msixPath, $shaPath)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Missing signed MSIX artifact: $path"
     }
+}
+
+$maximumMsixBytes = 610MB
+$msixBytes = (Get-Item -LiteralPath $msixPath).Length
+if ($msixBytes -gt $maximumMsixBytes) {
+    throw "Signed Iris MSIX exceeds the 610 MiB release budget: $msixBytes bytes."
 }
 
 $expected = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split "\s+")[0]
@@ -31,6 +69,9 @@ if (-not $signature.SignerCertificate) {
 }
 if ($signature.Status -ne "Valid") {
     throw "MSIX signature status is not valid: $($signature.Status) $($signature.StatusMessage)"
+}
+if (-not $signature.TimeStamperCertificate) {
+    throw "MSIX signature has no trusted RFC 3161 timestamp."
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -70,6 +111,30 @@ try {
     }
     if ($ExpectedPackageVersion -and [string]$identity.Version -ne $ExpectedPackageVersion) {
         throw "MSIX version '$($identity.Version)' does not match expected version '$ExpectedPackageVersion'."
+    }
+    $logoAssets = [ordered]@{
+        "VFS/ProgramFilesX64/Iris/assets/iris-package-logo-50.png" = 50
+        "VFS/ProgramFilesX64/Iris/assets/iris-square-150.png" = 150
+        "VFS/ProgramFilesX64/Iris/assets/iris-square-44.png" = 44
+    }
+    foreach ($entryName in $logoAssets.Keys) {
+        $entry = $archive.GetEntry($entryName)
+        if (-not $entry) {
+            throw "Signed MSIX is missing required logo asset: $entryName"
+        }
+        $stream = $entry.Open()
+        try {
+            $dimensions = Get-PngDimensionsFromStream -Stream $stream -Name $entryName
+        } finally {
+            $stream.Dispose()
+        }
+        $expectedSize = [int]$logoAssets[$entryName]
+        if ($dimensions.Width -ne $expectedSize -or $dimensions.Height -ne $expectedSize) {
+            throw (
+                "Signed MSIX logo $entryName must be ${expectedSize}x$expectedSize, " +
+                "but is $($dimensions.Width)x$($dimensions.Height)."
+            )
+        }
     }
 } finally {
     $archive.Dispose()

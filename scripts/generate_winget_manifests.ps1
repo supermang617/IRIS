@@ -4,6 +4,7 @@ param(
     [string]$InstallerUrl = "",
     [string]$OutputRoot = "",
     [string]$ReleaseDate = "",
+    [string]$ExpectedPublisher = "",
     [switch]$SkipWingetValidation,
     [switch]$AllowUnsignedTestArtifact
 )
@@ -15,7 +16,7 @@ $packageIdentifier = "AlejandroPinto.Iris"
 $manifestVersion = "1.12.0"
 
 if ($PackageVersion -notmatch "^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$") {
-    throw "PackageVersion must be a three-part numeric version such as 1.0.1. Mutable tags such as v1 cannot support WinGet upgrades."
+    throw "PackageVersion must be a three-part numeric version such as 1.0.0. Mutable tags such as v1 cannot support WinGet upgrades."
 }
 foreach ($part in $PackageVersion.Split(".")) {
     if ([int64]$part -gt 65535) {
@@ -49,6 +50,22 @@ if (-not $signature.SignerCertificate -and -not $AllowUnsignedTestArtifact) {
 }
 if ($signature.SignerCertificate -and $signature.Status -ne "Valid" -and -not $AllowUnsignedTestArtifact) {
     throw "MSIX signature is not valid on this machine: $($signature.Status) $($signature.StatusMessage)"
+}
+if (
+    -not $AllowUnsignedTestArtifact -and
+    -not $signature.TimeStamperCertificate
+) {
+    throw "WinGet manifests require an MSIX with a trusted RFC 3161 timestamp."
+}
+if (-not $AllowUnsignedTestArtifact -and -not $ExpectedPublisher.Trim()) {
+    throw "ExpectedPublisher must be the exact production signing certificate subject."
+}
+if (
+    $ExpectedPublisher -and
+    $signature.SignerCertificate -and
+    [string]$signature.SignerCertificate.Subject -cne $ExpectedPublisher
+) {
+    throw "MSIX signer '$($signature.SignerCertificate.Subject)' does not match ExpectedPublisher '$ExpectedPublisher'."
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -88,11 +105,20 @@ try {
             $reader.Dispose()
         }
         $identity = $appxManifest.Package.Identity
+        if ([string]$identity.Name -cne "ProjectIris.LocalAssistant") {
+            throw "MSIX package identity must be ProjectIris.LocalAssistant."
+        }
+        if ([string]$identity.ProcessorArchitecture -cne "x64") {
+            throw "MSIX processor architecture must be x64."
+        }
         if ([string]$identity.Publisher -cne [string]$signature.SignerCertificate.Subject) {
             throw "MSIX manifest publisher does not match its signing certificate subject."
         }
+        if ($ExpectedPublisher -and [string]$identity.Publisher -cne $ExpectedPublisher) {
+            throw "MSIX manifest publisher does not match ExpectedPublisher."
+        }
         $expectedMsixVersion = "$PackageVersion.0"
-        if ([string]$identity.Version -ne $expectedMsixVersion) {
+        if ([string]$identity.Version -cne $expectedMsixVersion) {
             throw "MSIX version $($identity.Version) does not match WinGet version $PackageVersion (expected MSIX $expectedMsixVersion)."
         }
     }
@@ -104,13 +130,18 @@ if (-not $OutputRoot) {
     $OutputRoot = Join-Path $repoRoot "release\dist\winget"
 }
 $output = [System.IO.Path]::GetFullPath($OutputRoot).TrimEnd("\")
+$manifestsRoot = Join-Path $output "manifests"
+$manifestsRootResolved = [System.IO.Path]::GetFullPath($manifestsRoot)
+if (-not $manifestsRootResolved.StartsWith($output + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to replace WinGet manifests outside OutputRoot: $manifestsRootResolved"
+}
 $versionRoot = Join-Path $output "manifests\a\AlejandroPinto\Iris\$PackageVersion"
 $versionRootResolved = [System.IO.Path]::GetFullPath($versionRoot)
 if (-not $versionRootResolved.StartsWith($output + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to generate WinGet manifests outside OutputRoot: $versionRootResolved"
 }
-if (Test-Path -LiteralPath $versionRootResolved) {
-    Remove-Item -LiteralPath $versionRootResolved -Recurse -Force
+if (Test-Path -LiteralPath $manifestsRootResolved) {
+    Remove-Item -LiteralPath $manifestsRootResolved -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $versionRootResolved | Out-Null
 
@@ -139,7 +170,7 @@ UpgradeBehavior: install
 MinimumOSVersion: 10.0.19041.0
 Dependencies:
   PackageDependencies:
-    - PackageIdentifier: Microsoft.Edge
+    - PackageIdentifier: Google.Chrome
     - PackageIdentifier: Microsoft.EdgeWebView2Runtime
     - PackageIdentifier: Ollama.Ollama
     - PackageIdentifier: Python.Python.3.13
@@ -150,6 +181,7 @@ Installers:
     InstallerSha256: $installerSha256
 $signatureLine    RestrictedCapabilities:
       - runFullTrust
+      - unvirtualizedResources
     ReleaseDate: $ReleaseDate
 ManifestType: installer
 ManifestVersion: $manifestVersion
@@ -168,22 +200,48 @@ PublisherSupportUrl: https://github.com/supermang617/IRIS/issues
 Author: Alejandro Pinto
 PackageName: Iris
 PackageUrl: https://supermang617.github.io/IRIS/
+PrivacyUrl: https://github.com/supermang617/IRIS/blob/main/PRIVACY.md
 License: MIT
 LicenseUrl: https://github.com/supermang617/IRIS/blob/main/LICENSE
 Copyright: Copyright (c) Alejandro Pinto
+CopyrightUrl: https://github.com/supermang617/IRIS/blob/main/LICENSE
 ShortDescription: Local-first Windows companion assistant with voice, vision, memory, and approval-gated agent tools.
-Description: Iris is a local-first Windows companion assistant using Ollama, native Whisper ASR, Kokoro speech, private local memory, vision, and explicitly approved Hermes tools.
+Description: >-
+  Iris is a local-first Windows companion assistant using Ollama, native
+  Whisper ASR, Kokoro speech, private local memory, vision, and explicitly
+  approved Hermes tools.
 Moniker: iris
 Tags:
   - ai
   - assistant
+  - desktop-assistant
+  - hermes
   - local-ai
+  - local-first
+  - local-llm
+  - memory
   - ollama
   - privacy
-  - voice
+  - speech-to-text
+  - text-to-speech
+  - vision
+  - voice-assistant
+  - windows
+  - windows-ai
+ReleaseNotes: >-
+  Iris $PackageVersion is the signed Windows release represented by this
+  manifest. See the versioned GitHub release for its verified assets, changes,
+  requirements, and known limitations.
 ReleaseNotesUrl: https://github.com/supermang617/IRIS/releases/tag/v$PackageVersion
+Documentations:
+  - DocumentLabel: Download and setup guide
+    DocumentUrl: https://github.com/supermang617/IRIS/blob/main/docs/download-and-run.md
+  - DocumentLabel: Security policy
+    DocumentUrl: https://github.com/supermang617/IRIS/security/policy
+  - DocumentLabel: WinGet release and upgrade guide
+    DocumentUrl: https://github.com/supermang617/IRIS/blob/main/docs/winget-release.md
 InstallationNotes: >-
-  For full local text and vision, run `ollama pull huihui_ai/gemma-4-abliterated:e2b`, then launch Iris from the Windows Start menu. Iris includes its pinned Python voice packages; Microsoft Edge supplies the separately isolated browser engine. The Ollama model uses several gigabytes. Portable or legacy-install diagnostics use Start Iris.ps1 -SelfCheck.
+  For full local text and vision, run `ollama pull huihui_ai/gemma-4-abliterated:e2b`, then launch Iris from the Windows Start menu. Iris includes its pinned Python voice packages; Google Chrome supplies the separately isolated browser engine, while WebView2 powers the Iris desktop shell. The Ollama model uses several gigabytes. Portable or legacy-install diagnostics use Start Iris.ps1 -SelfCheck.
 ManifestType: defaultLocale
 ManifestVersion: $manifestVersion
 "@
@@ -199,9 +257,16 @@ $localePath = Join-Path $versionRootResolved "$packageIdentifier.locale.en-US.ya
 if (-not $SkipWingetValidation) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
-        & $winget.Source validate --manifest $versionRootResolved --disable-interactivity
-        if ($LASTEXITCODE -ne 0) {
-            throw "winget validate failed with exit code $LASTEXITCODE"
+        $validationOutput = @(& $winget.Source validate --manifest $versionRootResolved --disable-interactivity 2>&1)
+        $validationExitCode = $LASTEXITCODE
+        foreach ($line in $validationOutput) {
+            Write-Host ([string]$line)
+        }
+        $warningLines = @($validationOutput |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { $_.StartsWith("Manifest Warning:", [System.StringComparison]::Ordinal) })
+        if ($validationExitCode -ne 0 -or $warningLines.Count -ne 0) {
+            throw "winget validate failed with exit code $validationExitCode"
         }
     } else {
         Write-Warning "winget.exe is unavailable; local invariants passed but official client validation was skipped."
@@ -214,6 +279,28 @@ if (Test-Path -LiteralPath $bundlePath) {
     Remove-Item -LiteralPath $bundlePath -Force
 }
 Compress-Archive -Path (Join-Path $output "manifests\*") -DestinationPath $bundlePath -Force
+$bundleArchive = [System.IO.Compression.ZipFile]::OpenRead($bundlePath)
+try {
+    $bundleEntries = @(
+        $bundleArchive.Entries |
+            Where-Object { -not [string]::IsNullOrEmpty([string]$_.Name) } |
+            ForEach-Object { ([string]$_.FullName).Replace("\", "/") } |
+            Sort-Object
+    )
+    $expectedBundleEntries = @(
+        "a/AlejandroPinto/Iris/$PackageVersion/$packageIdentifier.installer.yaml",
+        "a/AlejandroPinto/Iris/$PackageVersion/$packageIdentifier.locale.en-US.yaml",
+        "a/AlejandroPinto/Iris/$PackageVersion/$packageIdentifier.yaml"
+    ) | Sort-Object
+    if (
+        $bundleEntries.Count -ne $expectedBundleEntries.Count -or
+        (Compare-Object -ReferenceObject $expectedBundleEntries -DifferenceObject $bundleEntries)
+    ) {
+        throw "WinGet submission bundle must contain exactly the three manifests for $PackageVersion."
+    }
+} finally {
+    $bundleArchive.Dispose()
+}
 $bundleHash = (Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $bundleShaPath -Value "$bundleHash  iris-winget-manifests.zip" -Encoding ascii
 

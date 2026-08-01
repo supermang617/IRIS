@@ -166,7 +166,8 @@ try {
         $runtimeManifest.hermes_agent.bundled_interpreter -ne $false -or
         $agentBrowserHash -ne $runtimeManifest.agent_browser.binary_sha256 -or
         $runtimeManifest.system_browser.bundled -ne $false -or
-        $runtimeManifest.system_browser.winget_package -ne "Microsoft.Edge" -or
+        $runtimeManifest.system_browser.preferred -ne "Google Chrome" -or
+        $runtimeManifest.system_browser.winget_package -ne "Google.Chrome" -or
         $runtimeManifest.system_browser.isolated_profile -ne $true) {
         throw "Installed Agentic runtime version/hash verification failed."
     }
@@ -188,7 +189,7 @@ try {
         throw "Installed voice runtime version/hash verification failed."
     }
     if (Test-Path -LiteralPath (Join-Path $installRoot ".iris-runtime\browser\browsers")) {
-        throw "Installed payload duplicates a browser instead of using the isolated system Edge runtime."
+        throw "Installed payload duplicates a browser instead of using the isolated system Chrome runtime."
     }
     $installManifest = Get-Content -LiteralPath (Join-Path $installRoot "install-manifest.json") -Raw | ConvertFrom-Json
     if ([System.IO.Path]::GetFullPath([string]$installManifest.data_root) -ine [System.IO.Path]::GetFullPath($dataRoot)) {

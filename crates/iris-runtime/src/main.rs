@@ -215,8 +215,8 @@ fn validate_agentic_prerequisites(workspace_root: &Path) -> Result<(), String> {
     let agent_browser = workspace_root
         .join(".iris-runtime/browser/node_modules/agent-browser/bin/agent-browser-win32-x64.exe");
     require_nonempty_file("agent-browser", &agent_browser)?;
-    let browser_executable = find_system_browser_executable()?;
-    require_nonempty_file("system Edge/Chrome", &browser_executable)?;
+    let browser_executable = find_browser_executable(workspace_root)?;
+    require_nonempty_file("Chrome browser", &browser_executable)?;
 
     let browser = Command::new(&agent_browser)
         .arg("--version")
@@ -230,21 +230,18 @@ fn validate_agentic_prerequisites(workspace_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn find_system_browser_executable() -> Result<PathBuf, String> {
+fn find_browser_executable(workspace_root: &Path) -> Result<PathBuf, String> {
     if let Some(configured) = std::env::var_os("IRIS_BROWSER_EXECUTABLE_PATH") {
         let configured = PathBuf::from(configured);
         if !configured.is_absolute() || !configured.is_file() {
             return Err(
-                "IRIS_BROWSER_EXECUTABLE_PATH must name an absolute existing Edge/Chrome executable"
+                "IRIS_BROWSER_EXECUTABLE_PATH must name an absolute existing compatible Chrome/Chromium executable"
                     .to_string(),
             );
         }
         return Ok(configured);
     }
     for (variable, relative) in [
-        ("ProgramFiles(x86)", "Microsoft/Edge/Application/msedge.exe"),
-        ("ProgramFiles", "Microsoft/Edge/Application/msedge.exe"),
-        ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
         ("ProgramFiles", "Google/Chrome/Application/chrome.exe"),
         ("ProgramFiles(x86)", "Google/Chrome/Application/chrome.exe"),
         ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
@@ -256,8 +253,13 @@ fn find_system_browser_executable() -> Result<PathBuf, String> {
             }
         }
     }
+    let development_fallback =
+        workspace_root.join(".iris-runtime/browser/browsers/chrome-149.0.7827.115/chrome.exe");
+    if development_fallback.is_file() {
+        return Ok(development_fallback);
+    }
     Err(
-        "Microsoft Edge is required for Iris browser tools. Install Microsoft.Edge with WinGet."
+        "Google Chrome is required for Iris browser tools. Install Google.Chrome with WinGet."
             .to_string(),
     )
 }

@@ -6,7 +6,32 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-winget-manifest-"
 $fakeMsix = Join-Path $testRoot "iris-windows.msix"
 $outputRoot = Join-Path $testRoot "output"
 $version = "99.98.97"
+$generatorSource = Get-Content -LiteralPath $generator -Raw
 $updateHelper = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\update_iris_windows.ps1") -Raw
+$msixPackager = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\package_windows_msix.ps1") -Raw
+$privacyPath = Join-Path $repoRoot "PRIVACY.md"
+
+if (-not (Test-Path -LiteralPath $privacyPath -PathType Leaf)) {
+    throw "WinGet PrivacyUrl must resolve to the repository privacy policy."
+}
+foreach ($generatorFragment in @(
+        "[string]`$ExpectedPublisher",
+        "MSIX package identity must be ProjectIris.LocalAssistant",
+        "MSIX processor architecture must be x64",
+        "must contain exactly the three manifests"
+    )) {
+    if (-not $generatorSource.Contains($generatorFragment)) {
+        throw "WinGet generator is missing production artifact binding: $generatorFragment"
+    }
+}
+foreach ($displayNameFragment in @(
+        "<DisplayName>Iris</DisplayName>",
+        '<uap:VisualElements DisplayName="Iris"'
+    )) {
+    if (-not $msixPackager.Contains($displayNameFragment)) {
+        throw "MSIX display name must match WinGet PackageName: $displayNameFragment"
+    }
+}
 
 foreach ($fragment in @(
         '$wingetUpdateNotApplicable = -1978335189',
@@ -49,7 +74,11 @@ try {
         throw "WinGet generator accepted a mutable v1 installer URL."
     }
 
-    & $generator -PackageVersion $version -MsixPath $fakeMsix -OutputRoot $outputRoot -ReleaseDate "2099-12-31" -SkipWingetValidation -AllowUnsignedTestArtifact
+    $staleVersionRoot = Join-Path $outputRoot "manifests\a\AlejandroPinto\Iris\0.0.1"
+    New-Item -ItemType Directory -Force -Path $staleVersionRoot | Out-Null
+    Set-Content -LiteralPath (Join-Path $staleVersionRoot "stale.yaml") -Value "stale" -Encoding ascii
+
+    & $generator -PackageVersion $version -MsixPath $fakeMsix -OutputRoot $outputRoot -ReleaseDate "2099-12-31" -AllowUnsignedTestArtifact
 
     $manifestRoot = Join-Path $outputRoot "manifests\a\AlejandroPinto\Iris\$version"
     $versionPath = Join-Path $manifestRoot "AlejandroPinto.Iris.yaml"
@@ -60,6 +89,33 @@ try {
             throw "WinGet generator omitted required output: $path"
         }
     }
+    if (Test-Path -LiteralPath $staleVersionRoot) {
+        throw "WinGet generator retained stale manifests from a prior version."
+    }
+    $bundleArchive = [System.IO.Compression.ZipFile]::OpenRead(
+        (Join-Path $outputRoot "iris-winget-manifests.zip")
+    )
+    try {
+        $bundleEntries = @(
+            $bundleArchive.Entries |
+                Where-Object { $_.Name } |
+                ForEach-Object { ([string]$_.FullName).Replace("\", "/") } |
+                Sort-Object
+        )
+        $expectedBundleEntries = @(
+            "a/AlejandroPinto/Iris/$version/AlejandroPinto.Iris.installer.yaml",
+            "a/AlejandroPinto/Iris/$version/AlejandroPinto.Iris.locale.en-US.yaml",
+            "a/AlejandroPinto/Iris/$version/AlejandroPinto.Iris.yaml"
+        ) | Sort-Object
+        if (
+            $bundleEntries.Count -ne $expectedBundleEntries.Count -or
+            (Compare-Object -ReferenceObject $expectedBundleEntries -DifferenceObject $bundleEntries)
+        ) {
+            throw "WinGet bundle contains stale or unexpected manifests: $($bundleEntries -join ', ')."
+        }
+    } finally {
+        $bundleArchive.Dispose()
+    }
 
     $installer = Get-Content -LiteralPath $installerPath -Raw
     foreach ($fragment in @(
@@ -68,7 +124,7 @@ try {
             "InstallerType: msix",
             "UpgradeBehavior: install",
             "releases/download/v$version/iris-windows.msix",
-            "PackageIdentifier: Microsoft.Edge",
+            "PackageIdentifier: Google.Chrome",
             "PackageIdentifier: Microsoft.EdgeWebView2Runtime",
             "PackageIdentifier: Ollama.Ollama",
             "PackageIdentifier: Python.Python.3.13",
@@ -88,7 +144,7 @@ try {
             ForEach-Object { $_.Groups["id"].Value.Trim() } |
             Sort-Object)
     $expectedDependencies = @(
-        "Microsoft.Edge",
+        "Google.Chrome",
         "Microsoft.EdgeWebView2Runtime",
         "Ollama.Ollama",
         "Python.Python.3.13",
@@ -96,6 +152,28 @@ try {
     ) | Sort-Object
     if (($dependencyIds -join "`n") -cne ($expectedDependencies -join "`n")) {
         throw "Generated WinGet dependency set is inaccurate. Expected $($expectedDependencies -join ', '); got $($dependencyIds -join ', ')."
+    }
+    $capabilityBlock = [regex]::Match(
+        $installer,
+        '(?ms)^ {4}RestrictedCapabilities:[ \t]*\r?\n(?<body>.*?)^ {4}ReleaseDate:'
+    )
+    if (-not $capabilityBlock.Success) {
+        throw "Generated installer manifest has no parseable restricted-capability block."
+    }
+    $capabilities = @(
+        [regex]::Matches(
+            $capabilityBlock.Groups["body"].Value,
+            '(?m)^ {6}-[ \t]+(?<capability>[^\r\n]+)'
+        ) |
+            ForEach-Object { $_.Groups["capability"].Value.Trim() } |
+            Sort-Object
+    )
+    $expectedCapabilities = @("runFullTrust", "unvirtualizedResources") | Sort-Object
+    if (($capabilities -join "`n") -cne ($expectedCapabilities -join "`n")) {
+        throw (
+            "Generated WinGet restricted capabilities are inaccurate. Expected " +
+            "$($expectedCapabilities -join ', '); got $($capabilities -join ', ')."
+        )
     }
     foreach ($dependency in $expectedDependencies) {
         if (-not $updateHelper.Contains("`"$dependency`"")) {
@@ -107,10 +185,65 @@ try {
         throw "Generated installer manifest does not use the artifact SHA256."
     }
     $locale = Get-Content -LiteralPath $localePath -Raw
+    foreach ($fragment in @(
+            "PackageName: Iris",
+            "PrivacyUrl: https://github.com/supermang617/IRIS/blob/main/PRIVACY.md",
+            "CopyrightUrl: https://github.com/supermang617/IRIS/blob/main/LICENSE",
+            "ReleaseNotes: >-",
+            "Iris $version is the signed Windows release represented by this",
+            "ReleaseNotesUrl: https://github.com/supermang617/IRIS/releases/tag/v$version",
+            "DocumentLabel: Download and setup guide",
+            "DocumentUrl: https://github.com/supermang617/IRIS/blob/main/docs/download-and-run.md",
+            "DocumentLabel: Security policy",
+            "DocumentUrl: https://github.com/supermang617/IRIS/security/policy",
+            "DocumentLabel: WinGet release and upgrade guide",
+            "DocumentUrl: https://github.com/supermang617/IRIS/blob/main/docs/winget-release.md"
+        )) {
+        if (-not $locale.Contains($fragment)) {
+            throw "Generated locale manifest is missing: $fragment"
+        }
+    }
+    if ($locale -match "(?m)^Icons:") {
+        throw "Initial WinGet submission must omit verified-publisher-only Icons metadata."
+    }
+    $tagBlock = [regex]::Match($locale, '(?ms)^Tags:\s*(?<body>.*?)^ReleaseNotes:')
+    if (-not $tagBlock.Success) {
+        throw "Generated locale manifest has no parseable tag block."
+    }
+    $tags = @([regex]::Matches($tagBlock.Groups["body"].Value, '(?m)^\s*-\s+(?<tag>[^\r\n]+)') |
+            ForEach-Object { $_.Groups["tag"].Value.Trim() })
+    $expectedTags = @(
+        "ai",
+        "assistant",
+        "desktop-assistant",
+        "hermes",
+        "local-ai",
+        "local-first",
+        "local-llm",
+        "memory",
+        "ollama",
+        "privacy",
+        "speech-to-text",
+        "text-to-speech",
+        "vision",
+        "voice-assistant",
+        "windows",
+        "windows-ai"
+    )
+    if ($tags.Count -gt 16) {
+        throw "Generated locale manifest exceeds the WinGet limit of 16 tags."
+    }
+    if (($tags | Select-Object -Unique).Count -ne $tags.Count) {
+        throw "Generated locale manifest contains duplicate tags."
+    }
+    if (($tags -join "`n") -cne ($expectedTags -join "`n")) {
+        throw "Generated locale manifest tags are incomplete or out of order."
+    }
     if (-not $locale.Contains("launch Iris from the Windows Start menu") -or
         -not $locale.Contains("ollama pull huihui_ai/gemma-4-abliterated:e2b") -or
         -not $locale.Contains("includes its pinned Python voice packages") -or
-        -not $locale.Contains("Microsoft Edge supplies the separately isolated browser engine") -or
+        -not $locale.Contains("Google Chrome supplies the separately isolated browser engine") -or
+        -not $locale.Contains("WebView2 powers the Iris desktop shell") -or
         $locale.Contains("pip install kokoro-onnx") -or
         -not $locale.Contains("Start Iris.ps1 -SelfCheck") -or
         $locale.Contains("Start Iris.ps1 --self-check")) {
@@ -124,9 +257,16 @@ try {
 
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
-        & $winget.Source validate --manifest $manifestRoot --disable-interactivity
-        if ($LASTEXITCODE -ne 0) {
-            throw "Official winget manifest validation failed with exit code $LASTEXITCODE"
+        $validationOutput = @(& $winget.Source validate --manifest $manifestRoot --disable-interactivity 2>&1)
+        $validationExitCode = $LASTEXITCODE
+        foreach ($line in $validationOutput) {
+            Write-Host ([string]$line)
+        }
+        $warningLines = @($validationOutput |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { $_.StartsWith("Manifest Warning:", [System.StringComparison]::Ordinal) })
+        if ($validationExitCode -ne 0 -or $warningLines.Count -ne 0) {
+            throw "Official winget manifest validation failed with exit code $validationExitCode"
         }
     }
 

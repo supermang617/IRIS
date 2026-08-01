@@ -77,8 +77,8 @@ package notes, then launch Iris from the Windows Start menu:
 ollama pull huihui_ai/gemma-4-abliterated:e2b
 ```
 
-New WinGet-compatible Iris releases use immutable semantic tags such as
-`v1.0.1`. Rust is not an end-user dependency. Hermes' pinned packages ship with
+The first production WinGet-compatible Iris release uses immutable semantic
+tag `v1.0.0`; later releases increment it. Rust is not an end-user dependency. Hermes' pinned packages ship with
 Iris and use WinGet-managed Python 3.13, llama inference ships with Ollama, and
 the selected Ollama model remains an explicit first-run download rather than a
 WinGet payload.
@@ -188,7 +188,7 @@ are missing.
 - `profiles\iris_agentic.json`
 - `.iris-runtime\hermes` pinned Hermes Agent environment
 - `.iris-runtime\browser` pinned Windows agent-browser runtime; the browser
-  engine is the system Microsoft Edge installed/updated by WinGet, always with
+  engine is system Google Chrome installed/updated by WinGet, always with
   a separate Iris profile
 - `capabilities\v0_1_capability_ledger.toml`
 - user-facing docs, license, notice, security notes, known limitations, assets
@@ -221,10 +221,10 @@ Run the repository checks before manual testing:
 
 ```powershell
 cargo fmt --all -- --check
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace
-cargo run -p xtask
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo run --locked -p xtask
 cargo run -p iris-runtime -- --self-check
 cargo run -p iris-runtime -- --dashboard-json
 npm install

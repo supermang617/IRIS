@@ -225,9 +225,6 @@ fn browser_executable(resource_root: &Path) -> Option<PathBuf> {
     let configured = std::env::var_os("IRIS_BROWSER_EXECUTABLE_PATH").map(PathBuf::from);
     let mut candidates = Vec::new();
     for (variable, relative) in [
-        ("ProgramFiles(x86)", "Microsoft/Edge/Application/msedge.exe"),
-        ("ProgramFiles", "Microsoft/Edge/Application/msedge.exe"),
-        ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
         ("ProgramFiles", "Google/Chrome/Application/chrome.exe"),
         ("ProgramFiles(x86)", "Google/Chrome/Application/chrome.exe"),
         ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
@@ -237,7 +234,7 @@ fn browser_executable(resource_root: &Path) -> Option<PathBuf> {
         }
     }
     // Source checkouts may retain the pinned development browser. Production
-    // packages intentionally omit it and use the WinGet-managed system Edge.
+    // packages intentionally omit it and use the WinGet-managed system Chrome.
     candidates.push(
         resource_root.join(".iris-runtime/browser/browsers/chrome-149.0.7827.115/chrome.exe"),
     );

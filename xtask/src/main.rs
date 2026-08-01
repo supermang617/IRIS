@@ -80,9 +80,13 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/iris-architecture.md",
         "docs/manual-test-checklist-v0.1.1.md",
         "docs/manual-end-user-test-v0.1.0.md",
+        "docs/manual-test.md",
         "docs/signed-installer-decision.md",
         "docs/runtime-orchestration.md",
         "docs/windows-installer.md",
+        "docs/winget-release.md",
+        "PRIVACY.md",
+        "profiles/uv_windows_amd64.lock.txt",
         "scripts/install_iris_windows.ps1",
         "scripts/iris_document_ocr.ps1",
         "scripts/iris_preflight_wizard.ps1",
@@ -98,13 +102,23 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/test_windows_beginner_installer.ps1",
         "scripts/test_windows_release_download.ps1",
         "scripts/test_github_versioned_release.ps1",
+        "scripts/test_github_semantic_tag_protection.ps1",
+        "scripts/publish_github_versioned_release.ps1",
+        "scripts/test_release_workflow.ps1",
+        "scripts/summarize_voice_interruption.ps1",
+        "scripts/test_voice_interruption_diagnostics.ps1",
         "scripts/test_windows_msix_signature.ps1",
         "scripts/test_windows_signed_installer_readiness.ps1",
+        "scripts/test_windows_msix_lifecycle_guest.ps1",
+        "scripts/test_windows_msix_lifecycle_guest_static.ps1",
         "scripts/test_windows_installer.ps1",
         ".github/dependabot.yml",
+        ".github/release-notes-template.md",
+        ".github/release.yml",
         ".github/workflows/ci.yml",
         ".github/workflows/dependency-review.yml",
         ".github/workflows/release.yml",
+        "site/assets/iris-social-preview.jpg",
         "plugins/hermes_sidecar/sidecar.py",
         "plugins/hermes_acp/iris_acp.py",
         "plugins/hermes_acp/iris_memory_tools.py",
@@ -387,6 +401,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let windows_installer = read(root.join("docs/windows-installer.md"))?;
     let ci = read(root.join(".github/workflows/ci.yml"))?;
     let release = read(root.join(".github/workflows/release.yml"))?;
+    let release_notes = read(root.join(".github/release-notes-template.md"))?;
     let dependabot = read(root.join(".github/dependabot.yml"))?;
     let github_settings = read(root.join("docs/github-settings.md"))?;
     let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.1.md"))?;
@@ -477,7 +492,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "cargo fmt --all -- --check",
         "cargo build --workspace --locked",
         "cargo test --workspace --locked",
-        "cargo clippy --workspace --locked -- -D warnings",
+        "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "npm run test:voice",
         "npm run test:python",
         "cargo run --locked -p xtask",
@@ -488,8 +503,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         }
     }
     for required in [
-        "v[0-9]+.[0-9]+.[0-9]+",
+        "workflow_dispatch:",
+        "if: github.ref == 'refs/heads/main'",
+        "environment: iris-production-release",
+        "IRIS_PRODUCTION_GATE_CONFIGURED",
+        "refs/remotes/origin/main",
         "scripts\\test_release_version.ps1",
+        "scripts\\test_github_semantic_tag_protection.ps1",
         "scripts\\test_github_versioned_release.ps1",
         "DownloadPayloads",
         "scripts\\package_windows_release.ps1",
@@ -497,16 +517,37 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "scripts\\test_windows_beginner_installer.ps1",
         "release/dist/iris-windows-installer.zip",
         "release/dist/iris-windows-installer.zip.sha256",
-        "Download `iris-windows-installer.zip`",
-        "Double-click `Install Iris.bat`",
         "release/dist/iris-windows.zip",
         "release/dist/iris-windows.zip.sha256",
+        "draft = $true",
+        "Atomic draft creation failed",
+        "iris-signed-provenance-",
+        "RequireBuildProvenance",
+        "Sign verified Windows artifacts",
+        "Create and verify private draft",
+        "iris-signed-build.json",
+        "persist-credentials: false",
         "contents: write",
     ] {
         if !release.contains(required) {
             return Err(format!(
                 "release GitHub Actions workflow missing `{required}`"
             ));
+        }
+    }
+    for required in [
+        "Iris {{VERSION}} is a local-first Windows AI assistant",
+        "Download `iris-windows-installer.zip`",
+        "Double-click `Install Iris.bat`",
+        "not yet submitted or public",
+        "true acoustic echo cancellation is not claimed",
+        "iris-msix-lifecycle-evidence.json",
+        "iris-windows-wack-report.xml",
+        "iris-windows-wack-report.xml.sha256",
+        "REPORT.OVERALL_RESULT=PASS",
+    ] {
+        if !release_notes.contains(required) {
+            return Err(format!("release notes template missing `{required}`"));
         }
     }
     for required in [
@@ -531,8 +572,9 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "Beginner Installer Acceptance",
         "Installed-App Manual Acceptance",
         "Publish An Immutable Version",
-        "immutable monotonically increasing",
+        "first production-signed release as immutable",
         "Never move or replace a semantic tag",
+        "first genuine higher semantic release",
         "scripts\\test_github_versioned_release.ps1",
         "Production-Trusted Installer",
     ] {
@@ -565,6 +607,23 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             return Err(format!(
                 "preflight script missing bounded external probe `{required}`"
             ));
+        }
+    }
+    let release_publisher = read(root.join("scripts/publish_github_versioned_release.ps1"))?;
+    for required in [
+        "-ExpectedCommit $ExpectedCommit",
+        "immutable-releases",
+        "branches/main/protection",
+        "environments/iris-production-release",
+        "-RequireLifecycleEvidence",
+        "-RequireWackReport",
+        "-RequireWingetClientValidation",
+        "--method PATCH",
+        "make_latest = \"true\"",
+        "-RequireLatest",
+    ] {
+        if !release_publisher.contains(required) {
+            return Err(format!("release publisher missing `{required}`"));
         }
     }
     if preflight_script.contains("& ollama list") {
@@ -637,6 +696,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "DownloadPayloads",
         "RequireSignedMsix",
         "RequireWingetBundle",
+        "RequireWingetClientValidation",
     ] {
         if !github_release_smoke.contains(required) {
             return Err(format!(
@@ -1096,8 +1156,8 @@ fn assert_hermes_browser_runtime(root: &Path) -> Result<(), String> {
         "\"version\": \"0.27.2\"",
         "\"system_browser\"",
         "\"bundled\": false",
-        "\"preferred\": \"Microsoft Edge\"",
-        "\"winget_package\": \"Microsoft.Edge\"",
+        "\"preferred\": \"Google Chrome\"",
+        "\"winget_package\": \"Google.Chrome\"",
         "\"executable_override\": \"IRIS_BROWSER_EXECUTABLE_PATH\"",
         "\"isolated_profile\": true",
         "\"headless_default\": true",
@@ -1164,7 +1224,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "profiles\\iris_voice_python_3_13.lock.txt",
         ".iris-runtime\\browser\\node_modules",
         "system_browser = [ordered]@{",
-        "winget_package = \"Microsoft.Edge\"",
+        "winget_package = \"Google.Chrome\"",
         "volatile_data_packaged = $false",
     ] {
         if !package.contains(required) {
@@ -1293,15 +1353,17 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
 
     let ci = read(root.join(".github/workflows/ci.yml"))?;
     for required in [
-        "node-version: \"24\"",
-        "python-version: \"3.13\"",
+        "node-version: \"24.18.1\"",
+        "python-version: \"3.13.13\"",
+        "llvm --version=22.1.7",
+        "profiles\\uv_windows_amd64.lock.txt",
         "scripts\\provision_hermes_acp.ps1",
         "scripts\\provision_iris_browser.ps1",
         "scripts\\provision_iris_voice_runtime.ps1",
         "npm run test:python",
         "cargo run --locked -p xtask",
         "cargo run --locked -p iris-runtime -- --dashboard-json",
-        "cargo clippy --workspace --locked -- -D warnings",
+        "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "iris-dependency-inventory",
     ] {
         if !ci.contains(required) {
@@ -1675,6 +1737,7 @@ fn is_release_semver(value: &str) -> bool {
             !part.is_empty()
                 && part.bytes().all(|byte| byte.is_ascii_digit())
                 && (part == &"0" || !part.starts_with('0'))
+                && part.parse::<u16>().is_ok()
         })
 }
 
@@ -1706,6 +1769,7 @@ mod tests {
             "01.0.0",
             "1.00.0",
             "1.0.00",
+            "65536.0.0",
             "1.0.0-beta.1",
             "",
         ] {

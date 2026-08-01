@@ -1,17 +1,20 @@
-# Iris v1
+# Iris — Local-First Windows AI Assistant
 
-Iris v1 is a free local-first Windows AI assistant with typed chat, natural voice, camera and screen vision, local memory, web research, and approval-gated Hermes agent tools.
+Iris is a free local-first Windows AI assistant with typed chat, natural voice, camera and screen vision, private local memory, Ollama inference, web research, and approval-gated Hermes agent tools.
 
 Canonical site: https://supermang617.github.io/IRIS/
 Source repository: https://github.com/supermang617/IRIS
-Current release: https://github.com/supermang617/IRIS/releases/tag/v1
+Current public release: Iris v1 (software version 1.0.0)
+Release notes: https://github.com/supermang617/IRIS/releases/tag/v1
 Recommended download: https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip
+WinGet status: AlejandroPinto.Iris is not yet submitted or public; submission follows a verified signed immutable release.
 
 ## Key Pages
 
 - Download and run: https://github.com/supermang617/IRIS/blob/main/docs/download-and-run.md
 - Manual test guide: https://github.com/supermang617/IRIS/blob/main/docs/manual-test.md
 - Runtime orchestration: https://github.com/supermang617/IRIS/blob/main/docs/runtime-orchestration.md
+- Privacy policy: https://github.com/supermang617/IRIS/blob/main/PRIVACY.md
 - Security policy: https://github.com/supermang617/IRIS/blob/main/SECURITY.md
 
 ## Summary

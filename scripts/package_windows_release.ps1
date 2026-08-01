@@ -231,8 +231,8 @@ $runtimeManifest = [ordered]@{
     }
     system_browser = [ordered]@{
         bundled = $false
-        preferred = "Microsoft Edge"
-        winget_package = "Microsoft.Edge"
+        preferred = "Google Chrome"
+        winget_package = "Google.Chrome"
         executable_override = "IRIS_BROWSER_EXECUTABLE_PATH"
         isolated_profile = $true
     }

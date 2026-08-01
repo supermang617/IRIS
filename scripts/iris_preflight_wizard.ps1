@@ -132,12 +132,10 @@ function Find-IrisBrowserExecutable {
     }
 
     $candidates = @(
-        @{ Root = ${env:ProgramFiles(x86)}; Relative = "Microsoft\Edge\Application\msedge.exe" },
-        @{ Root = $env:ProgramFiles; Relative = "Microsoft\Edge\Application\msedge.exe" },
-        @{ Root = $env:LOCALAPPDATA; Relative = "Microsoft\Edge\Application\msedge.exe" },
         @{ Root = $env:ProgramFiles; Relative = "Google\Chrome\Application\chrome.exe" },
         @{ Root = ${env:ProgramFiles(x86)}; Relative = "Google\Chrome\Application\chrome.exe" },
-        @{ Root = $env:LOCALAPPDATA; Relative = "Google\Chrome\Application\chrome.exe" }
+        @{ Root = $env:LOCALAPPDATA; Relative = "Google\Chrome\Application\chrome.exe" },
+        @{ Root = $root; Relative = ".iris-runtime\browser\browsers\chrome-149.0.7827.115\chrome.exe" }
     )
     foreach ($candidate in $candidates) {
         if ([string]::IsNullOrWhiteSpace([string]$candidate.Root)) {
@@ -156,7 +154,7 @@ function Find-IrisBrowserExecutable {
     return [pscustomobject]@{
         Available = $false
         Path = ""
-        Detail = "Microsoft Edge or Google Chrome was not found in the supported Windows install locations."
+        Detail = "Google Chrome was not found in the supported Windows install locations."
     }
 }
 
@@ -433,7 +431,7 @@ $systemBrowser = Find-IrisBrowserExecutable
 if ($systemBrowser.Available) {
     Add-Check -Status "PASS" -Name "System browser executable" -Detail $systemBrowser.Detail -Repair "No action needed."
 } else {
-    Add-Check -Status "FAIL" -Name "System browser executable" -Detail $systemBrowser.Detail -Repair "Install Microsoft Edge (WinGet package Microsoft.Edge), or set IRIS_BROWSER_EXECUTABLE_PATH to an absolute Edge/Chrome executable path, then restart Iris."
+    Add-Check -Status "FAIL" -Name "System browser executable" -Detail $systemBrowser.Detail -Repair "Install Google Chrome (WinGet package Google.Chrome), or set IRIS_BROWSER_EXECUTABLE_PATH to an absolute compatible Chrome/Chromium executable path, then restart Iris."
 }
 
 $ollamaPath = Test-CommandAvailable -Name "ollama"

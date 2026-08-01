@@ -106,9 +106,6 @@ def _browser_executable() -> Path:
 
     candidates: list[Path] = []
     for variable, relative in (
-        ("ProgramFiles(x86)", "Microsoft/Edge/Application/msedge.exe"),
-        ("ProgramFiles", "Microsoft/Edge/Application/msedge.exe"),
-        ("LOCALAPPDATA", "Microsoft/Edge/Application/msedge.exe"),
         ("ProgramFiles", "Google/Chrome/Application/chrome.exe"),
         ("ProgramFiles(x86)", "Google/Chrome/Application/chrome.exe"),
         ("LOCALAPPDATA", "Google/Chrome/Application/chrome.exe"),
@@ -125,9 +122,10 @@ def _browser_executable() -> Path:
         if path.is_file():
             return path.resolve()
     raise RuntimeError(
-        "Iris browser automation needs Microsoft Edge (recommended) or Google "
-        "Chrome. Install Edge with `winget install --id Microsoft.Edge -e`, "
-        "or set IRIS_BROWSER_EXECUTABLE_PATH to an absolute browser path."
+        "Iris browser automation needs Google Chrome. Install it with "
+        "`winget install --id Google.Chrome -e`, or set "
+        "IRIS_BROWSER_EXECUTABLE_PATH to an absolute compatible Chrome/Chromium "
+        "executable path."
     )
 
 

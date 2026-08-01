@@ -40,20 +40,20 @@ class IrisBrowserToolTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "absolute path"):
                 iris_browser_tools._browser_executable()
 
-    def test_browser_executable_finds_system_edge(self):
+    def test_browser_executable_finds_system_chrome(self):
         with tempfile.TemporaryDirectory() as directory:
-            program_files = Path(directory) / "Program Files (x86)"
+            program_files = Path(directory) / "Program Files"
             executable = (
-                program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+                program_files / "Google" / "Chrome" / "Application" / "chrome.exe"
             )
             executable.parent.mkdir(parents=True)
-            executable.write_bytes(b"test edge")
+            executable.write_bytes(b"test chrome")
             with patch.dict(
                 os.environ,
                 {
                     "IRIS_BROWSER_EXECUTABLE_PATH": "",
-                    "ProgramFiles(x86)": str(program_files),
-                    "ProgramFiles": "",
+                    "ProgramFiles(x86)": "",
+                    "ProgramFiles": str(program_files),
                     "LOCALAPPDATA": "",
                 },
             ):
@@ -61,6 +61,30 @@ class IrisBrowserToolTests(unittest.TestCase):
                     iris_browser_tools._browser_executable(),
                     executable.resolve(),
                 )
+
+    def test_browser_executable_does_not_auto_select_edge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program_files = Path(directory) / "Program Files"
+            edge = (
+                program_files / "Microsoft" / "Edge" / "Application" / "msedge.exe"
+            )
+            edge.parent.mkdir(parents=True)
+            edge.write_bytes(b"test edge")
+            runtime_root = Path(directory) / "runtime"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "IRIS_BROWSER_EXECUTABLE_PATH": "",
+                        "ProgramFiles(x86)": "",
+                        "ProgramFiles": str(program_files),
+                        "LOCALAPPDATA": "",
+                    },
+                ),
+                patch.object(iris_browser_tools, "RUNTIME_ROOT", runtime_root),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "needs Google Chrome"):
+                    iris_browser_tools._browser_executable()
 
     def test_explicit_writable_root_must_be_absolute_and_stays_separate(self):
         with tempfile.TemporaryDirectory() as directory:

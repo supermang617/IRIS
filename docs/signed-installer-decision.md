@@ -64,6 +64,18 @@ often in the Local Machine certificate stores. That trust step can require
 administrator approval. A production trusted certificate avoids this manual
 trust step.
 
+Thumbprint signing searches `CurrentUser\My` first and then
+`LocalMachine\My`. When the selected signing certificate is in the machine
+store, the packager passes the machine-store switch to `signtool`; current-user
+signing keeps the default store behavior. The selected certificate still needs
+an accessible private key and code-signing usage. Readiness also rejects a
+missing or expired private key, a subject that differs from the exact MSIX
+publisher, or a PFX that cannot be opened. A completed package is accepted only
+after Authenticode trust, the RFC 3161 timestamp, and `signtool verify` pass.
+The semantic release remains a private draft until the clean-VM lifecycle
+gauntlet produces evidence tied to that exact MSIX hash and signer; the
+separate publisher verifies that evidence before making the release public.
+
 ## First Implemented Slice
 
 This repository now includes:
@@ -90,15 +102,21 @@ The MSIX script is guarded:
 
 WinGet's public community source does not accept PowerShell/script installers.
 Iris must first have a production-signed MSIX (or another supported signed
-installer type), published under an immutable semantic tag such as `v1.0.1`.
+installer type), published under the first immutable semantic tag `v1.0.0`.
+Later releases increment that version normally.
 
 Repository tooling generates a submission bundle, but publication still
 requires:
 
 1. validate the manifests with `winget validate`;
-2. test install, upgrade, and uninstall in Windows Sandbox or a clean VM;
+2. test the first release's install, registered launch, uninstall, and state
+   preservation in Windows Sandbox or a clean VM;
 3. submit the version folder to `microsoft/winget-pkgs`;
 4. wait for automated checks and Microsoft moderator acceptance.
+
+The first genuine higher semantic release adds the in-place upgrade and
+rollback test from the prior immutable production package. Iris does not build
+an artificial lower version merely to simulate that future boundary.
 
 See `docs/winget-release.md` for the exact release and submission sequence.
 
@@ -120,7 +138,11 @@ The production manifest uses Microsoft's desktop6
 `%LOCALAPPDATA%\Iris` state root that is visible to its desktop process,
 external Python workers, and migration tooling and that is not removed as
 virtualized package state. Static manifest tests are required, followed by a
-signed two-version MSIX VM upgrade/uninstall test before publication.
+signed full-release MSIX WACK and VM install/registered-launch/uninstall test
+before first publication. The disposable-guest gate invokes WACK against the
+exact resolved package and lifecycle schema 3 binds the MSIX and WACK report
+hashes. A real two-version upgrade test begins with the first genuine higher
+semantic release.
 
 Installer tooling may run during packaging or explicit user installation only.
 That is separate from Iris runtime capability.

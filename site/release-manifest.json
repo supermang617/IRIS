@@ -1,5 +1,11 @@
 {
+  "name": "Iris",
+  "version": "1.0.0",
+  "description": "Local-first Windows AI assistant with natural voice, vision, private memory, Ollama, and approval-gated Hermes agent tools.",
   "tag": "v1",
+  "published_date": "2026-06-17",
+  "modified_date": "2026-07-29",
+  "immutable": false,
   "repository": "https://github.com/supermang617/IRIS",
   "release": "https://github.com/supermang617/IRIS/releases/tag/v1",
   "package_manager": {
@@ -11,6 +17,7 @@
     {
       "name": "iris-windows-installer.zip",
       "url": "https://github.com/supermang617/IRIS/releases/download/v1/iris-windows-installer.zip",
+      "size_bytes": 661026022,
       "sha256": "4328992bbd59eae216a1be8b03091a734ece9bcadb02c1487c65aca0be3dc545"
     },
     {

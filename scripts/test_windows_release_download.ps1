@@ -33,6 +33,12 @@ Require-File -Path $shaPath
 Require-File -Path $installerPath
 Require-File -Path $installerShaPath
 
+$maximumPortableBytes = 600MB
+$portableBytes = (Get-Item -LiteralPath $zipPath).Length
+if ($portableBytes -gt $maximumPortableBytes) {
+    throw "Portable Iris ZIP exceeds the 600 MiB release budget: $portableBytes bytes."
+}
+
 $expectedHash = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split "\s+")[0]
 $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $expectedHash.ToLowerInvariant()) {
@@ -254,8 +260,8 @@ try {
         throw "Packaged agent-browser footprint metadata does not confirm Windows-only pruning."
     }
     if ($runtimeManifest.system_browser.bundled -ne $false -or
-        $runtimeManifest.system_browser.preferred -ne "Microsoft Edge" -or
-        $runtimeManifest.system_browser.winget_package -ne "Microsoft.Edge" -or
+        $runtimeManifest.system_browser.preferred -ne "Google Chrome" -or
+        $runtimeManifest.system_browser.winget_package -ne "Google.Chrome" -or
         $runtimeManifest.system_browser.executable_override -ne "IRIS_BROWSER_EXECUTABLE_PATH" -or
         $runtimeManifest.system_browser.isolated_profile -ne $true) {
         throw "Packaged system-browser metadata is incomplete or inaccurate."

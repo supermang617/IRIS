@@ -10,6 +10,12 @@ foreach ($path in @($bundlePath, $bundleShaPath)) {
     }
 }
 
+$maximumBundleBytes = 610MB
+$bundleBytes = (Get-Item -LiteralPath $bundlePath).Length
+if ($bundleBytes -gt $maximumBundleBytes) {
+    throw "Beginner Iris bundle exceeds the 610 MiB release budget: $bundleBytes bytes."
+}
+
 $expectedBundleHash = ((Get-Content -LiteralPath $bundleShaPath -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
 $actualBundleHash = (Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualBundleHash -ne $expectedBundleHash) {

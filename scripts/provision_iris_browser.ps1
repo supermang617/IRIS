@@ -92,9 +92,6 @@ $configuredBrowser = if ($env:IRIS_BROWSER_EXECUTABLE_PATH) {
 }
 $systemBrowserCandidates = @($configuredBrowser)
 foreach ($candidate in @(
-        @{ Root = ${env:ProgramFiles(x86)}; Relative = "Microsoft\Edge\Application\msedge.exe" },
-        @{ Root = $env:ProgramFiles; Relative = "Microsoft\Edge\Application\msedge.exe" },
-        @{ Root = $env:LOCALAPPDATA; Relative = "Microsoft\Edge\Application\msedge.exe" },
         @{ Root = $env:ProgramFiles; Relative = "Google\Chrome\Application\chrome.exe" },
         @{ Root = ${env:ProgramFiles(x86)}; Relative = "Google\Chrome\Application\chrome.exe" },
         @{ Root = $env:LOCALAPPDATA; Relative = "Google\Chrome\Application\chrome.exe" }
@@ -107,7 +104,7 @@ $systemBrowser = $systemBrowserCandidates |
     Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
     Select-Object -First 1
 if (-not $systemBrowser) {
-    throw "Iris needs Microsoft Edge for isolated browser automation. Install it with: winget install --id Microsoft.Edge -e"
+    throw "Iris needs Google Chrome for isolated browser automation. Install it with: winget install --id Google.Chrome -e"
 }
 
 Write-Output "Pinned agent-browser 0.27.2 is ready with system browser: $systemBrowser"

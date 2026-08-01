@@ -1,20 +1,37 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing semantic tag to package as a verified private draft"
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: iris-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
-  package:
-    name: Package Windows release
-    runs-on: windows-latest
+  build:
+    name: Build and test unsigned Windows payload
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release_version.outputs.tag }}
+      release_commit: ${{ steps.release_version.outputs.release_commit }}
+      package_version: ${{ steps.release_version.outputs.package_version }}
+      msix_version: ${{ steps.release_version.outputs.msix_version }}
+      release_title: ${{ steps.release_version.outputs.release_title }}
     env:
       CARGO_TERM_COLOR: always
+      IRIS_RELEASE_TAG: ${{ inputs.tag }}
       GGML_AVX: "ON"
       GGML_AVX2: "ON"
       GGML_AVX_VNNI: "OFF"
@@ -31,109 +48,101 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
 
-      - name: Resolve release version
+      - name: Require semantic tag at current main head
         id: release_version
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $tag = [string]$env:GITHUB_REF_NAME
-          if ($tag -match "^v(?<version>[0-9]+\.[0-9]+\.[0-9]+)$") {
-            "is_semver=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "package_version=$($Matches.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "msix_version=$($Matches.version).0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "Immutable versioned release: $tag"
-          } elseif ($tag -match "^v[0-9]+$") {
-            "is_semver=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "package_version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "msix_version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "Legacy major-version release: $tag. WinGet manifests will not be generated."
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = [string]$env:IRIS_RELEASE_TAG
+          if ($tag -match "^v(?<major>0|[1-9][0-9]*)\.(?<minor>0|[1-9][0-9]*)\.(?<patch>0|[1-9][0-9]*)$") {
+            $version = "$($Matches.major).$($Matches.minor).$($Matches.patch)"
+            foreach ($component in @($Matches.major, $Matches.minor, $Matches.patch)) {
+              if ([uint64]$component -gt 65535) {
+                throw "Every semantic version component must fit the MSIX range 0-65535."
+              }
+            }
+            git fetch --force --no-tags origin "refs/heads/main:refs/remotes/origin/main"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not resolve the current protected main branch."
+            }
+            $tagCommit = (git rev-parse "refs/tags/$tag^{commit}").Trim().ToLowerInvariant()
+            $mainCommit = (git rev-parse "refs/remotes/origin/main^{commit}").Trim().ToLowerInvariant()
+            $checkedOutCommit = (git rev-parse "HEAD^{commit}").Trim().ToLowerInvariant()
+            if ($LASTEXITCODE -ne 0 -or -not $tagCommit -or -not $mainCommit) {
+              throw "Could not resolve the semantic tag and main commits."
+            }
+            if ($tagCommit -cne $mainCommit -or $checkedOutCommit -cne $tagCommit) {
+              throw "Production signing requires $tag to equal the current protected main head."
+            }
+            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "release_commit=$tagCommit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "package_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "msix_version=$version.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "release_title=Iris $version — Local-First Windows AI Assistant" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "Verified semantic draft candidate: $tag at $tagCommit"
           } else {
             throw "Unsupported release tag '$tag'. Use vMAJOR.MINOR.PATCH for upgradeable releases."
           }
 
-      - name: Detect package-affecting changes
-        id: package_changes
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $event = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json
-          $before = [string]$event.before
-          if (-not $before -or $before -match "^0+$") {
-            "package_changed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "No previous tag target was available; packaging is required."
-            exit 0
-          }
-          git cat-file -e "$before^{commit}"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Previous release tag target is unavailable in the checkout: $before"
-          }
-          $changed = @(git diff --name-only $before $env:GITHUB_SHA)
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not diff release tag update."
-          }
-          $packageChanged = $false
-          foreach ($path in $changed) {
-            if (
-              $path -like "site/*" -or
-              $path -eq "scripts/validate_site.mjs" -or
-              $path -eq ".github/workflows/pages.yml" -or
-              $path -eq ".github/workflows/release.yml"
-            ) {
-              continue
-            }
-            $packageChanged = $true
-            break
-          }
-          "package_changed=$($packageChanged.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if ($packageChanged) {
-            "Windows release assets are affected by this tag update."
-          } else {
-            "Only site/checksum/workflow metadata changed; keeping existing release assets."
-          }
-
       - name: Validate semantic release version
-        if: steps.release_version.outputs.is_semver == 'true'
         shell: pwsh
-        run: .\scripts\test_release_version.ps1 -Tag $env:GITHUB_REF_NAME
+        run: .\scripts\test_release_version.ps1 -Tag $env:IRIS_RELEASE_TAG
+
+      - name: Verify immutable semantic tag policy
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .\scripts\test_github_semantic_tag_protection.ps1 `
+            -Tag $env:IRIS_RELEASE_TAG `
+            -DeferBypassVerification
 
       - name: Set up Node.js
-        if: steps.package_changes.outputs.package_changed == 'true'
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "24"
+          node-version: "24.18.1"
           cache: npm
 
       - name: Set up Python
-        if: steps.package_changes.outputs.package_changed == 'true'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.13"
+          python-version: "3.13.13"
 
       - name: Install LLVM for whisper-rs bindgen
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
-          choco install llvm -y --no-progress
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          choco install llvm --version=22.1.7 -y --no-progress
+          $clangVersion = (& "C:\Program Files\LLVM\bin\clang.exe" --version | Select-Object -First 1)
+          if ($clangVersion -notmatch "^clang version 22\.1\.7\b") {
+            throw "Expected LLVM 22.1.7, found: $clangVersion"
+          }
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install Rust components
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
-        run: rustup component add rustfmt clippy
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          rustup component add rustfmt clippy
 
       - name: Install Node dependencies
-        if: steps.package_changes.outputs.package_changed == 'true'
         run: npm ci
 
       - name: Provision pinned Iris runtimes
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check --no-input "uv==0.11.12"
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --disable-pip-version-check --no-input --require-hashes -r profiles\uv_windows_amd64.lock.txt
           $uvVersion = (& uv --version | Select-Object -First 1)
           if ($uvVersion -notmatch "^uv 0\.11\.12\b") {
             throw "Expected uv 0.11.12, found: $uvVersion"
@@ -143,9 +152,10 @@ jobs:
           .\scripts\provision_iris_browser.ps1
 
       - name: Audit dependencies
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           .\scripts\test_model_asset_lock.ps1
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
@@ -155,32 +165,38 @@ jobs:
           uvx --from pip-audit==2.10.1 pip-audit --require-hashes --disable-pip --progress-spinner off -r profiles\iris_voice_python_3_13.lock.txt
 
       - name: Validate source
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           cargo fmt --all -- --check
           cargo build --workspace --locked
           cargo test --workspace --locked
-          cargo clippy --workspace --locked -- -D warnings
+          cargo clippy --workspace --all-targets --locked -- -D warnings
           npm run test:voice
           npm run test:python
+          npm run test:site
           .\scripts\test_iris_data_root.ps1
           .\scripts\test_iris_windows_update.ps1
           .\scripts\test_windows_installer_path_safety.ps1
           .\scripts\test_windows_launcher_defaults.ps1
           .\scripts\test_windows_browser_payload.ps1
+          .\scripts\test_release_workflow.ps1
+          .\scripts\test_voice_interruption_diagnostics.ps1
           .\scripts\test_winget_manifests.ps1
+          .\scripts\test_windows_signed_installer_readiness.ps1
+          .\scripts\test_windows_msix_lifecycle_guest_static.ps1
           cargo run --locked -p xtask
           cargo run --locked -p iris-runtime -- --dashboard-json
           git diff --check
 
       - name: Restore verified legacy model assets
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $lockPath = Join-Path $PWD "profiles\iris_model_assets.lock.json"
           .\scripts\test_model_asset_lock.ps1 -LockPath $lockPath
           $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
@@ -252,10 +268,10 @@ jobs:
           Remove-Item -LiteralPath $bootstrapResolved -Recurse -Force
 
       - name: Package release ZIP
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $portableWhisperFlags = @{
             GGML_NATIVE = "OFF"
             GGML_SSE42 = "OFF"
@@ -284,23 +300,180 @@ jobs:
           git diff --exit-code -- Cargo.lock
 
       - name: Smoke test release ZIP
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: .\scripts\test_windows_release_download.ps1
 
       - name: Smoke test beginner installer bundle
-        if: steps.package_changes.outputs.package_changed == 'true'
         shell: pwsh
         run: .\scripts\test_windows_beginner_installer.ps1
 
-      - name: Smoke test install, upgrade, and uninstall
-        if: steps.package_changes.outputs.package_changed == 'true'
+      - name: Smoke test install, reinstall, state preservation, and uninstall
         shell: pwsh
         run: .\scripts\test_windows_installer.ps1
 
+      - name: Record unsigned build provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $required = @(
+            "iris-windows.zip",
+            "iris-windows.zip.sha256",
+            "iris-windows-installer.zip",
+            "iris-windows-installer.zip.sha256",
+            "install-iris-windows.ps1",
+            "install-iris-windows.ps1.sha256"
+          )
+          foreach ($name in $required) {
+            if (-not (Test-Path -LiteralPath (Join-Path "release\dist" $name) -PathType Leaf)) {
+              throw "Unsigned build output is missing: $name"
+            }
+          }
+          $provenance = [ordered]@{
+            schema = 2
+            tag = "${{ steps.release_version.outputs.tag }}"
+            source_commit = "${{ steps.release_version.outputs.release_commit }}"
+            runner = [ordered]@{
+              image_os = [string]$env:ImageOS
+              image_version = [string]$env:ImageVersion
+              architecture = [string]$env:RUNNER_ARCH
+            }
+            tools = [ordered]@{
+              rustc = ((rustc --version) | Select-Object -First 1)
+              cargo = ((cargo --version) | Select-Object -First 1)
+              node = ((node --version) | Select-Object -First 1)
+              npm = ((npm --version) | Select-Object -First 1)
+              python = ((python --version) | Select-Object -First 1)
+              uv = ((uv --version) | Select-Object -First 1)
+              clang = ((clang --version) | Select-Object -First 1)
+            }
+            locks = [ordered]@{}
+            files = [ordered]@{}
+          }
+          foreach ($lockPath in @(
+              "Cargo.lock",
+              "package-lock.json",
+              "profiles/hermes_agent_python_3_13.lock.txt",
+              "profiles/iris_voice_python_3_13.lock.txt",
+              "profiles/iris_model_assets.lock.json",
+              "profiles/uv_windows_amd64.lock.txt"
+          )) {
+            $provenance.locks[$lockPath] = (
+              Get-FileHash -LiteralPath $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+          }
+          foreach ($name in @(
+              "iris-windows.zip",
+              "iris-windows-installer.zip",
+              "install-iris-windows.ps1"
+          )) {
+            $provenance.files[$name] = (
+              Get-FileHash -LiteralPath (Join-Path "release\dist" $name) -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+          }
+          $provenance |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath "release\dist\iris-unsigned-build.json" -Encoding utf8
+
+      - name: Cache unsigned payload for the isolated signing job
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            release/dist/iris-windows.zip
+            release/dist/iris-windows.zip.sha256
+            release/dist/iris-windows-installer.zip
+            release/dist/iris-windows-installer.zip.sha256
+            release/dist/install-iris-windows.ps1
+            release/dist/install-iris-windows.ps1.sha256
+            release/dist/iris-unsigned-build.json
+          key: iris-release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+
+  sign:
+    name: Sign verified Windows artifacts
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    environment: iris-production-release
+    env:
+      IRIS_RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      IRIS_PRODUCTION_GATE_CONFIGURED: ${{ vars.IRIS_PRODUCTION_GATE_CONFIGURED }}
+
+    steps:
+      - name: Check out exact reviewed release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.tag }}
+
+      - name: Reverify protected source on the fresh signing runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:IRIS_PRODUCTION_GATE_CONFIGURED -cne "true") {
+            throw "Set IRIS_PRODUCTION_GATE_CONFIGURED=true only after main and the iris-production-release environment have owner-reviewed protection."
+          }
+          git fetch --force --no-tags origin "refs/heads/main:refs/remotes/origin/main"
+          $tagCommit = (git rev-parse "refs/tags/$env:IRIS_RELEASE_TAG^{commit}").Trim().ToLowerInvariant()
+          $mainCommit = (git rev-parse "refs/remotes/origin/main^{commit}").Trim().ToLowerInvariant()
+          $checkedOutCommit = (git rev-parse "HEAD^{commit}").Trim().ToLowerInvariant()
+          $expectedCommit = "${{ needs.build.outputs.release_commit }}".ToLowerInvariant()
+          if (
+            $tagCommit -cne $expectedCommit -or
+            $mainCommit -cne $expectedCommit -or
+            $checkedOutCommit -cne $expectedCommit
+          ) {
+            throw "The signing runner source, semantic tag, build provenance, and protected main head must match."
+          }
+
+      - name: Restore tested unsigned payload
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            release/dist/iris-windows.zip
+            release/dist/iris-windows.zip.sha256
+            release/dist/iris-windows-installer.zip
+            release/dist/iris-windows-installer.zip.sha256
+            release/dist/install-iris-windows.ps1
+            release/dist/install-iris-windows.ps1.sha256
+            release/dist/iris-unsigned-build.json
+          key: iris-release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Verify unsigned build provenance without executing the payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $provenancePath = "release\dist\iris-unsigned-build.json"
+          $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+          if (
+            [int]$provenance.schema -ne 2 -or
+            [string]$provenance.tag -cne "${{ needs.build.outputs.tag }}" -or
+            [string]$provenance.source_commit -cne "${{ needs.build.outputs.release_commit }}"
+          ) {
+            throw "Unsigned build provenance does not match the reviewed release source."
+          }
+          foreach ($name in @(
+            "iris-windows.zip",
+            "iris-windows-installer.zip",
+            "install-iris-windows.ps1"
+          )) {
+            $path = Join-Path "release\dist" $name
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -cne [string]$provenance.files.$name) {
+              throw "Unsigned build provenance hash mismatch: $name"
+            }
+            $checksum = (Get-Content -LiteralPath "$path.sha256" -Raw).Trim()
+            if ($checksum -notmatch "^$actual\s+$([regex]::Escape($name))$") {
+              throw "Unsigned build checksum mismatch: $name"
+            }
+          }
+
       - name: Build signed MSIX and WinGet submission manifests
-        id: signed_package
-        if: steps.package_changes.outputs.package_changed == 'true' && steps.release_version.outputs.is_semver == 'true'
         shell: pwsh
         env:
           IRIS_SIGNING_PFX_BASE64: ${{ secrets.IRIS_SIGNING_PFX_BASE64 }}
@@ -308,12 +481,13 @@ jobs:
           IRIS_MSIX_PUBLISHER: ${{ secrets.IRIS_MSIX_PUBLISHER }}
         run: |
           $ErrorActionPreference = "Stop"
-          "built=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if (-not $env:IRIS_SIGNING_PFX_BASE64 -or -not $env:IRIS_MSIX_PUBLISHER) {
-            Write-Warning "Signed MSIX was skipped. Configure IRIS_SIGNING_PFX_BASE64, IRIS_SIGNING_PFX_PASSWORD, and IRIS_MSIX_PUBLISHER repository secrets to produce WinGet-ready assets."
-            "### Signed Windows package" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            "Not generated: production signing secrets are not configured." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            exit 0
+          $PSNativeCommandUseErrorActionPreference = $true
+          if (
+            -not $env:IRIS_SIGNING_PFX_BASE64 -or
+            -not $env:IRIS_SIGNING_PFX_PASSWORD -or
+            -not $env:IRIS_MSIX_PUBLISHER
+          ) {
+            throw "Semantic releases require IRIS_SIGNING_PFX_BASE64, IRIS_SIGNING_PFX_PASSWORD, and IRIS_MSIX_PUBLISHER."
           }
 
           $pfxPath = Join-Path $env:RUNNER_TEMP "iris-release-signing.pfx"
@@ -321,71 +495,429 @@ jobs:
             [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:IRIS_SIGNING_PFX_BASE64))
             .\scripts\package_windows_msix.ps1 `
               -Publisher $env:IRIS_MSIX_PUBLISHER `
-              -Version "${{ steps.release_version.outputs.msix_version }}" `
+              -Version "${{ needs.build.outputs.msix_version }}" `
               -PfxPath $pfxPath `
               -PfxPassword $env:IRIS_SIGNING_PFX_PASSWORD
             .\scripts\test_windows_msix_signature.ps1 `
-              -ExpectedPackageVersion "${{ steps.release_version.outputs.msix_version }}" `
+              -ExpectedPackageVersion "${{ needs.build.outputs.msix_version }}" `
               -ExpectedPublisher $env:IRIS_MSIX_PUBLISHER
             .\scripts\generate_winget_manifests.ps1 `
-              -PackageVersion "${{ steps.release_version.outputs.package_version }}" `
-              -MsixPath .\release\dist\iris-windows.msix
-            "built=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              -PackageVersion "${{ needs.build.outputs.package_version }}" `
+              -MsixPath .\release\dist\iris-windows.msix `
+              -ExpectedPublisher $env:IRIS_MSIX_PUBLISHER
             "### Signed Windows package" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
-            "Signed MSIX and WinGet submission bundle generated for v${{ steps.release_version.outputs.package_version }}." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "Signed MSIX and WinGet submission bundle generated for v${{ needs.build.outputs.package_version }}." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           } finally {
             if (Test-Path -LiteralPath $pfxPath) {
               Remove-Item -LiteralPath $pfxPath -Force
             }
           }
 
-      - name: Upload release assets
-        if: steps.package_changes.outputs.package_changed == 'true'
-        uses: softprops/action-gh-release@v3
+      - name: Record signed artifact provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releaseFiles = @(
+            "install-iris-windows.ps1",
+            "install-iris-windows.ps1.sha256",
+            "iris-windows-installer.zip",
+            "iris-windows-installer.zip.sha256",
+            "iris-windows.zip",
+            "iris-windows.zip.sha256",
+            "iris-windows.msix",
+            "iris-windows.msix.sha256",
+            "iris-msix-signing.cer",
+            "iris-msix-signing.cer.sha256",
+            "winget/iris-winget-manifests.zip",
+            "winget/iris-winget-manifests.zip.sha256"
+          )
+          $signature = Get-AuthenticodeSignature -LiteralPath "release\dist\iris-windows.msix"
+          if (-not $signature.SignerCertificate -or $signature.Status -ne "Valid") {
+            throw "Signed build provenance requires a trusted MSIX signature."
+          }
+          if (-not $signature.TimeStamperCertificate) {
+            throw "Signed build provenance requires a trusted RFC 3161 timestamp."
+          }
+          $provenance = [ordered]@{
+            schema = 3
+            tag = "${{ needs.build.outputs.tag }}"
+            source_commit = "${{ needs.build.outputs.release_commit }}"
+            workflow_run_id = [long]"${{ github.run_id }}"
+            workflow_run_attempt = [int]"${{ github.run_attempt }}"
+            package_version = "${{ needs.build.outputs.package_version }}"
+            msix_version = "${{ needs.build.outputs.msix_version }}"
+            unsigned_build_provenance_sha256 = (
+              Get-FileHash -LiteralPath "release\dist\iris-unsigned-build.json" -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            signer_subject = [string]$signature.SignerCertificate.Subject
+            signer_thumbprint = ([string]$signature.SignerCertificate.Thumbprint).ToLowerInvariant()
+            timestamp_subject = [string]$signature.TimeStamperCertificate.Subject
+            timestamp_thumbprint = ([string]$signature.TimeStamperCertificate.Thumbprint).ToLowerInvariant()
+            files = [ordered]@{}
+          }
+          foreach ($relativePath in $releaseFiles) {
+            $path = Join-Path "release\dist" $relativePath
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Signed release output is missing: $relativePath"
+            }
+            $provenance.files[$relativePath] = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+          }
+          $provenance |
+            ConvertTo-Json -Depth 4 |
+            Set-Content -LiteralPath "release\dist\iris-signed-build.json" -Encoding utf8
+
+      - name: Cache signed artifacts for the credential-isolated draft job
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
-          body: |
-            ## Windows install
-
-            1. Download `iris-windows-installer.zip`.
-            2. Extract the ZIP.
-            3. Double-click `Install Iris.bat`.
-            4. Follow the setup wizard.
-
-            The installer verifies the packaged payload before installation.
-            Advanced users can use `iris-windows.zip` as the portable package.
-
-            Signed semantic releases may also include an MSIX and a WinGet
-            submission bundle. `winget install/upgrade AlejandroPinto.Iris`
-            becomes public only after Microsoft accepts the manifests into
-            `microsoft/winget-pkgs`.
-          files: |
-            release/dist/iris-windows.zip
-            release/dist/iris-windows.zip.sha256
-            release/dist/iris-windows-installer.zip
-            release/dist/iris-windows-installer.zip.sha256
+          path: |
             release/dist/install-iris-windows.ps1
             release/dist/install-iris-windows.ps1.sha256
+            release/dist/iris-windows-installer.zip
+            release/dist/iris-windows-installer.zip.sha256
+            release/dist/iris-windows.zip
+            release/dist/iris-windows.zip.sha256
             release/dist/iris-windows.msix
             release/dist/iris-windows.msix.sha256
             release/dist/iris-msix-signing.cer
             release/dist/iris-msix-signing.cer.sha256
             release/dist/winget/iris-winget-manifests.zip
             release/dist/winget/iris-winget-manifests.zip.sha256
+            release/dist/iris-unsigned-build.json
+            release/dist/iris-signed-build.json
+          key: iris-release-signed-${{ github.run_id }}-${{ github.run_attempt }}
 
-      - name: Verify immutable versioned release
-        if: steps.package_changes.outputs.package_changed == 'true' && steps.release_version.outputs.is_semver == 'true'
+      - name: Retain immutable build provenance for the lifecycle gate
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: iris-signed-provenance-${{ needs.build.outputs.tag }}-attempt-${{ github.run_attempt }}
+          path: |
+            release/dist/iris-unsigned-build.json
+            release/dist/iris-signed-build.json
+          if-no-files-found: error
+          retention-days: 10
+          compression-level: 9
+
+  draft:
+    name: Create and verify private draft
+    needs:
+      - build
+      - sign
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      IRIS_RELEASE_TAG: ${{ needs.build.outputs.tag }}
+
+    steps:
+      - name: Check out exact reviewed release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.tag }}
+
+      - name: Reverify protected source before drafting
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          git fetch --force --no-tags origin "refs/heads/main:refs/remotes/origin/main"
+          $tagCommit = (git rev-parse "refs/tags/$env:IRIS_RELEASE_TAG^{commit}").Trim().ToLowerInvariant()
+          $mainCommit = (git rev-parse "refs/remotes/origin/main^{commit}").Trim().ToLowerInvariant()
+          $checkedOutCommit = (git rev-parse "HEAD^{commit}").Trim().ToLowerInvariant()
+          $expectedCommit = "${{ needs.build.outputs.release_commit }}".ToLowerInvariant()
+          if (
+            $tagCommit -cne $expectedCommit -or
+            $mainCommit -cne $expectedCommit -or
+            $checkedOutCommit -cne $expectedCommit
+          ) {
+            throw "The draft runner source, semantic tag, signed provenance, and protected main head must match."
+          }
+
+      - name: Restore signed release artifacts
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            release/dist/install-iris-windows.ps1
+            release/dist/install-iris-windows.ps1.sha256
+            release/dist/iris-windows-installer.zip
+            release/dist/iris-windows-installer.zip.sha256
+            release/dist/iris-windows.zip
+            release/dist/iris-windows.zip.sha256
+            release/dist/iris-windows.msix
+            release/dist/iris-windows.msix.sha256
+            release/dist/iris-msix-signing.cer
+            release/dist/iris-msix-signing.cer.sha256
+            release/dist/winget/iris-winget-manifests.zip
+            release/dist/winget/iris-winget-manifests.zip.sha256
+            release/dist/iris-unsigned-build.json
+            release/dist/iris-signed-build.json
+          key: iris-release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+
+      - name: Verify signed artifact provenance without executing the payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $provenancePath = "release\dist\iris-signed-build.json"
+          $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+          if (
+            [int]$provenance.schema -ne 3 -or
+            [string]$provenance.tag -cne "${{ needs.build.outputs.tag }}" -or
+            [string]$provenance.source_commit -cne "${{ needs.build.outputs.release_commit }}" -or
+            [long]$provenance.workflow_run_id -ne [long]"${{ github.run_id }}" -or
+            [int]$provenance.workflow_run_attempt -ne [int]"${{ github.run_attempt }}" -or
+            [string]$provenance.package_version -cne "${{ needs.build.outputs.package_version }}" -or
+            [string]$provenance.msix_version -cne "${{ needs.build.outputs.msix_version }}"
+          ) {
+            throw "Signed artifact provenance does not match the reviewed release source."
+          }
+          $releaseFiles = @(
+            "install-iris-windows.ps1",
+            "install-iris-windows.ps1.sha256",
+            "iris-windows-installer.zip",
+            "iris-windows-installer.zip.sha256",
+            "iris-windows.zip",
+            "iris-windows.zip.sha256",
+            "iris-windows.msix",
+            "iris-windows.msix.sha256",
+            "iris-msix-signing.cer",
+            "iris-msix-signing.cer.sha256",
+            "winget/iris-winget-manifests.zip",
+            "winget/iris-winget-manifests.zip.sha256"
+          )
+          $provenanceNames = @($provenance.files.PSObject.Properties.Name | Sort-Object)
+          if (
+            $provenanceNames.Count -ne $releaseFiles.Count -or
+            (Compare-Object -ReferenceObject @($releaseFiles | Sort-Object) -DifferenceObject $provenanceNames)
+          ) {
+            throw "Signed artifact provenance contains an unexpected release file set."
+          }
+          foreach ($relativePath in $releaseFiles) {
+            $path = Join-Path "release\dist" $relativePath
+            $expectedHash = [string]$provenance.files.PSObject.Properties[$relativePath].Value
+            $actualHash = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($actualHash -cne $expectedHash) {
+              throw "Signed artifact provenance hash mismatch: $relativePath"
+            }
+          }
+          if (
+            -not ([string]$provenance.signer_subject).Trim() -or
+            [string]$provenance.signer_subject -match "[\r\n]" -or
+            [string]$provenance.signer_thumbprint -notmatch "^[a-fA-F0-9]{40}$" -or
+            -not ([string]$provenance.timestamp_subject).Trim() -or
+            [string]$provenance.timestamp_subject -match "[\r\n]" -or
+            [string]$provenance.timestamp_thumbprint -notmatch "^[a-fA-F0-9]{40}$"
+          ) {
+            throw "Signed artifact provenance has invalid signer or timestamp metadata."
+          }
+          $unsignedProvenanceHash = (
+            Get-FileHash -LiteralPath "release\dist\iris-unsigned-build.json" -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+          if (
+            $unsignedProvenanceHash -cne
+            [string]$provenance.unsigned_build_provenance_sha256
+          ) {
+            throw "Signed artifact provenance does not bind to the tested unsigned build."
+          }
+          "IRIS_EXPECTED_MSIX_PUBLISHER=$([string]$provenance.signer_subject)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+          "IRIS_EXPECTED_MSIX_SIGNER_THUMBPRINT=$([string]$provenance.signer_thumbprint)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Render release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $template = Get-Content -LiteralPath .\.github\release-notes-template.md -Raw
+          $notes = $template.Replace(
+            "{{VERSION}}",
+            "${{ needs.build.outputs.package_version }}"
+          ).Replace("{{TAG}}", $env:IRIS_RELEASE_TAG)
+          $notesPath = Join-Path $env:RUNNER_TEMP "iris-release-notes.md"
+          Set-Content -LiteralPath $notesPath -Value $notes -Encoding utf8
+          "IRIS_RELEASE_NOTES=$notesPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Create a new draft atomically and upload complete release assets
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          IRIS_SIGNED_PACKAGE_BUILT: ${{ steps.signed_package.outputs.built }}
         run: |
-          $arguments = @{
-            Tag = $env:GITHUB_REF_NAME
-            ExpectedCommit = $env:GITHUB_SHA
-            DownloadPayloads = $true
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $request = [ordered]@{
+            tag_name = $env:IRIS_RELEASE_TAG
+            target_commitish = "${{ needs.build.outputs.release_commit }}"
+            name = "${{ needs.build.outputs.release_title }}"
+            body = Get-Content -LiteralPath $env:IRIS_RELEASE_NOTES -Raw
+            draft = $true
+            prerelease = $false
+            generate_release_notes = $true
+            make_latest = "false"
           }
-          if ($env:IRIS_SIGNED_PACKAGE_BUILT -eq "true") {
-            $arguments.RequireSignedMsix = $true
-            $arguments.RequireWingetBundle = $true
+          $requestPath = Join-Path $env:RUNNER_TEMP "iris-create-release.json"
+          $request | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $requestPath -Encoding utf8
+          $createdJson = gh api `
+            --method POST `
+            "repos/${{ github.repository }}/releases" `
+            --input $requestPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Atomic draft creation failed. A 422 response means the tag already has a release; no existing release will be reused."
           }
-          .\scripts\test_github_versioned_release.ps1 @arguments
+          $created = ($createdJson -join "`n") | ConvertFrom-Json
+          if (
+            [long]$created.id -le 0 -or
+            [string]$created.tag_name -cne $env:IRIS_RELEASE_TAG -or
+            -not $created.draft -or
+            $created.prerelease -or
+            [string]$created.author.login -cne "github-actions[bot]" -or
+            [string]$created.upload_url -notmatch
+              "/repos/${{ github.repository }}/releases/$([long]$created.id)/assets"
+          ) {
+            throw "GitHub did not return the exact newly created private draft."
+          }
+          $assets = @(
+            "release/dist/iris-windows.zip",
+            "release/dist/iris-windows.zip.sha256",
+            "release/dist/iris-windows-installer.zip",
+            "release/dist/iris-windows-installer.zip.sha256",
+            "release/dist/install-iris-windows.ps1",
+            "release/dist/install-iris-windows.ps1.sha256",
+            "release/dist/iris-windows.msix",
+            "release/dist/iris-windows.msix.sha256",
+            "release/dist/iris-msix-signing.cer",
+            "release/dist/iris-msix-signing.cer.sha256",
+            "release/dist/winget/iris-winget-manifests.zip",
+            "release/dist/winget/iris-winget-manifests.zip.sha256",
+            "release/dist/iris-unsigned-build.json",
+            "release/dist/iris-signed-build.json"
+          )
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) {
+              throw "Draft asset is missing: $asset"
+            }
+          }
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GH_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $uploadBase = ([string]$created.upload_url).Split("{")[0]
+          foreach ($asset in $assets) {
+            $name = [System.IO.Path]::GetFileName($asset)
+            $uploadUri = "${uploadBase}?name=$([uri]::EscapeDataString($name))"
+            $uploaded = Invoke-RestMethod `
+              -Method Post `
+              -Uri $uploadUri `
+              -Headers $headers `
+              -ContentType "application/octet-stream" `
+              -InFile $asset
+            if (
+              [long]$uploaded.id -le 0 -or
+              [string]$uploaded.name -cne $name
+            ) {
+              throw "GitHub did not confirm asset upload to the newly created release: $name"
+            }
+          }
+          "IRIS_DRAFT_RELEASE_ID=$([long]$created.id)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Verify draft release before publication
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          .\scripts\test_github_versioned_release.ps1 `
+            -Tag $env:IRIS_RELEASE_TAG `
+            -ExpectedCommit "${{ needs.build.outputs.release_commit }}" `
+            -ExpectedReleaseId $env:IRIS_DRAFT_RELEASE_ID `
+            -ExpectedAuthor "github-actions[bot]" `
+            -ExpectedName "${{ needs.build.outputs.release_title }}" `
+            -ExpectedBodyPrefix "Iris ${{ needs.build.outputs.package_version }} is a local-first Windows AI assistant" `
+            -ExpectedPublisher $env:IRIS_EXPECTED_MSIX_PUBLISHER `
+            -ExpectedSignerThumbprint $env:IRIS_EXPECTED_MSIX_SIGNER_THUMBPRINT `
+            -ExpectedProvenancePath .\release\dist\iris-signed-build.json `
+            -AllowDraft `
+            -RequireSignedMsix `
+            -RequireWingetBundle `
+            -RequireBuildProvenance `
+            -DownloadPayloads
+
+      - name: Report external lifecycle publication gate
+        shell: pwsh
+        run: |
+          "### Publication remains blocked by the clean-VM lifecycle gate" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "The signed semantic release is a verified private draft. Run that exact MSIX through the release-only WACK, install, registered-launch, and uninstall gate in scripts/test_windows_msix_lifecycle_guest.ps1, then publish it with the bound WACK report and lifecycle evidence through scripts/publish_github_versioned_release.ps1." |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+  cleanup:
+    name: Delete transient release caches
+    needs:
+      - build
+      - sign
+      - draft
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IRIS_CACHE_REF: ${{ github.ref }}
+      IRIS_REPOSITORY: ${{ github.repository }}
+      IRIS_UNSIGNED_CACHE_KEY: iris-release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+      IRIS_SIGNED_CACHE_KEY: iris-release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - name: Delete only this attempt's exact transfer caches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          foreach ($key in @(
+            $env:IRIS_UNSIGNED_CACHE_KEY,
+            $env:IRIS_SIGNED_CACHE_KEY
+          )) {
+            if (-not $key) {
+              throw "Transient release cache key is empty."
+            }
+            $encodedKey = [uri]::EscapeDataString($key)
+            $encodedRef = [uri]::EscapeDataString($env:IRIS_CACHE_REF)
+            $cachePagesJson = gh api --paginate --slurp `
+              "repos/$env:IRIS_REPOSITORY/actions/caches?key=$encodedKey&ref=$encodedRef&per_page=100"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not enumerate the exact transient release cache key: $key"
+            }
+            $cachePages = @(($cachePagesJson -join "`n") | ConvertFrom-Json)
+            $caches = @(
+              $cachePages |
+                ForEach-Object { @($_.actions_caches) }
+            )
+            if (
+              $cachePages.Count -eq 0 -or
+              $caches.Count -ne [int]$cachePages[0].total_count
+            ) {
+              throw "Transient release cache pagination was incomplete for: $key"
+            }
+            $exactCaches = @(
+              $caches |
+                Where-Object {
+                  [string]$_.key -ceq $key -and
+                  [string]$_.ref -ceq $env:IRIS_CACHE_REF
+                }
+            )
+            foreach ($cache in $exactCaches) {
+              gh api --method DELETE `
+                "repos/$env:IRIS_REPOSITORY/actions/caches/$([long]$cache.id)"
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not delete exact transient release cache ID $([long]$cache.id)."
+              }
+            }
+          }

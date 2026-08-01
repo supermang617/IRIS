@@ -88,13 +88,13 @@ function Get-RepairPlan {
         }
         "^System browser executable$" {
             return [pscustomobject]@{
-                Title = "Install Microsoft Edge"
-                Description = "Iris uses an installed Edge or Chrome executable for approval-gated browser tools. Browser data remains in Iris' isolated profile."
-                Link = "https://www.microsoft.com/edge/download"
+                Title = "Install Google Chrome"
+                Description = "Iris uses an installed Google Chrome executable for approval-gated browser tools. Browser data remains in Iris' isolated profile."
+                Link = "https://www.google.com/chrome/"
                 Commands = @(
-                    "winget install --id Microsoft.Edge -e --accept-source-agreements --accept-package-agreements"
+                    "winget install --id Google.Chrome -e --accept-source-agreements --accept-package-agreements"
                 )
-                Action = "winget:edge"
+                Action = "winget:chrome"
             }
         }
         "^Ollama executable$" {
@@ -236,12 +236,12 @@ function Invoke-Repair {
             & winget install --id Microsoft.EdgeWebView2Runtime -e --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -ne 0) { throw "WebView2 winget install failed with exit code $LASTEXITCODE" }
         }
-        "winget:edge" {
+        "winget:chrome" {
             if (-not (Test-CommandAvailable -Name "winget")) {
                 throw "winget is not available. Use the official link instead: $($Plan.Link)"
             }
-            & winget install --id Microsoft.Edge -e --accept-source-agreements --accept-package-agreements
-            if ($LASTEXITCODE -ne 0) { throw "Microsoft Edge winget install failed with exit code $LASTEXITCODE" }
+            & winget install --id Google.Chrome -e --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) { throw "Google Chrome winget install failed with exit code $LASTEXITCODE" }
         }
         "winget:ollama" {
             if (-not (Test-CommandAvailable -Name "winget")) {

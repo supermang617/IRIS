@@ -1,12 +1,17 @@
-# Project IRIS
+# Iris — Local-First Windows AI Assistant
 
-Produced by Alejandro Pinto.
+![Iris local-first Windows AI companion](site/assets/iris-social-preview.jpg)
 
-Contact: super.mangmail@gmail.com
+Iris is a private, local-first Windows companion with natural voice, vision,
+user-controlled memory, Ollama inference, and approval-gated Hermes agent
+tools. Iris sees, listens, thinks, speaks, and remembers only with permission.
 
-IRIS is a local-first Windows assistant. Iris sees, listens, thinks, speaks, and can remember with permission. 
+[Download Iris v1](https://supermang617.github.io/IRIS/) ·
+[Read the setup guide](docs/download-and-run.md) ·
+[Review privacy](PRIVACY.md) ·
+[Report an issue](https://github.com/supermang617/IRIS/issues)
 
-Website and v1 download: https://supermang617.github.io/IRIS/
+Produced by Alejandro Pinto. Contact: super.mangmail@gmail.com
 
 This repository is public and source-first so people can inspect, test, and submit narrow fixes. Contributions should stay focused on bug fixes, safety-preserving diagnostics, documentation fixes, compatibility repairs, and tests for existing behavior.
 
@@ -99,14 +104,15 @@ Run from `C:\Projects\IRIS`:
 
 ```powershell
 cargo fmt --all -- --check
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace
-cargo run -p xtask
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo run --locked -p xtask
 cargo run -p iris-runtime -- --self-check
 cargo run -p iris-runtime -- --dashboard-json
 npm run test:voice
 npm run test:python
+npm run test:site
 scripts\test_vision_text_diagnostics.ps1
 scripts\test_release_model_e2e.ps1
 scripts\iris_preflight_wizard.ps1
@@ -116,9 +122,12 @@ scripts\test_windows_installer.ps1
 scripts\test_iris_data_root.ps1
 scripts\test_iris_windows_update.ps1
 scripts\test_windows_browser_payload.ps1
+scripts\test_release_workflow.ps1
+scripts\test_voice_interruption_diagnostics.ps1
 scripts\test_winget_manifests.ps1
 scripts\test_windows_signed_installer_readiness.ps1
 scripts\test_windows_msix_signature.ps1
+scripts\test_windows_msix_lifecycle_guest_static.ps1
 git diff --check
 ```
 
@@ -140,7 +149,14 @@ Beginner preflight guide: `docs/installer-preflight.md`.
 Windows installer plan: `docs/windows-installer.md`.
 Signed installer decision: `docs/signed-installer-decision.md`.
 WinGet release and external submission path: `docs/winget-release.md`.
+Semantic tag builds remain private drafts until the documented clean-VM
+release-only WACK PASS, install, registered-launch, uninstall, and
+state-preservation evidence is passed to
+`scripts\publish_github_versioned_release.ps1`. Lifecycle schema 3 binds the
+exact signed MSIX and WACK report hashes. In-place upgrade testing begins with
+the first genuine higher semantic release.
 Runtime orchestration: `docs/runtime-orchestration.md`.
+Privacy policy: `PRIVACY.md`.
 Historical manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
 The recommended beginner download is `iris-windows-installer.zip`: extract it
 and double-click `Install Iris.bat`. The portable release remains available for

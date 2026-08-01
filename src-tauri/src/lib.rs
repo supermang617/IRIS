@@ -2388,31 +2388,54 @@ fn privacy_safe_diagnostic_detail(event: &str, detail: &str) -> String {
     let detail = detail.trim();
     match event {
         "native_asr_result" | "speech_interruption_result" => {
-            let mut parts = detail.split(';').map(str::trim);
+            let mut parts = detail.splitn(4, ';').map(str::trim);
             let timing = parts.next().unwrap_or_default();
-            let mut metrics = Vec::new();
-            let mut transcript_chars = 0_usize;
-            for part in parts {
-                if part.starts_with("capture_ms=") || part.starts_with("stt_ms=") {
-                    metrics.push(json_capped(part));
-                } else {
-                    transcript_chars += part.chars().count();
-                }
-            }
-            let metric_text = if metrics.is_empty() {
-                String::new()
-            } else {
-                format!("; {}", metrics.join("; "))
+            let capture = parts.next().unwrap_or_default();
+            let stt = parts.next().unwrap_or_default();
+            let transcript = parts.next().unwrap_or_default();
+            let is_safe_metric_value = |value: &str| {
+                value == "unknown"
+                    || (!value.is_empty()
+                        && value.chars().all(|character| character.is_ascii_digit()))
             };
-            format!(
-                "{}{}; transcript_chars={}",
-                json_capped(timing.trim()),
-                metric_text,
-                transcript_chars
-            )
+            let timing_is_safe = timing.strip_suffix("ms").is_some_and(is_safe_metric_value);
+            let capture_is_safe = capture
+                .strip_prefix("capture_ms=")
+                .is_some_and(is_safe_metric_value);
+            let stt_is_safe = stt
+                .strip_prefix("stt_ms=")
+                .is_some_and(is_safe_metric_value);
+            if timing_is_safe && capture_is_safe && stt_is_safe {
+                format!(
+                    "{timing}; {capture}; {stt}; transcript_chars={}",
+                    transcript.chars().count()
+                )
+            } else {
+                format!("transcript_chars={}", detail.chars().count())
+            }
         }
         "speech_interruption_detected" => {
-            format!("transcript_chars={}", detail.chars().count())
+            let parsed = detail
+                .rsplit_once("; request=")
+                .and_then(|(before_request, request)| {
+                    before_request
+                        .rsplit_once("; resolution_ms=")
+                        .map(|(transcript, resolution_ms)| (transcript, resolution_ms, request))
+                })
+                .filter(|(_, resolution_ms, request)| {
+                    !resolution_ms.is_empty()
+                        && resolution_ms.chars().all(|value| value.is_ascii_digit())
+                        && !request.is_empty()
+                        && request.chars().all(|value| value.is_ascii_digit())
+                });
+            if let Some((transcript, resolution_ms, request)) = parsed {
+                format!(
+                    "resolution_ms={resolution_ms}; request={request}; transcript_chars={}",
+                    transcript.chars().count()
+                )
+            } else {
+                format!("transcript_chars={}", detail.chars().count())
+            }
         }
         "voice_decision" | "speech_interruption_decision" => {
             let mut parts = detail.splitn(3, ':');
@@ -3735,6 +3758,66 @@ fn state_root_for(resource_root: &std::path::Path) -> Result<std::path::PathBuf,
         std::env::var_os("USERPROFILE").as_deref(),
         &std::env::temp_dir(),
     )
+}
+
+fn valid_msix_lifecycle_context(value: &str) -> bool {
+    value
+        .strip_prefix("iris-disposable-guest-")
+        .is_some_and(|suffix| suffix.len() == 32 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+fn write_msix_lifecycle_probe_at(
+    state_root: &Path,
+    test_context_id: &str,
+    executable: &Path,
+) -> Result<PathBuf, String> {
+    if !valid_msix_lifecycle_context(test_context_id) {
+        return Err("invalid MSIX lifecycle test context".to_string());
+    }
+    let executable_name = executable
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Iris executable name is unavailable".to_string())?;
+    let diagnostics = state_root.join("diagnostics");
+    fs::create_dir_all(&diagnostics).map_err(|err| err.to_string())?;
+    let path = diagnostics.join(format!("msix-lifecycle-{test_context_id}.json"));
+    let created_utc_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| err.to_string())?
+        .as_millis();
+    let payload = serde_json::json!({
+        "schema": 1,
+        "purpose": "signed-release-lifecycle",
+        "test_context_id": test_context_id,
+        "executable": executable_name,
+        "created_utc_ms": created_utc_ms,
+    });
+    let json = serde_json::to_vec_pretty(&payload).map_err(|err| err.to_string())?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|err| format!("refusing to overwrite MSIX lifecycle probe: {err}"))?;
+    file.write_all(&json).map_err(|err| err.to_string())?;
+    file.sync_all().map_err(|err| err.to_string())?;
+    Ok(path)
+}
+
+fn run_msix_lifecycle_probe_if_requested() -> Option<Result<(), String>> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) != Some("--msix-lifecycle-probe") {
+        return None;
+    }
+    let result = (|| {
+        if args.len() != 2 {
+            return Err("--msix-lifecycle-probe requires exactly one test context".to_string());
+        }
+        let state = state_root()?;
+        let executable = std::env::current_exe().map_err(|err| err.to_string())?;
+        write_msix_lifecycle_probe_at(&state, &args[1], &executable)?;
+        Ok(())
+    })();
+    Some(result)
 }
 
 fn resolve_state_root(
@@ -5646,6 +5729,13 @@ fn keep_main_window_visible_after_startup(
 }
 
 pub fn run() {
+    if let Some(result) = run_msix_lifecycle_probe_if_requested() {
+        if let Err(error) = result {
+            eprintln!("Iris MSIX lifecycle probe failed: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
     if INSTANCE_LOCK
         .set(match TcpListener::bind("127.0.0.1:48729") {
             Ok(listener) => listener,
@@ -5955,6 +6045,118 @@ mod tests {
             "812ms; capture_ms=320; stt_ms=492; transcript_chars=26"
         );
         assert!(!line.contains("private spoken sentence"));
+    }
+
+    #[test]
+    fn asr_diagnostics_do_not_trust_transcript_metric_fragments() {
+        for event in ["native_asr_result", "speech_interruption_result"] {
+            let line = voice_diagnostic_jsonl(
+                "test-session",
+                123,
+                VoiceDiagnosticEvent {
+                    event: event.to_string(),
+                    detail: "812ms; capture_ms=320; stt_ms=492; private; capture_ms=home address; stt_ms=secret"
+                        .to_string(),
+                    mode: "push".to_string(),
+                    listening: false,
+                    thinking: false,
+                    speaking: false,
+                    voice_loop: false,
+                    wake_word: true,
+                    wake_command_armed: false,
+                },
+            )
+            .expect("voice diagnostic jsonl");
+            let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+
+            assert_eq!(
+                parsed["detail"],
+                "812ms; capture_ms=320; stt_ms=492; transcript_chars=47"
+            );
+            assert!(!line.contains("home address"));
+            assert!(!line.contains("secret"));
+        }
+    }
+
+    #[test]
+    fn asr_diagnostics_fail_closed_for_malformed_positional_metrics() {
+        let line = voice_diagnostic_jsonl(
+            "test-session",
+            123,
+            VoiceDiagnosticEvent {
+                event: "native_asr_result".to_string(),
+                detail: "812ms; capture_ms=private address; stt_ms=492; ordinary transcript"
+                    .to_string(),
+                mode: "push".to_string(),
+                listening: false,
+                thinking: false,
+                speaking: false,
+                voice_loop: false,
+                wake_word: true,
+                wake_command_armed: false,
+            },
+        )
+        .expect("voice diagnostic jsonl");
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+
+        assert_eq!(parsed["detail"], "transcript_chars=66");
+        assert!(!line.contains("private address"));
+        assert!(!line.contains("ordinary transcript"));
+    }
+
+    #[test]
+    fn confirmed_interruption_diagnostics_keep_metrics_without_transcript() {
+        let line = voice_diagnostic_jsonl(
+            "test-session",
+            123,
+            VoiceDiagnosticEvent {
+                event: "speech_interruption_detected".to_string(),
+                detail: "Iris actually stop; resolution_ms=684; request=9".to_string(),
+                mode: "wake".to_string(),
+                listening: false,
+                thinking: false,
+                speaking: true,
+                voice_loop: true,
+                wake_word: true,
+                wake_command_armed: false,
+            },
+        )
+        .expect("voice diagnostic jsonl");
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+
+        assert_eq!(
+            parsed["detail"],
+            "resolution_ms=684; request=9; transcript_chars=18"
+        );
+        assert!(!line.contains("actually stop"));
+    }
+
+    #[test]
+    fn confirmed_interruption_diagnostics_do_not_trust_transcript_fragments() {
+        let line = voice_diagnostic_jsonl(
+            "test-session",
+            123,
+            VoiceDiagnosticEvent {
+                event: "speech_interruption_detected".to_string(),
+                detail: "keep this private; request=also private; resolution_ms=684; request=9"
+                    .to_string(),
+                mode: "wake".to_string(),
+                listening: false,
+                thinking: false,
+                speaking: true,
+                voice_loop: true,
+                wake_word: true,
+                wake_command_armed: false,
+            },
+        )
+        .expect("voice diagnostic jsonl");
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).expect("valid json");
+
+        assert_eq!(
+            parsed["detail"],
+            "resolution_ms=684; request=9; transcript_chars=39"
+        );
+        assert!(!line.contains("also private"));
     }
 
     #[test]
@@ -6967,6 +7169,43 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove state resolution test directory");
+    }
+
+    #[test]
+    fn msix_lifecycle_probe_is_iris_created_bounded_and_non_overwriting() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-msix-lifecycle-probe-test-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        let context = "iris-disposable-guest-0123456789abcdef0123456789abcdef";
+        let path = write_msix_lifecycle_probe_at(
+            &root,
+            context,
+            Path::new("C:/Program Files/WindowsApps/Iris/iris-tauri.exe"),
+        )
+        .expect("write lifecycle probe");
+        let payload = serde_json::from_slice::<serde_json::Value>(
+            &fs::read(&path).expect("read lifecycle probe"),
+        )
+        .expect("parse lifecycle probe");
+
+        assert_eq!(payload["schema"], 1);
+        assert_eq!(payload["purpose"], "signed-release-lifecycle");
+        assert_eq!(payload["test_context_id"], context);
+        assert_eq!(payload["executable"], "iris-tauri.exe");
+        assert!(path.starts_with(root.join("diagnostics")));
+        assert!(
+            write_msix_lifecycle_probe_at(&root, context, Path::new("iris-tauri.exe"))
+                .expect_err("probe overwrite must fail")
+                .contains("refusing to overwrite")
+        );
+        assert!(
+            write_msix_lifecycle_probe_at(&root, "bad-context", Path::new("iris-tauri.exe"))
+                .is_err()
+        );
+
+        fs::remove_dir_all(root).expect("remove lifecycle probe test directory");
     }
 
     #[test]

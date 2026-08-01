@@ -14,7 +14,8 @@ permissions:
 jobs:
   validate:
     name: Validate
-    runs-on: windows-latest
+    runs-on: windows-2025
+    timeout-minutes: 180
     env:
       CARGO_TERM_COLOR: always
       GGML_AVX: "ON"
@@ -33,28 +34,38 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "24"
+          node-version: "24.18.1"
           cache: npm
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.13"
+          python-version: "3.13.13"
 
       - name: Install LLVM for whisper-rs bindgen
         shell: pwsh
         run: |
-          choco install llvm -y --no-progress
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          choco install llvm --version=22.1.7 -y --no-progress
+          $clangVersion = (& "C:\Program Files\LLVM\bin\clang.exe" --version | Select-Object -First 1)
+          if ($clangVersion -notmatch "^clang version 22\.1\.7\b") {
+            throw "Expected LLVM 22.1.7, found: $clangVersion"
+          }
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install Rust components
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           rustup component add rustfmt clippy
           rustc --version
           cargo --version
@@ -65,7 +76,9 @@ jobs:
       - name: Provision pinned Iris runtimes
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check --no-input "uv==0.11.12"
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --disable-pip-version-check --no-input --require-hashes -r profiles\uv_windows_amd64.lock.txt
           $uvVersion = (& uv --version | Select-Object -First 1)
           if ($uvVersion -notmatch "^uv 0\.11\.12\b") {
             throw "Expected uv 0.11.12, found: $uvVersion"
@@ -77,6 +90,8 @@ jobs:
       - name: Audit dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           .\scripts\test_model_asset_lock.ps1
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
@@ -95,7 +110,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Run Clippy
-        run: cargo clippy --workspace --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run voice tests
         run: npm run test:voice
@@ -106,14 +121,19 @@ jobs:
       - name: Run Windows delivery tests
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           npm run test:site
           .\scripts\test_iris_data_root.ps1
           .\scripts\test_iris_windows_update.ps1
           .\scripts\test_windows_installer_path_safety.ps1
           .\scripts\test_windows_launcher_defaults.ps1
           .\scripts\test_windows_browser_payload.ps1
+          .\scripts\test_release_workflow.ps1
+          .\scripts\test_voice_interruption_diagnostics.ps1
           .\scripts\test_winget_manifests.ps1
           .\scripts\test_windows_signed_installer_readiness.ps1
+          .\scripts\test_windows_msix_lifecycle_guest_static.ps1
 
       - name: Run repository audit
         run: cargo run --locked -p xtask
@@ -121,6 +141,8 @@ jobs:
       - name: Run deterministic runtime checks
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           cargo run --locked -p iris-runtime -- --dashboard-json
           $stdoutPath = Join-Path $env:RUNNER_TEMP "iris-self-check-stdout.txt"
           $stderrPath = Join-Path $env:RUNNER_TEMP "iris-self-check-stderr.txt"
@@ -142,6 +164,8 @@ jobs:
       - name: Capture dependency inventory
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
           cargo metadata --locked --format-version 1 | Set-Content diagnostics\cargo-metadata.json
           npm ls --all --json | Set-Content diagnostics\npm-dependencies.json
@@ -150,15 +174,17 @@ jobs:
           python -m pip list --path .\.iris-runtime\voice\Lib\site-packages --format freeze | Set-Content diagnostics\voice-python-dependencies.txt
 
       - name: Upload dependency inventory
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: iris-dependency-inventory
+          name: iris-dependency-inventory-attempt-${{ github.run_attempt }}
           path: |
             diagnostics/cargo-metadata.json
             diagnostics/npm-dependencies.json
             diagnostics/browser-npm-dependencies.json
             diagnostics/hermes-python-dependencies.txt
             diagnostics/voice-python-dependencies.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Check whitespace
         run: git diff --check
