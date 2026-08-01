@@ -143,9 +143,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --disable-pip-version-check --no-input --require-hashes -r profiles\uv_windows_amd64.lock.txt
+          $uvLock = (Get-Content -LiteralPath profiles\uv_windows_amd64.lock.txt -Raw).Trim()
+          if ($uvLock -notmatch '^uv==(?<version>[0-9]+(?:\.[0-9]+){2})\s') {
+            throw "Could not read the pinned uv version from profiles/uv_windows_amd64.lock.txt."
+          }
+          $expectedUvVersion = $Matches.version
           $uvVersion = (& uv --version | Select-Object -First 1)
-          if ($uvVersion -notmatch "^uv 0\.11\.12\b") {
-            throw "Expected uv 0.11.12, found: $uvVersion"
+          if ($uvVersion -notmatch ("^uv " + [regex]::Escape($expectedUvVersion) + "\b")) {
+            throw "Expected uv $expectedUvVersion, found: $uvVersion"
           }
           .\scripts\provision_hermes_acp.ps1
           .\scripts\provision_iris_voice_runtime.ps1 -PythonPath (Get-Command python).Source
