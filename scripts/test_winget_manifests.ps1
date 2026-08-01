@@ -18,7 +18,11 @@ foreach ($generatorFragment in @(
         "[string]`$ExpectedPublisher",
         "MSIX package identity must be ProjectIris.LocalAssistant",
         "MSIX processor architecture must be x64",
-        "must contain exactly the three manifests"
+        "must contain exactly the three manifests",
+        '$wingetManifestValidationWarning = -1978335192',
+        '$PSNativeCommandUseErrorActionPreference = $false',
+        "Manifest has the following dependencies that were not validated",
+        "winget validate returned an unexpected manifest warning"
     )) {
     if (-not $generatorSource.Contains($generatorFragment)) {
         throw "WinGet generator is missing production artifact binding: $generatorFragment"

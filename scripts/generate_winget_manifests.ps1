@@ -257,10 +257,49 @@ $localePath = Join-Path $versionRootResolved "$packageIdentifier.locale.en-US.ya
 if (-not $SkipWingetValidation) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
-        $validationOutput = @(& $winget.Source validate --manifest $versionRootResolved --disable-interactivity 2>&1)
-        $validationExitCode = $LASTEXITCODE
+        $hasNativeErrorPreference = Test-Path -LiteralPath Variable:PSNativeCommandUseErrorActionPreference
+        if ($hasNativeErrorPreference) {
+            $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+            $PSNativeCommandUseErrorActionPreference = $false
+        }
+        try {
+            $validationOutput = @(& $winget.Source validate --manifest $versionRootResolved --disable-interactivity 2>&1)
+            $validationExitCode = $LASTEXITCODE
+        } finally {
+            if ($hasNativeErrorPreference) {
+                $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+            }
+        }
         foreach ($line in $validationOutput) {
             Write-Host ([string]$line)
+        }
+        $wingetManifestValidationWarning = -1978335192 # 0x8A150028
+        if ($validationExitCode -eq $wingetManifestValidationWarning) {
+            $expectedDependencyWarningLines = @(
+                "Manifest has the following dependencies that were not validated; ensure that they are valid:",
+                "- Packages",
+                "Google.Chrome",
+                "Microsoft.EdgeWebView2Runtime",
+                "Ollama.Ollama",
+                "Python.Python.3.13",
+                "tesseract-ocr.tesseract",
+                "Manifest validation succeeded."
+            )
+            $actualDependencyWarningLines = @($validationOutput |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { $_ })
+            $unexpectedDependencyWarningLines = @($actualDependencyWarningLines |
+                    Where-Object { $_ -notin $expectedDependencyWarningLines })
+            $missingDependencyWarningLines = @($expectedDependencyWarningLines |
+                    Where-Object { $_ -notin $actualDependencyWarningLines })
+            if (
+                $unexpectedDependencyWarningLines.Count -ne 0 -or
+                $missingDependencyWarningLines.Count -ne 0
+            ) {
+                throw "winget validate returned an unexpected manifest warning (exit code $validationExitCode)."
+            }
+            Write-Warning "winget validated the manifest structure but could not validate its five external package dependencies on this host."
+            $validationExitCode = 0
         }
         $warningLines = @($validationOutput |
                 ForEach-Object { ([string]$_).Trim() } |
