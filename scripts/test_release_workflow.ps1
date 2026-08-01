@@ -317,7 +317,7 @@ $checkoutCount = @(
     [regex]::Matches($allWorkflows, "(?m)^[ \t]*uses:[ \t]*actions/checkout@")
 ).Count
 $nonPersistingCheckoutCount = @(
-    [regex]::Matches($allWorkflows, "(?m)^[ \t]*persist-credentials:[ \t]*false[ \t]*$")
+    [regex]::Matches($allWorkflows, "(?m)^[ \t]*persist-credentials:[ \t]*false[ \t]*\r?$")
 ).Count
 if ($checkoutCount -ne $nonPersistingCheckoutCount) {
     throw "Every checkout must disable persisted GitHub credentials."
