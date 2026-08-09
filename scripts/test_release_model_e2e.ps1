@@ -11,6 +11,7 @@ $originalLocation = (Get-Location).Path
 $sourceManifest = Get-Content -LiteralPath (Join-Path $repoRoot "manifest.json") -Raw | ConvertFrom-Json
 $model = [string]$sourceManifest.model_policy.model_id
 $zipPath = Join-Path $repoRoot "release\dist\iris-windows.zip"
+$rawVisionCanaryPath = Join-Path $repoRoot "scripts\diagnose_raw_ollama_vision.ps1"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -40,6 +41,7 @@ function Invoke-ReleaseRuntime {
 }
 
 Require-File -Path $zipPath
+Require-File -Path $rawVisionCanaryPath
 
 $models = (& ollama list 2>&1) -join "`n"
 if (-not $models.Contains($model)) {
@@ -52,9 +54,14 @@ $capabilities = @($show.capabilities)
 if (-not ($capabilities -contains "vision")) {
     throw "Configured Ollama model does not report vision capability from /api/show. Capabilities: $($capabilities -join ', ')"
 }
+$rawVisionCanary = @(& $rawVisionCanaryPath -PassThru) | Where-Object { $_.PSObject.Properties.Name -contains "Status" }
+if ($rawVisionCanary.Count -ne 1 -or $rawVisionCanary[0].Status -notin @("PASS", "BLOCKED")) {
+    throw "Raw Ollama vision canary did not return one valid status."
+}
+$rawVisionStatus = [string]$rawVisionCanary[0].Status
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-" + [System.Guid]::NewGuid().ToString("N"))
-$imagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-red-rectangle-" + [System.Guid]::NewGuid().ToString("N") + ".png")
+$imagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-red-circle-" + [System.Guid]::NewGuid().ToString("N") + ".png")
 $documentImagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-document-" + [System.Guid]::NewGuid().ToString("N") + ".png")
 
 try {
@@ -82,20 +89,22 @@ try {
 
     $text = Invoke-ReleaseRuntime `
         -Runtime $runtime `
-        -Arguments @("--ask", "Answer in one short sentence: what can Iris do right now with text and vision?") `
+        -Arguments @("--ask", "Reply with exactly: IRIS MODEL READY") `
         -Name "release text ask"
-    if (-not ($text.Output.ToLowerInvariant().Contains("text") -and $text.Output.ToLowerInvariant().Contains("vision"))) {
-        throw "Text model response did not mention text and vision: $($text.Output)"
+    $textOutput = $text.Output.ToLowerInvariant()
+    if (-not ($textOutput.Contains("iris") -and $textOutput.Contains("model") -and $textOutput.Contains("ready"))) {
+        throw "Text model readiness response was unexpected: $($text.Output)"
     }
 
     Add-Type -AssemblyName System.Drawing
     $bitmap = New-Object System.Drawing.Bitmap 512, 512
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.Clear([System.Drawing.Color]::White)
+    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Red)
     $outline = New-Object System.Drawing.Pen ([System.Drawing.Color]::Black), 10
-    $graphics.FillRectangle($brush, 64, 160, 384, 192)
-    $graphics.DrawRectangle($outline, 64, 160, 384, 192)
+    $graphics.FillEllipse($brush, 96, 96, 320, 320)
+    $graphics.DrawEllipse($outline, 96, 96, 320, 320)
     $outline.Dispose()
     $brush.Dispose()
     $graphics.Dispose()
@@ -107,9 +116,22 @@ try {
         -Arguments @("--image-probe", $imagePath, "What color and geometric shape is the single large object? Answer with the color and shape only.") `
         -Name "release image probe"
     $visionText = $vision.Output.ToLowerInvariant()
-    $shapeOk = $visionText.Contains("rectangle") -or $visionText.Contains("rectangular")
+    $shapeOk = $visionText.Contains("circle") -or $visionText.Contains("round") -or $visionText.Contains("rounded")
     if (-not ($visionText.Contains("red") -and $shapeOk)) {
-        throw "Vision model response did not identify the red rectangular object: $($vision.Output)"
+        throw "Vision response did not identify the red circular object: $($vision.Output)"
+    }
+
+    $boundedVision = Invoke-ReleaseRuntime `
+        -Runtime $runtime `
+        -Arguments @("--image-probe", $imagePath, "Describe the mood and scene in this image.") `
+        -Name "release bounded image probe"
+    $boundedVisionText = $boundedVision.Output.ToLowerInvariant()
+    $runtimeFailedClosed = $boundedVisionText.Contains("known projector defect") -and $boundedVisionText.Contains("won't guess")
+    if ($rawVisionStatus -eq "BLOCKED" -and -not $runtimeFailedClosed) {
+        throw "Affected Windows Gemma 4 path did not fail closed for an unverified scene description: $($boundedVision.Output)"
+    }
+    if ($rawVisionStatus -eq "PASS" -and $runtimeFailedClosed) {
+        throw "Raw Ollama vision now passes, but Iris still applies the temporary Windows projector restriction. Re-evaluate and remove only the obsolete gate after the full visual matrix passes."
     }
 
     $documentBitmap = New-Object System.Drawing.Bitmap 1000, 360
@@ -133,6 +155,7 @@ try {
     $documentPassed = $documentText.Contains("iris") -and $documentText.Contains("742")
     Write-Host "Release model E2E passed."
     Write-Host "Capabilities: $($capabilities -join ', ')"
+    Write-Host "Raw Ollama vision canary: $rawVisionStatus"
     Write-Host "Text response:"
     Write-Host $text.Output
     Write-Host "Vision response:"

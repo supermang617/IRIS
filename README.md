@@ -2,7 +2,7 @@
 
 ![Iris local-first Windows AI companion](site/assets/iris-social-preview.jpg)
 
-Iris is a private, local-first Windows companion with natural voice, vision,
+Iris is a private, local-first Windows companion with natural voice, bounded image and OCR assistance,
 user-controlled memory, Ollama inference, and approval-gated Hermes agent
 tools. Iris sees, listens, thinks, speaks, and remembers only with permission.
 
@@ -19,7 +19,7 @@ This repository is public and source-first so people can inspect, test, and subm
 
 - Platform: Windows.
 - UI shell: Tauri.
-- Text and vision model provider: local Ollama loopback.
+- Text model and verified visual-evidence provider: local Ollama loopback.
 - Configured model: `huihui_ai/gemma-4-abliterated:e2b`.
 - TTS: Kokoro ONNX through the local Python helper, voice `af_heart`.
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.

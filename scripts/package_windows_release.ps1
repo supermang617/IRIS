@@ -1,11 +1,13 @@
 param(
-    [switch]$UseExistingReleaseBinaries
+    [switch]$UseExistingReleaseBinaries,
+    [switch]$KeepPackagingWorkspace
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $repoRoot
+. (Join-Path $PSScriptRoot "iris_release_workspace.ps1")
 
 $releaseRoot = Join-Path $repoRoot "release"
 $stagingRoot = Join-Path $releaseRoot "staging"
@@ -78,7 +80,7 @@ foreach ($name in $portableWhisperFlags.Keys) {
 }
 Write-Host "Portable Whisper/GGML CPU flags enabled for release packaging."
 
-Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-IrisReleaseWorkspace -RepositoryRoot $repoRoot -Workspace staging
 Remove-Item -LiteralPath $distRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $packageRoot, $distRoot | Out-Null
 
@@ -599,6 +601,12 @@ Set-Content -LiteralPath (Join-Path $beginnerBundleRoot "README.txt") -Value $be
 Compress-Archive -Path (Join-Path $beginnerBundleRoot "*") -DestinationPath $beginnerZipPath -Force
 $beginnerHash = (Get-FileHash -LiteralPath $beginnerZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $beginnerShaPath -Value "$beginnerHash  iris-windows-installer.zip" -Encoding ascii
+
+if ($KeepPackagingWorkspace) {
+    Write-Warning "Keeping generated release staging workspace for diagnostics: $stagingRoot"
+} else {
+    Remove-IrisReleaseWorkspace -RepositoryRoot $repoRoot -Workspace "staging"
+}
 
 Write-Host "Iris Windows ZIP: $zipPath"
 Write-Host "Iris Windows SHA256: $shaPath"

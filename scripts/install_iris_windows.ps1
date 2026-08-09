@@ -628,6 +628,18 @@ if (-not $SourceZip) {
         }
     }
 }
+if (-not $SourceZip -and (Split-Path -Leaf $scriptRoot) -ieq "scripts") {
+    $sourceDistRoot = Join-Path $scriptRoot "..\release\dist"
+    $distSourceZip = Join-Path $sourceDistRoot "iris-windows.zip"
+    $distSha256Path = Join-Path $sourceDistRoot "iris-windows.zip.sha256"
+    if ((Test-Path -LiteralPath $distSourceZip -PathType Leaf) -and
+        (Test-Path -LiteralPath $distSha256Path -PathType Leaf)) {
+        $SourceZip = $distSourceZip
+        if (-not $Sha256Path) {
+            $Sha256Path = $distSha256Path
+        }
+    }
+}
 
 $temporaryExtract = $null
 $releaseTransaction = $null

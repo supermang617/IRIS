@@ -73,6 +73,8 @@ $verifierPath = Join-Path $repoRoot "scripts\test_github_versioned_release.ps1"
 $publisherPath = Join-Path $repoRoot "scripts\publish_github_versioned_release.ps1"
 $tagProtectionPath = Join-Path $repoRoot "scripts\test_github_semantic_tag_protection.ps1"
 $versionScriptPath = Join-Path $repoRoot "scripts\test_release_version.ps1"
+$workspaceCleanupTestPath = Join-Path $repoRoot "scripts\test_release_workspace_cleanup.ps1"
+$rawVisionCanaryPath = Join-Path $repoRoot "scripts\diagnose_raw_ollama_vision.ps1"
 $privacyPath = Join-Path $repoRoot "PRIVACY.md"
 $githubSettingsPath = Join-Path $repoRoot "docs\github-settings.md"
 $wingetReleasePath = Join-Path $repoRoot "docs\winget-release.md"
@@ -85,6 +87,8 @@ foreach ($path in @(
         $publisherPath,
         $tagProtectionPath,
         $versionScriptPath,
+        $workspaceCleanupTestPath,
+        $rawVisionCanaryPath,
         $privacyPath,
         $githubSettingsPath,
         $wingetReleasePath
@@ -105,6 +109,30 @@ $wingetRelease = Get-Content -LiteralPath $wingetReleasePath -Raw
 $allWorkflows = ($allWorkflowPaths | ForEach-Object {
         Get-Content -LiteralPath $_ -Raw
     }) -join "`n"
+
+foreach ($entry in @(
+        [pscustomobject]@{ Name = "release workflow"; Text = $workflow },
+        [pscustomobject]@{ Name = "CI workflow"; Text = $ci }
+    )) {
+    $cleanupTestCount = @(
+        [regex]::Matches(
+            $entry.Text,
+            [regex]::Escape('.\scripts\test_release_workspace_cleanup.ps1')
+        )
+    ).Count
+    if ($cleanupTestCount -ne 1) {
+        throw "$($entry.Name) must run the release workspace cleanup test exactly once; found $cleanupTestCount."
+    }
+    $rawVisionParserTestCount = @(
+        [regex]::Matches(
+            $entry.Text,
+            [regex]::Escape('.\scripts\diagnose_raw_ollama_vision.ps1 -SelfTest')
+        )
+    ).Count
+    if ($rawVisionParserTestCount -ne 1) {
+        throw "$($entry.Name) must run the raw vision canary parser test exactly once; found $rawVisionParserTestCount."
+    }
+}
 
 $buildJob = Get-WorkflowJobBlock -Text $workflow -JobName "build"
 $signJob = Get-WorkflowJobBlock -Text $workflow -JobName "sign"
@@ -331,7 +359,7 @@ foreach ($workflowPath in $allWorkflowPaths) {
         -Name ([System.IO.Path]::GetFileName($workflowPath))
 }
 
-$requiredOpening = "Iris {{VERSION}} is a local-first Windows AI assistant with natural voice, vision, private memory, Ollama, and approval-gated Hermes agent tools."
+$requiredOpening = "Iris {{VERSION}} is a local-first Windows AI assistant with natural voice, bounded image and OCR assistance, private memory, Ollama, and approval-gated Hermes agent tools."
 if (-not $template.StartsWith($requiredOpening, [System.StringComparison]::Ordinal)) {
     throw "Release notes must begin with the canonical product summary."
 }
@@ -350,6 +378,7 @@ foreach ($fragment in @(
         "Get-AuthenticodeSignature",
         "%LOCALAPPDATA%\Iris",
         "true acoustic echo cancellation is not claimed",
+        "known upstream projector defect",
         "PRIVACY.md",
         "known-limitations.md"
     )) {

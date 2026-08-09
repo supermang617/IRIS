@@ -1624,6 +1624,7 @@ dependencies = [
 name = "iris-ollama"
 version = "1.0.0"
 dependencies = [
+ "image",
  "iris-config",
  "iris-context-gate",
  "iris-core-types",

@@ -100,7 +100,7 @@ function Get-RepairPlan {
         "^Ollama executable$" {
             return [pscustomobject]@{
                 Title = "Install Ollama for Windows"
-                Description = "Iris uses local Ollama for text and vision. This does not add a cloud API."
+                Description = "Iris uses local Ollama for text and bounded image assistance. Clear OCR and simple diagram facts stay local; unverified Windows Gemma 4 scene descriptions fail closed while the upstream projector fix is pending. This does not add a cloud API."
                 Link = "https://ollama.com/download/windows"
                 Commands = @(
                     "winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements"

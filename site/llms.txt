@@ -1,6 +1,6 @@
 # Iris — Local-First Windows AI Assistant
 
-Iris is a free local-first Windows AI assistant with typed chat, natural voice, camera and screen vision, private local memory, Ollama inference, web research, and approval-gated Hermes agent tools.
+Iris is a free local-first Windows AI assistant with typed chat, natural voice, bounded image and OCR assistance, private local memory, Ollama inference, web research, and approval-gated Hermes agent tools.
 
 Canonical site: https://supermang617.github.io/IRIS/
 Source repository: https://github.com/supermang617/IRIS

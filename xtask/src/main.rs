@@ -423,8 +423,10 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/iris_document_ocr.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
+        "scripts/diagnose_raw_ollama_vision.ps1",
         "scripts/package_windows_release.ps1",
         "scripts/package_windows_msix.ps1",
+        "scripts/iris_release_workspace.ps1",
         "scripts/provision_hermes_acp.ps1",
         "scripts/provision_iris_browser.ps1",
         "scripts/provision_iris_voice_runtime.ps1",
@@ -437,6 +439,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/test_github_semantic_tag_protection.ps1",
         "scripts/publish_github_versioned_release.ps1",
         "scripts/test_release_workflow.ps1",
+        "scripts/test_release_workspace_cleanup.ps1",
         "scripts/summarize_voice_interruption.ps1",
         "scripts/test_voice_interruption_diagnostics.ps1",
         "scripts/test_windows_msix_signature.ps1",
@@ -832,6 +835,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "npm run test:python",
         "cargo run --locked -p xtask",
         "git diff --check",
+        "scripts\\test_release_workspace_cleanup.ps1",
+        "scripts\\diagnose_raw_ollama_vision.ps1 -SelfTest",
     ] {
         if !ci.contains(required) {
             return Err(format!("CI GitHub Actions workflow missing `{required}`"));
@@ -850,6 +855,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "scripts\\package_windows_release.ps1",
         "scripts\\test_windows_release_download.ps1",
         "scripts\\test_windows_beginner_installer.ps1",
+        "scripts\\test_release_workspace_cleanup.ps1",
         "release/dist/iris-windows-installer.zip",
         "release/dist/iris-windows-installer.zip.sha256",
         "release/dist/iris-windows.zip",
@@ -2035,11 +2041,14 @@ fn is_approved_local_ocr_process_probe(
         "fn find_tesseract_executable",
         "IRIS_TESSERACT_EXE",
         "OCR_TIMEOUT",
+        "MAX_OCR_TSV_BYTES",
         "CREATE_NO_WINDOW",
-        ".arg(\"stdout\")",
+        ".arg(&output_base)",
         ".arg(\"--psm\")",
-        ".stdout(Stdio::piped())",
-        ".stderr(Stdio::piped())",
+        ".stdout(Stdio::null())",
+        ".stderr(Stdio::null())",
+        "metadata.len() <= MAX_OCR_TSV_BYTES",
+        "parse_tesseract_tsv",
     ] {
         if !content.contains(required) {
             return Err(format!(
@@ -2050,7 +2059,15 @@ fn is_approved_local_ocr_process_probe(
     if content.matches("Command::new(").count() != 1 {
         return Err("local OCR may launch only one audited Tesseract process".to_string());
     }
-    for forbidden in ["cmd.exe", "powershell", "shell", "/C", "-Command"] {
+    for forbidden in [
+        "cmd.exe",
+        "powershell",
+        "shell",
+        "/C",
+        "-Command",
+        ".stdout(Stdio::piped())",
+        ".stderr(Stdio::piped())",
+    ] {
         if content.contains(forbidden) {
             return Err(format!(
                 "local OCR process helper contains forbidden shell marker `{forbidden}`"

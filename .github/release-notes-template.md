@@ -1,4 +1,4 @@
-Iris {{VERSION}} is a local-first Windows AI assistant with natural voice, vision, private memory, Ollama, and approval-gated Hermes agent tools.
+Iris {{VERSION}} is a local-first Windows AI assistant with natural voice, bounded image and OCR assistance, private memory, Ollama, and approval-gated Hermes agent tools.
 
 > **WinGet catalog status:** not yet submitted or public. The included manifest bundle is ready for separate review and submission; `winget install` and `winget upgrade` remain unavailable until Microsoft accepts the package and the catalog entry is independently verified.
 
@@ -6,7 +6,7 @@ Iris {{VERSION}} is a local-first Windows AI assistant with natural voice, visio
 
 - Low-latency local conversation with streaming text and sentence-level Kokoro speech.
 - Onset-aware spoken interruption with bounded confirmation, immediate Panic Stop cancellation, and no claim of unverified acoustic echo cancellation.
-- Camera, screen-area, image, video-frame, and local document evidence with provenance boundaries.
+- Local image/document OCR and high-confidence simple color or shape checks; camera and screen evidence remains one-shot and provenance-bound.
 - Private Iris-owned memory plus Safe and explicitly approved Agentic Hermes sessions.
 - Automatic GPU/RAM placement for Ollama while keeping required runtime headroom.
 - Update-safe user state under `%LOCALAPPDATA%\Iris`.
@@ -34,8 +34,8 @@ Every distribution payload and external release-gate report has a matching `.sha
 - Google Chrome for isolated Hermes browser tools and the Microsoft Edge
   WebView2 Runtime for the Iris desktop shell.
 - Exact Python 3.13 for the pinned Hermes and image-provider layers.
-- A microphone and speakers or headset for voice features; a camera only for camera vision.
-- [Ollama](https://ollama.com/) and the configured local model for text and vision.
+- A microphone and speakers or headset for voice features; a camera only for explicit one-shot camera capture.
+- [Ollama](https://ollama.com/) and the configured local model for text and bounded image assistance.
 - Tesseract OCR only when document-image OCR is needed.
 - Several gigabytes of free storage for Iris runtimes and the Ollama model.
 
@@ -88,6 +88,7 @@ Normal assistant inference, speech, memory, and diagnostics stay on the Windows 
 
 - Initial setup still requires Ollama and a local model download.
 - Camera, microphone, speaker, Bluetooth, and driver behavior varies by device.
+- The affected Windows Gemma 4 E2B/E4B path has a known upstream projector defect. Iris answers only confidence-filtered OCR and bounded simple-image facts, then refuses unverified general image, camera, or screen descriptions instead of guessing until the direct raw-model canary passes.
 - Spoken interruption currently uses local onset detection plus transcript confirmation; true acoustic echo cancellation is not claimed until physical speaker/headset evidence justifies and validates it.
 - The WinGet command is unavailable until Microsoft merges the submission and the public catalog propagates.
 

@@ -205,11 +205,11 @@ License: MIT
 LicenseUrl: https://github.com/supermang617/IRIS/blob/main/LICENSE
 Copyright: Copyright (c) Alejandro Pinto
 CopyrightUrl: https://github.com/supermang617/IRIS/blob/main/LICENSE
-ShortDescription: Local-first Windows companion assistant with voice, vision, memory, and approval-gated agent tools.
+ShortDescription: Local-first Windows companion with voice, bounded image and OCR assistance, memory, and approved agent tools.
 Description: >-
   Iris is a local-first Windows companion assistant using Ollama, native
-  Whisper ASR, Kokoro speech, private local memory, vision, and explicitly
-  approved Hermes tools.
+  Whisper ASR, Kokoro speech, private local memory, bounded image and OCR
+  assistance, and explicitly approved Hermes tools.
 Moniker: iris
 Tags:
   - ai
@@ -224,7 +224,7 @@ Tags:
   - privacy
   - speech-to-text
   - text-to-speech
-  - vision
+  - ocr
   - voice-assistant
   - windows
   - windows-ai
@@ -241,7 +241,7 @@ Documentations:
   - DocumentLabel: WinGet release and upgrade guide
     DocumentUrl: https://github.com/supermang617/IRIS/blob/main/docs/winget-release.md
 InstallationNotes: >-
-  For full local text and vision, run `ollama pull huihui_ai/gemma-4-abliterated:e2b`, then launch Iris from the Windows Start menu. Iris includes its pinned Python voice packages; Google Chrome supplies the separately isolated browser engine, while WebView2 powers the Iris desktop shell. The Ollama model uses several gigabytes. Portable or legacy-install diagnostics use Start Iris.ps1 -SelfCheck.
+  For local text plus bounded image and OCR assistance, run `ollama pull huihui_ai/gemma-4-abliterated:e2b`, then launch Iris from the Windows Start menu. Iris refuses unverified general scene descriptions on affected Windows Gemma 4 projector builds instead of guessing. Iris includes its pinned Python voice packages; Google Chrome supplies the separately isolated browser engine, while WebView2 powers the Iris desktop shell. The Ollama model uses several gigabytes. Portable or legacy-install diagnostics use Start Iris.ps1 -SelfCheck.
 ManifestType: defaultLocale
 ManifestVersion: $manifestVersion
 "@

@@ -34,21 +34,26 @@ what should work before filing a bug.
 - PASS: Kokoro assets and Python voice packages were detected by preflight.
 - PASS: Ollama `/api/show` reports the configured model has `vision`
   capability.
-- PASS: Image probe identified a known red-circle fixture.
+- PASS: Iris's bounded local image layer identified a known red-circle fixture.
+- KNOWN UPSTREAM BLOCKER: the direct Windows Ollama Gemma 4 raw-image canary
+  does not yet identify that fixture reliably, so general scene descriptions
+  intentionally fail closed instead of guessing.
 - PASS: Hermes remains gated by default and should not be opened separately.
 - PASS: Local self-signed MSIX signature validation passed on the test machine.
 - PASS: Tesseract document OCR read a known document-image fixture.
 
-Capability note: Ollama `/api/tags` may omit capabilities for `huihui_ai/gemma-4-abliterated:e2b`, but
-`ollama show` and `/api/show` report `completion`, `vision`, `audio`, `tools`, and
-`thinking`. Iris preflight uses `/api/show` for this check. Audio input remains
-an Iris ASR responsibility.
+Capability note: Ollama `/api/tags` may omit capabilities for
+`huihui_ai/gemma-4-abliterated:e2b`, but `ollama show` and `/api/show` report
+`completion`, `vision`, `audio`, `tools`, and `thinking`. Capability metadata is
+not proof that the Windows image projector is producing correct embeddings.
+Iris preflight uses `/api/show` only as a prerequisite check. Audio input
+remains an Iris ASR responsibility.
 
-Document-image note: direct Ollama image calls and Iris runtime image probes
-both failed simple OCR fixtures such as `ALPHA 742`, including deterministic
-short-output direct API calls. Iris uses local Tesseract OCR for document-image
-text extraction when Tesseract is installed. OCR output is treated as untrusted
-evidence, not instruction.
+Document-image note: direct Ollama image calls failed simple OCR fixtures such
+as `ALPHA 742`, including deterministic short-output direct API calls. Iris uses
+confidence-filtered local Tesseract OCR for document-image text extraction when
+Tesseract is installed. OCR output is treated as untrusted evidence, not
+instruction.
 
 ## Beginner Manual Test Checklist
 
@@ -98,15 +103,29 @@ evidence, not instruction.
 
     The output must start with `OCR text (untrusted evidence):`.
 
-12. Mark image probe as passing only when the setup wizard reports the
-    configured Ollama model has `vision` capability and known local test images
-    are described correctly. For the red-circle fixture, use this prompt:
+12. From a source checkout, run the raw model canary separately so Iris's local
+    correction cannot hide an upstream projector failure:
 
     ```powershell
-    & "$env:LOCALAPPDATA\Programs\Iris\bin\iris-runtime.exe" --image-probe "C:\path\to\red-circle.png" "Classify the single object. Allowed answers: red circle; red triangle; red square. Return only one allowed answer."
+    .\scripts\diagnose_raw_ollama_vision.ps1
     ```
 
-    The answer must include `red circle`.
+    `BLOCKED` is the truthful current result on the affected Windows Gemma 4
+    E2B path and is not an installer failure. Do not claim general model vision
+    until this reports `PASS` and the wider image matrix also passes.
+
+13. Test the bounded installed image path with a red-circle fixture:
+
+    ```powershell
+    & "$env:LOCALAPPDATA\Programs\Iris\bin\iris-runtime.exe" --image-probe "C:\path\to\red-circle.png" "What color and geometric shape is the single large object? Answer with the color and shape only."
+    ```
+
+    The final answer line must be exactly `red circle`.
+
+14. Ask the same image for a general mood and scene description. While the raw
+    canary is blocked, Iris must name the known projector defect and say that it
+    will not guess. This proves the bounded correction without falsely marking
+    arbitrary model vision green.
 
 ## Hermes Runtime Shape
 

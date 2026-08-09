@@ -7,13 +7,15 @@ param(
     [string]$TimestampUrl = "http://timestamp.acs.microsoft.com",
     [switch]$ReadinessOnly,
     [switch]$AllowIncompleteReadiness,
-    [switch]$SkipSigning
+    [switch]$SkipSigning,
+    [switch]$KeepPackagingWorkspace
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $repoRoot
+. (Join-Path $PSScriptRoot "iris_release_workspace.ps1")
 
 $releaseRoot = Join-Path $repoRoot "release"
 $distRoot = Join-Path $releaseRoot "dist"
@@ -289,7 +291,7 @@ foreach ($staleCertificateArtifact in @($certExportPath, $certExportShaPath)) {
         Remove-Item -LiteralPath $staleCertificateArtifact -Force
     }
 }
-Remove-Item -LiteralPath $msixRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-IrisReleaseWorkspace -RepositoryRoot $repoRoot -Workspace msix
 New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
 
 $expectedHash = ((Get-Content -LiteralPath $shaPath -Raw).Trim() -split "\s+")[0]
@@ -416,6 +418,12 @@ if (-not $SkipSigning) {
 
 $msixHash = (Get-FileHash -LiteralPath $msixPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $msixShaPath -Value "$msixHash  iris-windows.msix" -Encoding ascii
+if ($KeepPackagingWorkspace) {
+    Write-Warning "Keeping generated MSIX packaging workspace for diagnostics: $msixRoot"
+} else {
+    Remove-IrisReleaseWorkspace -RepositoryRoot $repoRoot -Workspace "msix"
+}
+
 Write-Host "MSIX: $msixPath"
 Write-Host "MSIX SHA256: $msixShaPath"
 Write-Host "SHA256: $msixHash"

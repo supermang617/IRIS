@@ -30,6 +30,29 @@ const robots = readFileSync(join(siteDir, "robots.txt"), "utf8");
 const sitemap = readFileSync(join(siteDir, "sitemap.xml"), "utf8");
 const llms = readFileSync(join(siteDir, "llms.txt"), "utf8");
 
+const boundedImageClaim = "bounded image and OCR assistance";
+for (const [name, text] of [
+  ["index.html", html],
+  ["llms.txt", llms],
+  ["release-manifest.json description", manifest.description ?? ""],
+]) {
+  if (!text.toLowerCase().includes(boundedImageClaim.toLowerCase())) {
+    throw new Error(`${name} must describe Iris image support as bounded image and OCR assistance.`);
+  }
+}
+const publicMetadata = `${html}\n${llms}\n${manifest.description}`;
+for (const [pattern, label] of [
+  [/\b(?:camera|screen)(?:[^.!?\n]{0,32})\bvision\b/i, "camera or screen vision"],
+  [/\bvision\s+ai\b/i, "vision AI"],
+  [/\b(?:full|general|unrestricted)\s+(?:local\s+)?vision\b/i, "unbounded vision"],
+  [/\b(?:text|voice)\s*(?:,|and|plus)\s*vision\b/i, "text or voice plus vision"],
+  [/\bvision\s*(?:,|and)\s*(?:memory|voice|chat)\b/i, "vision as an unrestricted peer capability"],
+]) {
+  if (pattern.test(publicMetadata)) {
+    throw new Error(`Public metadata overstates the current image path: ${label}`);
+  }
+}
+
 if (
   manifest.name !== "Iris" ||
   manifest.repository !== "https://github.com/supermang617/IRIS" ||

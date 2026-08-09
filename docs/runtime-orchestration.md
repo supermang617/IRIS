@@ -136,7 +136,9 @@ When all pieces are healthy:
   the image-probe milestone is ready.
 - Iris preflight reports Ollama/model PASS.
 - Iris text ask returns a short local response.
-- Iris image probe describes the known local test image.
+- Iris image probe identifies the bounded red-circle fixture. When the direct
+  Ollama raw-image canary is blocked, arbitrary scene descriptions must fail
+  closed rather than treating the local correction as model-vision proof.
 - Safe Hermes status reports `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Agentic Hermes status reports the Iris memory tools and the six reviewed
   action tools.
