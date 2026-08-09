@@ -223,7 +223,7 @@ fn validate_agentic_prerequisites(workspace_root: &Path) -> Result<(), String> {
         .output()
         .map_err(|err| format!("failed to start agent-browser version check: {err}"))?;
     if !browser.status.success()
-        || String::from_utf8_lossy(&browser.stdout).trim() != "agent-browser 0.27.2"
+        || String::from_utf8_lossy(&browser.stdout).trim() != "agent-browser 0.33.2"
     {
         return Err("agent-browser version does not match the pinned runtime".into());
     }
@@ -455,20 +455,32 @@ fn run_interactive() -> Result<(), String> {
     println!("Controls: :panic stops local cognition, :reset resumes it, :quit exits.");
 
     let stdin = io::stdin();
-    let mut hud = iris_ui::LocalHud::new();
+    let mut stdin_lock = stdin.lock();
     let mut stdout = io::stdout();
 
+    run_interactive_session(&mut stdin_lock, &mut stdout, model_response)
+}
+
+fn run_interactive_session<R, W, F>(
+    reader: &mut R,
+    writer: &mut W,
+    mut responder: F,
+) -> Result<(), String>
+where
+    R: BufRead,
+    W: Write,
+    F: FnMut(&str) -> Result<iris_core_types::AssistantResponse, String>,
+{
+    let mut hud = iris_ui::LocalHud::new();
+
     loop {
-        write!(stdout, "iris> ").map_err(|err| err.to_string())?;
-        stdout.flush().map_err(|err| err.to_string())?;
+        write!(writer, "iris> ").map_err(|err| err.to_string())?;
+        writer.flush().map_err(|err| err.to_string())?;
 
         let mut line = String::new();
-        let bytes = stdin
-            .lock()
-            .read_line(&mut line)
-            .map_err(|err| err.to_string())?;
+        let bytes = reader.read_line(&mut line).map_err(|err| err.to_string())?;
         if bytes == 0 {
-            println!();
+            writeln!(writer).map_err(|err| err.to_string())?;
             break;
         }
 
@@ -481,11 +493,13 @@ fn run_interactive() -> Result<(), String> {
             ":quit" | ":exit" => break,
             ":panic" => {
                 hud.panic_stop();
-                println!("Panic Stop active. Dummy cognition is cancelled.");
+                writeln!(writer, "Panic Stop active. Local cognition is paused.")
+                    .map_err(|err| err.to_string())?;
             }
             ":reset" => {
                 hud.reset_after_panic_stop();
-                println!("Panic Stop cleared. Dummy cognition is available.");
+                writeln!(writer, "Panic Stop cleared. Local cognition is available.")
+                    .map_err(|err| err.to_string())?;
             }
             ":status" => {
                 let state = if hud.is_panic_stopped() {
@@ -493,19 +507,27 @@ fn run_interactive() -> Result<(), String> {
                 } else {
                     "Ready"
                 };
-                println!("Status: {state}");
+                writeln!(writer, "Status: {state}").map_err(|err| err.to_string())?;
                 for line in iris_ui::safety_status_lines() {
-                    println!("- {line}");
+                    writeln!(writer, "- {line}").map_err(|err| err.to_string())?;
                 }
             }
             _ => {
-                let response = match model_response(text) {
+                if hud.is_panic_stopped() {
+                    writeln!(
+                        writer,
+                        "Panic Stop is active. Use :reset before sending another request."
+                    )
+                    .map_err(|err| err.to_string())?;
+                    continue;
+                }
+                let response = match responder(text) {
                     Ok(response) => response,
                     Err(error) => iris_core_types::AssistantResponse::text_only(format!(
                         "Local model unavailable: {error}"
                     )),
                 };
-                println!("{}", response.text);
+                writeln!(writer, "{}", response.text).map_err(|err| err.to_string())?;
             }
         }
     }
@@ -574,5 +596,31 @@ mod tests {
         assert!(require_nonempty_file("fixture", &full).is_ok());
 
         fs::remove_dir_all(root).expect("remove temp directory");
+    }
+
+    #[test]
+    fn interactive_panic_stop_blocks_model_calls_until_reset() {
+        let mut input =
+            io::Cursor::new(b"first\n:panic\nblocked\n:status\n:reset\nsecond\n:quit\n");
+        let mut output = Vec::new();
+        let mut calls = Vec::new();
+
+        run_interactive_session(&mut input, &mut output, |text| {
+            calls.push(text.to_string());
+            Ok(iris_core_types::AssistantResponse::text_only(format!(
+                "response:{text}"
+            )))
+        })
+        .expect("interactive session");
+
+        assert_eq!(calls, ["first", "second"]);
+        let output = String::from_utf8(output).expect("utf-8 output");
+        assert!(output.contains("Panic Stop active. Local cognition is paused."));
+        assert!(
+            output.contains("Panic Stop is active. Use :reset before sending another request.")
+        );
+        assert!(output.contains("Status: Panic Stop active"));
+        assert!(output.contains("Panic Stop cleared. Local cognition is available."));
+        assert!(!output.contains("response:blocked"));
     }
 }

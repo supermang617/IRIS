@@ -54,7 +54,7 @@ if (-not ($capabilities -contains "vision")) {
 }
 
 $extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-" + [System.Guid]::NewGuid().ToString("N"))
-$imagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-red-circle-" + [System.Guid]::NewGuid().ToString("N") + ".png")
+$imagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-red-rectangle-" + [System.Guid]::NewGuid().ToString("N") + ".png")
 $documentImagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-release-model-e2e-document-" + [System.Guid]::NewGuid().ToString("N") + ".png")
 
 try {
@@ -92,11 +92,10 @@ try {
     $bitmap = New-Object System.Drawing.Bitmap 512, 512
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.Clear([System.Drawing.Color]::White)
-    $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
     $brush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::Red)
     $outline = New-Object System.Drawing.Pen ([System.Drawing.Color]::Black), 10
-    $graphics.FillEllipse($brush, 96, 96, 320, 320)
-    $graphics.DrawEllipse($outline, 96, 96, 320, 320)
+    $graphics.FillRectangle($brush, 64, 160, 384, 192)
+    $graphics.DrawRectangle($outline, 64, 160, 384, 192)
     $outline.Dispose()
     $brush.Dispose()
     $graphics.Dispose()
@@ -105,12 +104,12 @@ try {
 
     $vision = Invoke-ReleaseRuntime `
         -Runtime $runtime `
-        -Arguments @("--image-probe", $imagePath, "Classify the single object. Allowed answers: red circle; red triangle; red square. Return only one allowed answer.") `
+        -Arguments @("--image-probe", $imagePath, "What color and geometric shape is the single large object? Answer with the color and shape only.") `
         -Name "release image probe"
     $visionText = $vision.Output.ToLowerInvariant()
-    $shapeOk = $visionText.Contains("circle") -or $visionText.Contains("round") -or $visionText.Contains("rounded")
+    $shapeOk = $visionText.Contains("rectangle") -or $visionText.Contains("rectangular")
     if (-not ($visionText.Contains("red") -and $shapeOk)) {
-        throw "Vision model response did not identify the red circular object: $($vision.Output)"
+        throw "Vision model response did not identify the red rectangular object: $($vision.Output)"
     }
 
     $documentBitmap = New-Object System.Drawing.Bitmap 1000, 360

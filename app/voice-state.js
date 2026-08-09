@@ -80,9 +80,15 @@ export function voiceTranscriptStateForMode(mode, state) {
 export function classifyAsrError(error) {
   const message = String(error || "").trim();
   const normalized = message.toLowerCase();
+  if (normalized.includes("no default microphone input device found")) {
+    return {
+      severity: "error",
+      event: "native_asr_error",
+      status: "No microphone is available. Connect one and choose it as the Windows default input device."
+    };
+  }
   if (
     normalized.includes("microphone produced no audio samples") ||
-    normalized.includes("no default microphone input device found") ||
     normalized === "no-speech"
   ) {
     return { severity: "nonfatal", event: "native_asr_no_input", status: "No speech transcript captured." };
@@ -174,6 +180,91 @@ export function interruptionRetryDelayMs(completedAttempts, rejectedPauses) {
   const attempts = Math.max(0, Number(completedAttempts) || 0);
   const rejected = Math.max(0, Number(rejectedPauses) || 0);
   return Math.min(600, 100 + attempts * 50 + rejected * 100);
+}
+
+export function createInterruptionPauseCoordinator() {
+  let active = null;
+  const resolvedRequests = new Set();
+  const maximumResolvedRequests = 128;
+
+  const requestKey = (runId, requestId) => `${runId}:${requestId}`;
+  const rememberResolved = (runId, requestId) => {
+    const key = requestKey(runId, requestId);
+    resolvedRequests.delete(key);
+    resolvedRequests.add(key);
+    while (resolvedRequests.size > maximumResolvedRequests) {
+      resolvedRequests.delete(resolvedRequests.values().next().value);
+    }
+  };
+
+  return {
+    begin({ runId, requestId, method = "unknown", pause, resume }) {
+      if (!Number.isSafeInteger(runId) || runId <= 0) {
+        throw new TypeError("interruption pause run ID must be a positive integer");
+      }
+      if (!Number.isSafeInteger(requestId) || requestId <= 0) {
+        throw new TypeError("interruption pause request ID must be a positive integer");
+      }
+      if (typeof pause !== "function" || typeof resume !== "function") {
+        throw new TypeError("interruption pause controls must be functions");
+      }
+
+      const key = requestKey(runId, requestId);
+      if (resolvedRequests.has(key)) {
+        return Promise.resolve(false);
+      }
+      if (active?.runId === runId && active?.requestId === requestId) {
+        return active.pausePromise;
+      }
+      if (active) {
+        return Promise.resolve(false);
+      }
+
+      const attempt = {
+        method: String(method || "unknown"),
+        requestId,
+        runId,
+        resume
+      };
+      attempt.pausePromise = Promise.resolve().then(pause).then(Boolean);
+      active = attempt;
+      return attempt.pausePromise;
+    },
+    async resume(runId, requestId) {
+      rememberResolved(runId, requestId);
+      const attempt = active;
+      if (attempt?.runId !== runId || attempt?.requestId !== requestId) {
+        return {
+          matched: false,
+          method: "none",
+          paused: false,
+          resumed: false
+        };
+      }
+
+      active = null;
+      const paused = await attempt.pausePromise;
+      const resumed = paused ? Boolean(await attempt.resume()) : false;
+      return {
+        matched: true,
+        method: attempt.method,
+        paused,
+        resumed
+      };
+    },
+    clear() {
+      active = null;
+      resolvedRequests.clear();
+    }
+  };
+}
+
+export function interruptionResumeRequiresCancellation(outcome) {
+  return (
+    outcome?.matched === true &&
+    outcome?.paused === true &&
+    outcome?.resumed !== true
+  );
 }
 
 function isInterruption(text) {

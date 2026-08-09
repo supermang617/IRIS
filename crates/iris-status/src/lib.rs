@@ -118,7 +118,7 @@ fn snapshot_from_parts(
             agentic_approval: "explicit_expiring_session",
             lifecycle_owner: "iris",
             transport: "stdin_stdout_json",
-            broker_url: "http://127.0.0.1:48731",
+            broker_url: "ephemeral_loopback_per_launch",
             external_network: true,
             approved_tools: vec![
                 "iris_query_memory",
@@ -195,7 +195,12 @@ mod tests {
         assert_eq!(snapshot.model.provider, "ollama_local");
         assert!(!snapshot.model.fallback_models_allowed);
         assert_eq!(snapshot.num_ctx_ceiling, 8192);
-        assert_eq!(snapshot.safety.runtime_network, "Runtime Network: Disabled");
+        assert!(
+            snapshot
+                .safety
+                .runtime_network
+                .contains("explicitly requested")
+        );
         assert!(snapshot.hermes.enabled_by_default);
         assert!(snapshot.hermes.sidecar_enabled_by_default);
         assert_eq!(snapshot.hermes.startup_mode, "safe");
@@ -205,7 +210,7 @@ mod tests {
             "explicit_expiring_session"
         );
         assert_eq!(snapshot.hermes.lifecycle_owner, "iris");
-        assert_eq!(snapshot.hermes.broker_url, "http://127.0.0.1:48731");
+        assert_eq!(snapshot.hermes.broker_url, "ephemeral_loopback_per_launch");
         assert_eq!(
             snapshot.hermes.approved_tools,
             vec![

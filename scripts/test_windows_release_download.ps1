@@ -263,7 +263,8 @@ try {
         $runtimeManifest.system_browser.preferred -ne "Google Chrome" -or
         $runtimeManifest.system_browser.winget_package -ne "Google.Chrome" -or
         $runtimeManifest.system_browser.executable_override -ne "IRIS_BROWSER_EXECUTABLE_PATH" -or
-        $runtimeManifest.system_browser.isolated_profile -ne $true) {
+        $runtimeManifest.system_browser.isolated_session -ne $true -or
+        $runtimeManifest.system_browser.persistent_profile -ne $false) {
         throw "Packaged system-browser metadata is incomplete or inaccurate."
     }
     $packagedLauncher = Get-Content -LiteralPath (Join-Path $extractRoot "Start Iris.ps1") -Raw

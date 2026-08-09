@@ -2,7 +2,7 @@ use crate::hermes_policy::{ApprovalRequest, BrowserPreview, HermesEvent, RiskCla
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -33,6 +33,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const ACP_REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
 const MAX_CONSECUTIVE_MALFORMED_ACP_LINES: usize = 3;
 const MAX_ACP_LINE_BYTES: usize = 1_048_576;
+const MAX_ACP_TASK_EVENT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ACP_TASK_EVENTS: usize = 4_096;
+const MAX_HERMES_STDERR_LINE_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_HERMES_STDERR_BYTES: u64 = 512 * 1024;
 const HERMES_AGENT_VERSION: &str = "0.18.0";
 const ACP_PACKAGE_VERSION: &str = "0.9.0";
 const PYJWT_VERSION: &str = "2.13.0";
@@ -44,11 +48,89 @@ const HERMES_WHEEL_SHA256: &str =
 static ACP_BRIDGE: OnceLock<Mutex<Option<Arc<HermesAcpBridge>>>> = OnceLock::new();
 static HERMES_PYTHON: OnceLock<Option<PythonLaunch>> = OnceLock::new();
 static VOICE_PYTHON: OnceLock<Option<PythonLaunch>> = OnceLock::new();
+static MEMORY_BROKER_ACCESS: OnceLock<MemoryBrokerAccess> = OnceLock::new();
+#[cfg(test)]
+static TEST_MEMORY_BROKER_ACCESS: OnceLock<Mutex<Option<MemoryBrokerAccess>>> = OnceLock::new();
+
+#[derive(Clone)]
+struct MemoryBrokerAccess {
+    url: Arc<str>,
+    bearer_token: Arc<str>,
+}
 
 type AcpResponse = Result<Value, String>;
 type PendingRequestMap = HashMap<u64, mpsc::Sender<AcpResponse>>;
 type SharedPendingRequests = Arc<Mutex<PendingRequestMap>>;
 type SharedPendingApproval = Arc<Mutex<Option<PendingAcpApproval>>>;
+type AcpEventSink = Arc<Mutex<BoundedAcpEvents>>;
+type SharedAcpEventSink = Arc<Mutex<Option<AcpEventSink>>>;
+
+pub fn configure_memory_broker(url: &str, bearer_token: &str) -> Result<(), String> {
+    let access = validated_memory_broker_access(url, bearer_token)?;
+    if let Err(candidate) = MEMORY_BROKER_ACCESS.set(access) {
+        let existing = MEMORY_BROKER_ACCESS
+            .get()
+            .ok_or_else(|| "Hermes memory broker credential state is unavailable".to_string())?;
+        if existing.url.as_ref() != candidate.url.as_ref()
+            || existing.bearer_token.as_ref() != candidate.bearer_token.as_ref()
+        {
+            return Err("Hermes memory broker credential is already configured".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validated_memory_broker_access(
+    url: &str,
+    bearer_token: &str,
+) -> Result<MemoryBrokerAccess, String> {
+    let port = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| "Hermes memory broker endpoint must be ephemeral loopback".to_string())?;
+    if url != format!("http://127.0.0.1:{port}") {
+        return Err("Hermes memory broker endpoint must be ephemeral loopback".to_string());
+    }
+    if bearer_token.len() != 64 || !bearer_token.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return Err("Hermes memory broker credential is invalid".to_string());
+    }
+    Ok(MemoryBrokerAccess {
+        url: Arc::from(url),
+        bearer_token: Arc::from(bearer_token),
+    })
+}
+
+fn configured_memory_broker_access() -> Option<MemoryBrokerAccess> {
+    #[cfg(test)]
+    if let Some(access) = TEST_MEMORY_BROKER_ACCESS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    {
+        return Some(access);
+    }
+    MEMORY_BROKER_ACCESS.get().cloned()
+}
+
+#[cfg(test)]
+fn configure_test_memory_broker(url: &str, bearer_token: &str) -> Result<(), String> {
+    let access = validated_memory_broker_access(url, bearer_token)?;
+    *TEST_MEMORY_BROKER_ACCESS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(access);
+    Ok(())
+}
+
+#[cfg(test)]
+fn clear_test_memory_broker() {
+    *TEST_MEMORY_BROKER_ACCESS
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,12 +188,62 @@ struct HermesAcpBridge {
     stdin: Arc<Mutex<ChildStdin>>,
     pending: SharedPendingRequests,
     pending_approval: SharedPendingApproval,
-    event_sender: Arc<Mutex<Option<mpsc::Sender<Value>>>>,
+    event_sink: SharedAcpEventSink,
     next_request_id: AtomicU64,
     session: Arc<Mutex<Option<AcpSession>>>,
     browser_command_output_dir: PathBuf,
     #[cfg(windows)]
     job: WindowsJob,
+}
+
+#[derive(Default)]
+struct BoundedAcpEvents {
+    values: VecDeque<Value>,
+    total_bytes: usize,
+}
+
+impl BoundedAcpEvents {
+    fn push(&mut self, value: Value) {
+        let Ok(bytes) = serde_json::to_vec(&value).map(|bytes| bytes.len()) else {
+            return;
+        };
+        if bytes > MAX_ACP_TASK_EVENT_BYTES {
+            return;
+        }
+        while self.values.len() >= MAX_ACP_TASK_EVENTS
+            || self.total_bytes.saturating_add(bytes) > MAX_ACP_TASK_EVENT_BYTES
+        {
+            let Some(removed) = self.values.pop_front() else {
+                break;
+            };
+            self.total_bytes = self
+                .total_bytes
+                .saturating_sub(serde_json::to_vec(&removed).map_or(0, |bytes| bytes.len()));
+        }
+        self.total_bytes = self.total_bytes.saturating_add(bytes);
+        self.values.push_back(value);
+    }
+
+    fn snapshot(&self) -> Vec<Value> {
+        self.values.iter().cloned().collect()
+    }
+}
+
+struct AcpEventRegistration {
+    registry: SharedAcpEventSink,
+    sink: AcpEventSink,
+}
+
+impl Drop for AcpEventRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut current) = self.registry.lock()
+            && current
+                .as_ref()
+                .is_some_and(|active| Arc::ptr_eq(active, &self.sink))
+        {
+            *current = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -264,14 +396,8 @@ pub fn submit_task(
     }
     let bridge = ensure_bridge(resource_root, state_root, model)?;
     let session_id = bridge.ensure_session(workspace_path)?;
-    let (event_tx, event_rx) = mpsc::channel();
-    {
-        let mut sender = bridge
-            .event_sender
-            .lock()
-            .map_err(|_| "Hermes ACP event state is unavailable".to_string())?;
-        *sender = Some(event_tx);
-    }
+    let event_sink = Arc::new(Mutex::new(BoundedAcpEvents::default()));
+    let event_registration = register_acp_event_sink(&bridge.event_sink, event_sink.clone())?;
     let first_response = bridge.request(
         "session/prompt",
         json!({
@@ -279,10 +405,10 @@ pub fn submit_task(
             "prompt": [{"type": "text", "text": clean}]
         }),
     );
-    let mut raw_events = event_rx.try_iter().collect::<Vec<_>>();
-    let mut text = assistant_text_from_notifications(&raw_events);
+    let initial_events = acp_event_snapshot(&event_sink)?;
+    let mut text = assistant_text_from_notifications(&initial_events);
     let response = if first_response.is_ok() && is_empty_agent_text(&text) {
-        let recovery = bridge.request(
+        bridge.request(
             "session/prompt",
             json!({
                 "sessionId": session_id,
@@ -291,18 +417,13 @@ pub fn submit_task(
                     "text": "Your previous final response was empty. Do not rerun the tool. Reply now with a concise, non-empty answer using the successful tool result already in this conversation."
                 }]
             }),
-        );
-        raw_events.extend(event_rx.try_iter());
-        recovery
+        )
     } else {
         first_response
     };
-    if let Ok(mut sender) = bridge.event_sender.lock() {
-        *sender = None;
-    }
     response?;
-
-    raw_events.extend(event_rx.try_iter());
+    drop(event_registration);
+    let raw_events = acp_event_snapshot(&event_sink)?;
     let mut events = Vec::new();
     let mut thinking_emitted = false;
     for event in raw_events.iter().filter_map(event_from_notification) {
@@ -340,6 +461,36 @@ pub fn submit_task(
         events,
         provenance,
     })
+}
+
+fn register_acp_event_sink(
+    registry: &SharedAcpEventSink,
+    sink: AcpEventSink,
+) -> Result<AcpEventRegistration, String> {
+    let mut current = registry
+        .lock()
+        .map_err(|_| "Hermes ACP event state is unavailable".to_string())?;
+    if current.is_some() {
+        return Err("Hermes ACP already has an active task".to_string());
+    }
+    *current = Some(sink.clone());
+    drop(current);
+    Ok(AcpEventRegistration {
+        registry: registry.clone(),
+        sink,
+    })
+}
+
+fn acp_event_snapshot(sink: &AcpEventSink) -> Result<Vec<Value>, String> {
+    sink.lock()
+        .map_err(|_| "Hermes ACP event buffer is unavailable".to_string())
+        .map(|events| events.snapshot())
+}
+
+fn push_acp_event(sink: &AcpEventSink, value: Value) {
+    if let Ok(mut events) = sink.lock() {
+        events.push(value);
+    }
 }
 
 fn assistant_text_from_notifications(notifications: &[Value]) -> String {
@@ -535,11 +686,7 @@ impl HermesAcpBridge {
         if let Some(parent) = paths.stderr_log.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
-        let stderr = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&paths.stderr_log)
-            .map_err(|err| format!("failed to open Hermes ACP diagnostics: {err}"))?;
+        rotate_diagnostic_log(&paths.stderr_log, MAX_HERMES_STDERR_BYTES)?;
         let mut command = python_command_for_script(&python, &paths.launcher, &paths.site_packages);
         command
             .current_dir(resource_root)
@@ -559,9 +706,16 @@ impl HermesAcpBridge {
             .env_remove("OPENROUTER_API_KEY")
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("NOUS_API_KEY")
+            .env_remove("IRIS_HERMES_BROKER_URL")
+            .env_remove("IRIS_HERMES_BROKER_TOKEN")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::from(stderr));
+            .stderr(Stdio::piped());
+        if let Some(access) = configured_memory_broker_access() {
+            command
+                .env("IRIS_HERMES_BROKER_URL", access.url.as_ref())
+                .env("IRIS_HERMES_BROKER_TOKEN", access.bearer_token.as_ref());
+        }
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
         let mut child = command
@@ -577,19 +731,24 @@ impl HermesAcpBridge {
             .stdout
             .take()
             .ok_or_else(|| "Hermes ACP stdout is unavailable".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "Hermes ACP stderr is unavailable".to_string())?;
+        start_bounded_stderr_reader(stderr, paths.stderr_log.clone());
         #[cfg(windows)]
         let job = WindowsJob::create_and_assign(&child)?;
         let child = Arc::new(Mutex::new(child));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let pending_approval = Arc::new(Mutex::new(None));
-        let event_sender = Arc::new(Mutex::new(None));
+        let event_sink = Arc::new(Mutex::new(None));
         let session = Arc::new(Mutex::new(None));
         start_reader(
             stdout,
             stdin.clone(),
             pending.clone(),
             pending_approval.clone(),
-            event_sender.clone(),
+            event_sink.clone(),
             session.clone(),
         );
         Ok(Self {
@@ -597,7 +756,7 @@ impl HermesAcpBridge {
             stdin,
             pending,
             pending_approval,
-            event_sender,
+            event_sink,
             next_request_id: AtomicU64::new(1),
             session,
             browser_command_output_dir: paths.browser_command_output,
@@ -676,8 +835,23 @@ impl HermesAcpBridge {
             }
             return Err(error);
         }
-        rx.recv_timeout(ACP_REQUEST_TIMEOUT)
-            .map_err(|_| format!("Hermes ACP request timed out: {method}"))??
+        let response = match rx.recv_timeout(ACP_REQUEST_TIMEOUT) {
+            Ok(response) => response,
+            Err(error) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&id);
+                }
+                return Err(match error {
+                    mpsc::RecvTimeoutError::Timeout => {
+                        format!("Hermes ACP request timed out: {method}")
+                    }
+                    mpsc::RecvTimeoutError::Disconnected => {
+                        format!("Hermes ACP response channel closed: {method}")
+                    }
+                });
+            }
+        }?;
+        response
             .get("result")
             .cloned()
             .ok_or_else(|| format!("Hermes ACP response missing result: {method}"))
@@ -948,16 +1122,14 @@ fn start_reader(
     stdin: Arc<Mutex<ChildStdin>>,
     pending: SharedPendingRequests,
     pending_approval: SharedPendingApproval,
-    event_sender: Arc<Mutex<Option<mpsc::Sender<Value>>>>,
+    event_sink: SharedAcpEventSink,
     session: Arc<Mutex<Option<AcpSession>>>,
 ) {
     thread::spawn(move || {
         let mut malformed_lines = 0;
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else {
-                break;
-            };
-            let Ok(value) = parse_acp_line(&line) else {
+        let mut stdout = BufReader::new(stdout);
+        while let Ok(Some(line)) = read_bounded_line(&mut stdout, MAX_ACP_LINE_BYTES) {
+            let Ok(value) = parse_acp_frame(line) else {
                 malformed_lines += 1;
                 if malformed_lines >= MAX_CONSECUTIVE_MALFORMED_ACP_LINES {
                     break;
@@ -999,15 +1171,18 @@ fn start_reader(
                     stored = true;
                 }
                 if stored {
-                    if let Some(sender) = event_sender
+                    if let Some(sink) = event_sink
                         .lock()
                         .ok()
-                        .and_then(|sender| sender.as_ref().cloned())
+                        .and_then(|sink| sink.as_ref().cloned())
                     {
-                        let _ = sender.send(json!({
-                            "method": "iris/approval_request",
-                            "params": {"approval": approval.request}
-                        }));
+                        push_acp_event(
+                            &sink,
+                            json!({
+                                "method": "iris/approval_request",
+                                "params": {"approval": approval.request}
+                            }),
+                        );
                     }
                 } else {
                     let response = json!({
@@ -1044,16 +1219,154 @@ fn start_reader(
                 continue;
             }
             if value.get("method").and_then(Value::as_str) == Some("session/update")
-                && let Some(sender) = event_sender
+                && let Some(sink) = event_sink
                     .lock()
                     .ok()
-                    .and_then(|sender| sender.as_ref().cloned())
+                    .and_then(|sink| sink.as_ref().cloned())
             {
-                let _ = sender.send(value);
+                push_acp_event(&sink, value);
             }
         }
         fail_pending_requests(&pending, "Hermes ACP stream closed or became malformed");
     });
+}
+
+pub(crate) fn start_bounded_stderr_reader(
+    stderr: impl std::io::Read + Send + 'static,
+    path: PathBuf,
+) {
+    thread::spawn(move || {
+        let _ = write_bounded_stderr(BufReader::new(stderr), &path, MAX_HERMES_STDERR_BYTES);
+    });
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BoundedLine {
+    bytes: Vec<u8>,
+    oversized: bool,
+}
+
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    max_bytes: usize,
+) -> std::io::Result<Option<BoundedLine>> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(8 * 1024));
+    let mut content_bytes = 0_usize;
+    let mut last_byte = None;
+    let mut saw_input = false;
+
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if !saw_input {
+                return Ok(None);
+            }
+            return Ok(Some(finish_bounded_line(
+                bytes,
+                content_bytes,
+                last_byte,
+                max_bytes,
+            )));
+        }
+
+        saw_input = true;
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let content_len = newline.unwrap_or(available.len());
+        if content_len > 0 {
+            last_byte = Some(available[content_len - 1]);
+            content_bytes = content_bytes.saturating_add(content_len);
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        let retained = content_len.min(remaining);
+        bytes.extend_from_slice(&available[..retained]);
+        let consumed = newline.map_or(content_len, |position| position + 1);
+        reader.consume(consumed);
+
+        if newline.is_some() {
+            return Ok(Some(finish_bounded_line(
+                bytes,
+                content_bytes,
+                last_byte,
+                max_bytes,
+            )));
+        }
+    }
+}
+
+fn finish_bounded_line(
+    mut bytes: Vec<u8>,
+    content_bytes: usize,
+    last_byte: Option<u8>,
+    max_bytes: usize,
+) -> BoundedLine {
+    let has_line_ending_carriage_return = last_byte == Some(b'\r');
+    let logical_bytes = content_bytes.saturating_sub(usize::from(has_line_ending_carriage_return));
+    let oversized = logical_bytes > max_bytes;
+    if has_line_ending_carriage_return && bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    BoundedLine { bytes, oversized }
+}
+
+fn parse_acp_frame(frame: BoundedLine) -> Result<Value, String> {
+    if frame.oversized {
+        return Err("Hermes ACP response exceeded the line-size limit".to_string());
+    }
+    let line = String::from_utf8(frame.bytes)
+        .map_err(|_| "Hermes ACP returned a non-UTF-8 response".to_string())?;
+    parse_acp_line(&line)
+}
+
+fn write_bounded_stderr(reader: impl BufRead, path: &Path, max_bytes: u64) -> Result<(), String> {
+    let mut reader = reader;
+    let mut written = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let mut output = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|err| format!("failed to open Hermes ACP diagnostics: {err}"))?;
+    while let Some(line) = read_bounded_line(&mut reader, MAX_HERMES_STDERR_LINE_BYTES)
+        .map_err(|err| format!("failed to read Hermes ACP diagnostics: {err}"))?
+    {
+        let decoded = String::from_utf8_lossy(&line.bytes);
+        let mut clean = redact_and_truncate(&decoded, 2_000);
+        if line.oversized {
+            clean.push_str(" [stderr line truncated]");
+        }
+        let remaining = max_bytes.saturating_sub(written);
+        if remaining == 0 {
+            continue;
+        }
+        let max_line_bytes = remaining.saturating_sub(1) as usize;
+        let mut take = clean.len().min(max_line_bytes);
+        while take > 0 && !clean.is_char_boundary(take) {
+            take -= 1;
+        }
+        let bytes = &clean.as_bytes()[..take];
+        output
+            .write_all(bytes)
+            .and_then(|_| output.write_all(b"\n"))
+            .map_err(|err| format!("failed to write Hermes ACP diagnostics: {err}"))?;
+        written = written
+            .saturating_add(bytes.len() as u64 + 1)
+            .min(max_bytes);
+    }
+    output
+        .flush()
+        .map_err(|err| format!("failed to flush Hermes ACP diagnostics: {err}"))
+}
+
+pub(crate) fn rotate_diagnostic_log(path: &Path, max_bytes: u64) -> Result<(), String> {
+    if path.metadata().map(|metadata| metadata.len()).unwrap_or(0) < max_bytes {
+        return Ok(());
+    }
+    let backup = path.with_extension("log.previous");
+    if backup.exists() {
+        fs::remove_file(&backup)
+            .map_err(|err| format!("failed to replace Hermes diagnostics backup: {err}"))?;
+    }
+    fs::rename(path, backup)
+        .map_err(|err| format!("failed to rotate Hermes ACP diagnostics: {err}"))
 }
 
 fn parse_acp_line(line: &str) -> Result<Value, String> {
@@ -1371,9 +1684,16 @@ fn redact_and_truncate(input: &str, limit: usize) -> String {
         .lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
-            if ["password", "secret", "api key", "token=", "authorization:"]
-                .iter()
-                .any(|marker| lower.contains(marker))
+            if [
+                "password",
+                "secret",
+                "api key",
+                "token=",
+                "authorization:",
+                "iris_hermes_broker_",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
             {
                 "[redacted sensitive detail]".to_string()
             } else {
@@ -1382,6 +1702,13 @@ fn redact_and_truncate(input: &str, limit: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        let profile = profile.to_string_lossy();
+        if !profile.is_empty() {
+            output = output.replace(profile.as_ref(), "%USERPROFILE%");
+            output = output.replace(&profile.replace('\\', "/"), "%USERPROFILE%");
+        }
+    }
     if output.len() > limit {
         output.truncate(limit);
         output.push_str("...");
@@ -1572,6 +1899,7 @@ fn collect_provenance(value: &Value, found: &mut Vec<HermesProvenance>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use std::sync::atomic::AtomicBool;
 
     // Hermes ACP owns one supervised process and session, so live tests must not
@@ -1614,6 +1942,7 @@ mod tests {
     impl Drop for BridgeCleanup {
         fn drop(&mut self) {
             stop();
+            clear_test_memory_broker();
         }
     }
 
@@ -1621,12 +1950,16 @@ mod tests {
         stop: Arc<AtomicBool>,
         thread: Option<thread::JoinHandle<()>>,
         requests: Arc<Mutex<Vec<String>>>,
+        address: std::net::SocketAddr,
+        bearer_token: String,
     }
 
     impl FakeMemoryBroker {
         fn start() -> Self {
-            let listener = std::net::TcpListener::bind("127.0.0.1:48731")
-                .expect("bind fake Iris memory broker");
+            let listener =
+                std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake Iris memory broker");
+            let address = listener.local_addr().expect("fake broker address");
+            let bearer_token = "ab".repeat(32);
             listener
                 .set_nonblocking(true)
                 .expect("nonblocking fake broker");
@@ -1634,6 +1967,7 @@ mod tests {
             let requests = Arc::new(Mutex::new(Vec::new()));
             let thread_stop = stop.clone();
             let thread_requests = requests.clone();
+            let thread_bearer_token = bearer_token.clone();
             let handle = thread::spawn(move || {
                 while !thread_stop.load(Ordering::Relaxed) {
                     match listener.accept() {
@@ -1672,6 +2006,10 @@ mod tests {
                                 }
                             }
                             let request = String::from_utf8_lossy(&bytes).to_string();
+                            let authenticated = request.lines().skip(1).any(|line| {
+                                line.strip_prefix("Authorization: Bearer ")
+                                    .is_some_and(|value| value == thread_bearer_token)
+                            });
                             let path = request
                                 .lines()
                                 .next()
@@ -1681,37 +2019,50 @@ mod tests {
                             if let Ok(mut observed) = thread_requests.lock() {
                                 observed.push(path.clone());
                             }
-                            let body = match path.as_str() {
-                                "/memory/search" => json!({
-                                    "ok": true,
-                                    "readOnly": true,
-                                    "results": [{
-                                        "id": 7,
-                                        "text": "Alejandro is 45",
-                                        "score": 1.0,
-                                        "source": "iris_active_memory",
-                                        "provenance": {
-                                            "authority": "user_approved",
+                            let body = if !authenticated {
+                                json!({"ok": false, "error": "authentication failed"})
+                            } else {
+                                match path.as_str() {
+                                    "/memory/search" => json!({
+                                        "ok": true,
+                                        "readOnly": true,
+                                        "results": [{
+                                            "id": 7,
+                                            "text": "Alejandro is 45",
+                                            "score": 1.0,
                                             "source": "iris_active_memory",
-                                            "memoryId": 7
-                                        }
-                                    }]
-                                }),
-                                "/memory/propose" => json!({
-                                    "ok": true,
-                                    "verdict": "staged",
-                                    "staging_id": 9,
-                                    "reason": "proposal written to staging only"
-                                }),
-                                "/memory/status" => json!({
-                                    "ok": true,
-                                    "loopbackOnly": true
-                                }),
-                                _ => json!({"ok": false, "error": "unexpected route"}),
+                                            "provenance": {
+                                                "authority": "user_approved",
+                                                "source": "iris_active_memory",
+                                                "memoryId": 7
+                                            }
+                                        }]
+                                    }),
+                                    "/memory/propose" => json!({
+                                        "ok": true,
+                                        "verdict": "staged",
+                                        "staging_id": 9,
+                                        "reason": "proposal written to staging only"
+                                    }),
+                                    "/memory/status" => json!({
+                                        "ok": true,
+                                        "loopbackOnly": true,
+                                        "authenticated": true,
+                                        "stagingItems": 0,
+                                        "pendingStagingItems": 0,
+                                        "decidedStagingItems": 0
+                                    }),
+                                    _ => json!({"ok": false, "error": "unexpected route"}),
+                                }
                             }
                             .to_string();
+                            let response_status = if authenticated {
+                                "200 OK"
+                            } else {
+                                "401 Unauthorized"
+                            };
                             let response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                "HTTP/1.1 {response_status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                                 body.len(),
                                 body
                             );
@@ -1731,14 +2082,20 @@ mod tests {
                 stop,
                 thread: Some(handle),
                 requests,
+                address,
+                bearer_token,
             }
+        }
+
+        fn url(&self) -> String {
+            format!("http://{}", self.address)
         }
     }
 
     impl Drop for FakeMemoryBroker {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Relaxed);
-            let _ = std::net::TcpStream::connect("127.0.0.1:48731");
+            let _ = std::net::TcpStream::connect(self.address);
             if let Some(handle) = self.thread.take() {
                 let _ = handle.join();
             }
@@ -1754,6 +2111,49 @@ mod tests {
             parse_acp_line(r#"{"jsonrpc":"2.0","id":1}"#).expect("valid ACP object")["id"],
             1
         );
+    }
+
+    #[test]
+    fn bounded_acp_reader_drains_oversized_newline_free_frame() {
+        let streamed_bytes = MAX_ACP_LINE_BYTES + 3 * 1024 * 1024;
+        let source = std::io::repeat(b'x')
+            .take(streamed_bytes as u64)
+            .chain(std::io::Cursor::new(
+                b"\n{\"jsonrpc\":\"2.0\",\"id\":7}\r\n",
+            ));
+        let mut reader = BufReader::with_capacity(257, source);
+
+        let oversized = read_bounded_line(&mut reader, MAX_ACP_LINE_BYTES)
+            .expect("read oversized frame")
+            .expect("oversized frame");
+        assert!(oversized.oversized);
+        assert_eq!(oversized.bytes.len(), MAX_ACP_LINE_BYTES);
+        assert_eq!(
+            parse_acp_frame(oversized).expect_err("reject oversized ACP frame"),
+            "Hermes ACP response exceeded the line-size limit"
+        );
+
+        let valid = read_bounded_line(&mut reader, MAX_ACP_LINE_BYTES)
+            .expect("read following frame")
+            .expect("following frame");
+        assert!(!valid.oversized);
+        assert_eq!(
+            parse_acp_line(std::str::from_utf8(&valid.bytes).expect("utf-8 ACP frame"))
+                .expect("valid ACP frame")["id"],
+            7
+        );
+        assert!(
+            read_bounded_line(&mut reader, MAX_ACP_LINE_BYTES)
+                .expect("read EOF")
+                .is_none()
+        );
+
+        let mut exact_crlf = BufReader::with_capacity(2, std::io::Cursor::new(b"1234\r\n"));
+        let exact = read_bounded_line(&mut exact_crlf, 4)
+            .expect("read exact CRLF frame")
+            .expect("exact CRLF frame");
+        assert!(!exact.oversized);
+        assert_eq!(exact.bytes, b"1234");
     }
 
     #[test]
@@ -1781,6 +2181,45 @@ mod tests {
             Err("ACP stream failed".to_string())
         );
         assert!(pending.lock().expect("pending requests").is_empty());
+    }
+
+    #[test]
+    fn acp_task_events_are_bounded_and_keep_the_latest_evidence() {
+        let mut events = BoundedAcpEvents::default();
+        for index in 0..(MAX_ACP_TASK_EVENTS + 32) {
+            events.push(json!({"index": index, "text": "x".repeat(2_048)}));
+        }
+
+        assert!(events.values.len() <= MAX_ACP_TASK_EVENTS);
+        assert!(events.total_bytes <= MAX_ACP_TASK_EVENT_BYTES);
+        assert_eq!(
+            events
+                .values
+                .back()
+                .and_then(|value| value.get("index"))
+                .and_then(Value::as_u64),
+            Some((MAX_ACP_TASK_EVENTS + 31) as u64)
+        );
+    }
+
+    #[test]
+    fn acp_event_registration_rejects_concurrent_tasks_and_clears_on_drop() {
+        let registry: SharedAcpEventSink = Arc::new(Mutex::new(None));
+        let first_sink = Arc::new(Mutex::new(BoundedAcpEvents::default()));
+        let first = register_acp_event_sink(&registry, first_sink).expect("first registration");
+        let concurrent_error = match register_acp_event_sink(
+            &registry,
+            Arc::new(Mutex::new(BoundedAcpEvents::default())),
+        ) {
+            Ok(_) => panic!("concurrent registration must fail"),
+            Err(error) => error,
+        };
+        assert!(concurrent_error.contains("active task"));
+
+        drop(first);
+        assert!(registry.lock().expect("event registry").is_none());
+        register_acp_event_sink(&registry, Arc::new(Mutex::new(BoundedAcpEvents::default())))
+            .expect("registration after drop");
     }
 
     #[test]
@@ -2091,6 +2530,51 @@ mod tests {
     }
 
     #[test]
+    fn hermes_stderr_is_redacted_and_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-hermes-stderr-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms()
+        ));
+        fs::create_dir_all(&root).expect("diagnostics root");
+        let path = root.join("hermes-acp-stderr.log");
+        let input = std::io::Cursor::new(
+            b"ordinary diagnostic\nAuthorization: Bearer private\nIRIS_HERMES_BROKER_URL=http://127.0.0.1:43123\nmore output\n",
+        );
+
+        write_bounded_stderr(input, &path, 64).expect("bounded log");
+        let output = fs::read_to_string(&path).expect("diagnostic output");
+        assert!(output.contains("ordinary diagnostic"));
+        assert!(output.contains("[redacted sensitive detail]"));
+        assert!(!output.contains("private"));
+        assert!(!output.contains("43123"));
+        assert!(path.metadata().expect("metadata").len() <= 64);
+        fs::remove_dir_all(root).expect("remove diagnostics root");
+    }
+
+    #[test]
+    fn hermes_stderr_streams_oversized_newline_free_output_with_fixed_retention() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-hermes-stderr-oversized-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms()
+        ));
+        fs::create_dir_all(&root).expect("diagnostics root");
+        let path = root.join("hermes-acp-stderr.log");
+        let input = std::io::Cursor::new(b"Authorization: Bearer never-write-this ")
+            .chain(std::io::repeat(b'x').take(4 * 1024 * 1024));
+
+        write_bounded_stderr(BufReader::with_capacity(127, input), &path, 128)
+            .expect("bounded oversized log");
+        let output = fs::read_to_string(&path).expect("diagnostic output");
+        assert!(output.contains("[redacted sensitive detail]"));
+        assert!(output.contains("[stderr line truncated]"));
+        assert!(!output.contains("never-write-this"));
+        assert!(path.metadata().expect("metadata").len() <= 128);
+        fs::remove_dir_all(root).expect("remove diagnostics root");
+    }
+
+    #[test]
     fn runtime_paths_split_immutable_resources_from_writable_state() {
         let resources = Path::new("C:/Program Files/Iris");
         let state = Path::new("C:/Users/Iris/AppData/Local/Iris");
@@ -2353,6 +2837,8 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _cleanup = BridgeCleanup;
         let broker = FakeMemoryBroker::start();
+        configure_test_memory_broker(&broker.url(), &broker.bearer_token)
+            .expect("configure authenticated fake broker");
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace root");

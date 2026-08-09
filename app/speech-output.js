@@ -7,15 +7,66 @@ export function standaloneArrayBuffer(bytes) {
   return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
 }
 
-export function createSpeechStopHandle(stop) {
+export function nativeSpeechPlaybackArguments(bytes, runId, firstChunk = true) {
+  if (!Number.isSafeInteger(runId) || runId <= 0) {
+    throw new TypeError("speech playback run ID must be a positive integer");
+  }
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  return {
+    wavBytes: Array.from(view),
+    playbackId: runId,
+    firstChunk: firstChunk === true
+  };
+}
+
+export function createSpeechStopHandle(stop, options = {}) {
   let stopped = false;
+  let interruptionPaused = false;
   return {
     pause() {
       if (stopped) {
         return;
       }
       stopped = true;
+      interruptionPaused = false;
       stop();
+    },
+    async pauseForInterruption() {
+      if (stopped) {
+        return false;
+      }
+      if (interruptionPaused) {
+        return true;
+      }
+      if (typeof options.pauseForInterruption !== "function") {
+        return false;
+      }
+      const paused = Boolean(await options.pauseForInterruption());
+      if (stopped) {
+        if (paused && typeof options.cleanupAfterStoppedPause === "function") {
+          await options.cleanupAfterStoppedPause();
+        }
+        return false;
+      }
+      interruptionPaused = paused;
+      return paused;
+    },
+    async resumeAfterInterruption() {
+      if (stopped || !interruptionPaused) {
+        return false;
+      }
+      if (typeof options.resumeAfterInterruption !== "function") {
+        return false;
+      }
+      const resumed = Boolean(await options.resumeAfterInterruption());
+      if (resumed) {
+        interruptionPaused = false;
+      }
+      return resumed;
+    },
+    complete() {
+      stopped = true;
+      interruptionPaused = false;
     },
     set src(_value) {},
     get src() {
@@ -23,6 +74,9 @@ export function createSpeechStopHandle(stop) {
     },
     get stopped() {
       return stopped;
+    },
+    get method() {
+      return String(options.method || "fallback");
     }
   };
 }
@@ -71,6 +125,7 @@ async function playWithWebAudio(bytes, options) {
       }
       finished = true;
       if (handle) {
+        handle.complete();
         options.clearActiveHandle?.(handle);
       }
       safeDisconnect(source);
@@ -89,14 +144,45 @@ async function playWithWebAudio(bytes, options) {
       source.buffer = decoded;
       source.connect(gain);
       gain.connect(context.destination);
-      handle = createSpeechStopHandle(() => {
+      const resumeContextAfterInterruption = async () => {
         try {
-          source.stop(0);
-        } catch (_error) {
-          // The source may already have ended; cancellation should still settle.
+          if (context.state === "suspended") {
+            await context.resume();
+          }
+          return context.state !== "suspended";
+        } catch (error) {
+          onDiagnostic("speech_fallback_resume_error", errorMessage(error));
+          return false;
         }
-        finish();
-      });
+      };
+      handle = createSpeechStopHandle(
+        () => {
+          try {
+            source.stop(0);
+          } catch (_error) {
+            // The source may already have ended; cancellation should still settle.
+          }
+          finish();
+        },
+        {
+          method: "web_audio",
+          async pauseForInterruption() {
+            try {
+              if (context.state !== "suspended") {
+                await context.suspend();
+              }
+              return context.state === "suspended";
+            } catch (error) {
+              onDiagnostic("speech_fallback_pause_error", errorMessage(error));
+              return false;
+            }
+          },
+          async resumeAfterInterruption() {
+            return resumeContextAfterInterruption();
+          },
+          cleanupAfterStoppedPause: resumeContextAfterInterruption
+        }
+      );
       options.setActiveHandle?.(handle);
       source.onended = () => finish();
       throwIfPlaybackCancelled(options);
@@ -126,6 +212,7 @@ function playWithHtmlAudio(bytes, options) {
         clearTimeout(playbackStartTimer);
       }
       if (handle) {
+        handle.complete();
         options.clearActiveHandle?.(handle);
       }
       if (url) {
@@ -147,10 +234,36 @@ function playWithHtmlAudio(bytes, options) {
       audio.preload = "auto";
       audio.volume = 1;
       audio.muted = false;
-      handle = createSpeechStopHandle(() => {
-        audio.pause();
-        finish();
-      });
+      handle = createSpeechStopHandle(
+        () => {
+          audio.pause();
+          finish();
+        },
+        {
+          method: "html_audio",
+          pauseForInterruption() {
+            try {
+              audio.pause();
+              return true;
+            } catch (error) {
+              options.onDiagnostic?.("speech_fallback_pause_error", errorMessage(error));
+              return false;
+            }
+          },
+          async resumeAfterInterruption() {
+            try {
+              const playResult = audio.play();
+              if (playResult && typeof playResult.then === "function") {
+                await playResult;
+              }
+              return true;
+            } catch (error) {
+              options.onDiagnostic?.("speech_fallback_resume_error", errorMessage(error));
+              return false;
+            }
+          }
+        }
+      );
       options.setActiveHandle?.(handle);
       throwIfPlaybackCancelled(options);
 

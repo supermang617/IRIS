@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import socket
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -281,7 +284,7 @@ class IrisBrowserToolTests(unittest.TestCase):
         ):
             iris_browser_tools.browser_open({"url": "https://example.com/docs"})
 
-        self.assertEqual(iris_browser_tools._allowed_domains, "example.com,*.example.com")
+        self.assertEqual(iris_browser_tools._allowed_domains, "example.com")
         self.assertEqual(run_browser.call_count, 2)
         self.assertEqual(run_browser.call_args_list[0].kwargs["timeout_seconds"], 5)
 
@@ -303,10 +306,74 @@ class IrisBrowserToolTests(unittest.TestCase):
         run_browser.assert_not_called()
 
     def test_safe_click_returns_preview(self):
+        iris_browser_tools._allowed_domains = "example.com"
         iris_browser_tools._snapshot_refs["task"] = {
             "e1": {"role": "link", "name": "Documentation"}
         }
+        with tempfile.TemporaryDirectory() as directory:
+            screenshot = Path(directory) / "browser-shot.png"
+            screenshot.write_bytes(
+                base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                )
+            )
+            with (
+                patch.object(
+                    iris_browser_tools,
+                    "_resolve_host_addresses",
+                    return_value=("93.184.216.34",),
+                ),
+                patch.object(
+                    iris_browser_tools,
+                    "_run_browser",
+                    side_effect=[
+                        {"success": True, "data": {"url": "https://example.com/docs"}},
+                        {"success": True, "data": {"clicked": True}},
+                        {"success": True, "data": {"url": "https://example.com/docs"}},
+                        {"success": True, "data": {"path": str(screenshot)}},
+                    ],
+                ),
+                patch.object(
+                    iris_browser_tools,
+                    "_next_screenshot_path",
+                    return_value=screenshot,
+                ),
+            ):
+                result = json.loads(
+                    iris_browser_tools.browser_click(
+                        {"target": "@e1"},
+                        task_id="task",
+                    )
+                )
+            self.assertEqual(
+                result["browserPreview"]["url"], "https://example.com/docs"
+            )
+            self.assertEqual(
+                result["browserPreview"]["screenshotPath"], str(screenshot)
+            )
+            self.assertTrue(result["untrustedEvidence"])
+            self.assertFalse(result["instructionAuthority"])
+            self.assertIn("IRIS_BROWSER_PREVIEW:", result["content"])
+
+    def test_click_rejects_private_destination_before_interaction(self):
+        iris_browser_tools._allowed_domains = "example.com"
+        iris_browser_tools._snapshot_refs["task"] = {
+            "e1": {
+                "role": "link",
+                "name": "Internal admin",
+                "href": "http://127.0.0.1/admin",
+            }
+        }
         with (
+            patch.object(
+                iris_browser_tools,
+                "_run_browser",
+                return_value={
+                    "success": True,
+                    "data": {"url": "https://example.com/docs"},
+                },
+            ) as run_browser,
             patch.object(
                 iris_browser_tools,
                 "_resolve_host_addresses",
@@ -314,30 +381,263 @@ class IrisBrowserToolTests(unittest.TestCase):
             ),
             patch.object(
                 iris_browser_tools,
+                "_close_unsafe_browser_session",
+            ) as close_session,
+        ):
+            with self.assertRaisesRegex(ValueError, "private or local"):
+                iris_browser_tools.browser_click({"target": "@e1"}, task_id="task")
+
+        run_browser.assert_called_once_with(["get", "url"])
+        close_session.assert_called_once_with()
+
+    def test_click_rejects_public_subdomain_before_interaction(self):
+        iris_browser_tools._allowed_domains = "example.com"
+        iris_browser_tools._snapshot_refs["task"] = {
+            "e1": {
+                "role": "link",
+                "name": "Delegated host",
+                "href": "https://tenant.example.com/action",
+            }
+        }
+        with (
+            patch.object(
+                iris_browser_tools,
                 "_run_browser",
-                side_effect=[
-                    {"success": True, "data": {"clicked": True}},
-                    {"success": True, "data": {"url": "https://example.com/docs"}},
-                    {"success": True, "data": {"path": "shot.png"}},
-                ],
+                return_value={
+                    "success": True,
+                    "data": {"url": "https://example.com/docs"},
+                },
+            ) as run_browser,
+            patch.object(
+                iris_browser_tools,
+                "_resolve_host_addresses",
+                return_value=("93.184.216.34",),
             ),
             patch.object(
                 iris_browser_tools,
-                "_next_screenshot_path",
-                return_value=Path("shot.png"),
-            ),
+                "_close_unsafe_browser_session",
+            ) as close_session,
         ):
-            result = json.loads(
-                iris_browser_tools.browser_click(
-                    {"target": "@e1"},
-                    task_id="task",
+            with self.assertRaisesRegex(ValueError, "exact allowed public host"):
+                iris_browser_tools.browser_click({"target": "@e1"}, task_id="task")
+
+        run_browser.assert_called_once_with(["get", "url"])
+        close_session.assert_called_once_with()
+
+    def test_press_revalidates_current_host_before_key_event(self):
+        iris_browser_tools._allowed_domains = "example.com"
+        with (
+            patch.object(
+                iris_browser_tools,
+                "_run_browser",
+                return_value={
+                    "success": True,
+                    "data": {"url": "https://example.com/form"},
+                },
+            ) as run_browser,
+            patch.object(
+                iris_browser_tools,
+                "_resolve_host_addresses",
+                return_value=("127.0.0.1",),
+            ),
+            patch.object(
+                iris_browser_tools,
+                "_close_unsafe_browser_session",
+            ) as close_session,
+            patch.object(iris_browser_tools, "_approve_once", return_value=True),
+        ):
+            with self.assertRaisesRegex(ValueError, "private or local"):
+                iris_browser_tools.browser_press({"key": "Enter"}, task_id="task")
+
+        run_browser.assert_called_once_with(["get", "url"])
+        close_session.assert_called_once_with()
+
+    def test_screenshot_artifacts_are_bounded_and_session_close_removes_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            screenshot_dir = Path(directory)
+            artifacts = []
+            for index in range(4):
+                path = screenshot_dir / f"browser-{index}.png"
+                path.write_bytes(bytes([index + 1]) * 8)
+                os.utime(path, (100 + index, 100 + index))
+                artifacts.append(path)
+            unrelated = screenshot_dir / "manual.png"
+            unrelated.write_bytes(b"keep")
+
+            with (
+                patch.object(iris_browser_tools, "SCREENSHOT_DIR", screenshot_dir),
+                patch.object(iris_browser_tools, "SCREENSHOT_MAX_COUNT", 2),
+                patch.object(
+                    iris_browser_tools,
+                    "SCREENSHOT_MAX_AGE_SECONDS",
+                    int(time.time()) + 1_000,
+                ),
+            ):
+                iris_browser_tools._cleanup_screenshot_artifacts()
+                self.assertEqual(
+                    sorted(path.name for path in screenshot_dir.glob("browser-*.png")),
+                    ["browser-2.png", "browser-3.png"],
                 )
+                iris_browser_tools._cleanup_screenshot_artifacts(remove_all=True)
+
+            self.assertFalse(any(path.exists() for path in artifacts))
+            self.assertTrue(unrelated.exists())
+
+    def test_oversized_screenshot_is_deleted_before_preview(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "browser-large.png"
+            path.write_bytes(b"12345")
+            with patch.object(iris_browser_tools, "SCREENSHOT_MAX_SINGLE_BYTES", 4):
+                with self.assertRaisesRegex(RuntimeError, "bounded"):
+                    iris_browser_tools._validate_screenshot_artifact(path)
+            self.assertFalse(path.exists())
+
+    def test_missing_empty_and_invalid_screenshots_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            missing = root / "browser-missing.png"
+            with self.assertRaisesRegex(RuntimeError, "not created"):
+                iris_browser_tools._validate_screenshot_artifact(missing)
+
+            empty = root / "browser-empty.png"
+            empty.touch()
+            with self.assertRaisesRegex(RuntimeError, "empty"):
+                iris_browser_tools._validate_screenshot_artifact(empty)
+            self.assertFalse(empty.exists())
+
+            invalid = root / "browser-invalid.png"
+            invalid.write_bytes(b"not a png")
+            with self.assertRaisesRegex(RuntimeError, "invalid"):
+                iris_browser_tools._validate_screenshot_artifact(invalid)
+            self.assertFalse(invalid.exists())
+
+    def test_command_stream_overflow_is_drained_with_fixed_disk_and_read_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "command.stdout"
+            retained_limit = 1024
+            streamed_bytes = 5 * 1024 * 1024
+            total, truncated = iris_browser_tools._drain_browser_stream(
+                io.BytesIO(b"x" * streamed_bytes),
+                path,
+                retained_limit,
             )
-        self.assertEqual(result["browserPreview"]["url"], "https://example.com/docs")
-        self.assertEqual(result["browserPreview"]["screenshotPath"], "shot.png")
-        self.assertTrue(result["untrustedEvidence"])
-        self.assertFalse(result["instructionAuthority"])
-        self.assertIn("IRIS_BROWSER_PREVIEW:", result["content"])
+
+            self.assertEqual(total, streamed_bytes)
+            self.assertTrue(truncated)
+            self.assertEqual(path.stat().st_size, retained_limit)
+            raw, persisted = iris_browser_tools._finalize_command_artifact(
+                path,
+                retained_limit,
+                truncated=True,
+            )
+            self.assertEqual(len(raw.encode("utf-8")), retained_limit)
+            self.assertTrue(persisted.endswith("[browser command output truncated]"))
+            self.assertLessEqual(path.stat().st_size, retained_limit)
+
+            path.write_bytes(b"y" * (retained_limit + 1))
+            with self.assertRaisesRegex(RuntimeError, "exceeded"):
+                iris_browser_tools._read_command_artifact(path, retained_limit)
+
+    def test_command_artifact_finalization_redacts_persistent_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "command.stderr"
+            secret = "Authorization: Bearer browser-test-secret"
+            path.write_text(f"{secret}\nsafe diagnostic", encoding="utf-8")
+
+            raw, persisted = iris_browser_tools._finalize_command_artifact(
+                path,
+                1024,
+                truncated=False,
+            )
+
+            self.assertIn(secret, raw)
+            self.assertIn("[redacted sensitive detail]", persisted)
+            self.assertIn("safe diagnostic", persisted)
+            self.assertNotIn("browser-test-secret", path.read_text(encoding="utf-8"))
+
+    def test_long_browser_session_prunes_other_sessions_old_files_and_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            session_id = "abc123abc123"
+            now = time.time()
+            expected = []
+            for index in range(8):
+                path = output_dir / (
+                    f"{iris_browser_tools.COMMAND_ARTIFACT_PREFIX}{session_id}-"
+                    f"{index:032x}.stdout"
+                )
+                path.write_bytes(bytes([index + 1]) * 10)
+                os.utime(path, (now - (20 - index), now - (20 - index)))
+                if index >= 4:
+                    expected.append(path.name)
+
+            old = output_dir / (
+                f"{iris_browser_tools.COMMAND_ARTIFACT_PREFIX}{session_id}-old.stderr"
+            )
+            old.write_bytes(b"old")
+            os.utime(old, (now - 120, now - 120))
+            other_session = output_dir / (
+                f"{iris_browser_tools.COMMAND_ARTIFACT_PREFIX}other-session.stdout"
+            )
+            other_session.write_bytes(b"other")
+            unrelated = output_dir / "manual-note.txt"
+            unrelated.write_text("keep", encoding="utf-8")
+
+            with (
+                patch.object(iris_browser_tools, "COMMAND_OUTPUT_DIR", output_dir),
+                patch.object(iris_browser_tools, "_command_session_id", session_id),
+                patch.object(iris_browser_tools, "_command_artifacts", set()),
+                patch.object(iris_browser_tools, "COMMAND_ARTIFACT_MAX_COUNT", 4),
+                patch.object(
+                    iris_browser_tools,
+                    "COMMAND_ARTIFACT_MAX_TOTAL_BYTES",
+                    1024,
+                ),
+                patch.object(
+                    iris_browser_tools,
+                    "COMMAND_ARTIFACT_MAX_AGE_SECONDS",
+                    60,
+                ),
+            ):
+                iris_browser_tools._cleanup_command_artifacts()
+
+            self.assertEqual(
+                sorted(path.name for path in output_dir.glob("*.stdout")),
+                sorted(expected),
+            )
+            self.assertFalse(old.exists())
+            self.assertFalse(other_session.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_command_artifact_retention_enforces_total_byte_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            session_id = "def456def456"
+            now = time.time()
+            for index in range(4):
+                path = output_dir / (
+                    f"{iris_browser_tools.COMMAND_ARTIFACT_PREFIX}{session_id}-"
+                    f"{index:032x}.stdout"
+                )
+                path.write_bytes(b"x" * 12)
+                os.utime(path, (now + index, now + index))
+
+            with (
+                patch.object(iris_browser_tools, "COMMAND_OUTPUT_DIR", output_dir),
+                patch.object(iris_browser_tools, "_command_session_id", session_id),
+                patch.object(iris_browser_tools, "_command_artifacts", set()),
+                patch.object(iris_browser_tools, "COMMAND_ARTIFACT_MAX_COUNT", 10),
+                patch.object(
+                    iris_browser_tools,
+                    "COMMAND_ARTIFACT_MAX_TOTAL_BYTES",
+                    25,
+                ),
+            ):
+                iris_browser_tools._cleanup_command_artifacts()
+
+            retained = list(output_dir.glob("*.stdout"))
+            self.assertEqual(len(retained), 2)
+            self.assertLessEqual(sum(path.stat().st_size for path in retained), 25)
 
     def test_executable_download_requires_confirmation(self):
         with (

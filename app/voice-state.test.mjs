@@ -3,6 +3,8 @@ import { test } from "node:test";
 import {
   classifyAsrError,
   classifyVoiceTranscript,
+  createInterruptionPauseCoordinator,
+  interruptionResumeRequiresCancellation,
   interruptionCandidatePauseAllowed,
   interruptionCaptureAttemptAllowed,
   interruptionRetryDelayMs,
@@ -268,6 +270,123 @@ test("interruption retries and speculative pauses are bounded", () => {
   assert.equal(interruptionRetryDelayMs(500, 500), 600);
 });
 
+test("interruption resume waits for an in-flight speculative pause", async () => {
+  const coordinator = createInterruptionPauseCoordinator();
+  const events = [];
+  let releasePause;
+  const pausePending = new Promise((resolve) => {
+    releasePause = resolve;
+  });
+
+  coordinator.begin({
+    runId: 8,
+    requestId: 13,
+    method: "web_audio",
+    async pause() {
+      events.push("pause-start");
+      await pausePending;
+      events.push("pause-end");
+      return true;
+    },
+    async resume() {
+      events.push("resume");
+      return true;
+    }
+  });
+  const resumed = coordinator.resume(8, 13);
+  await Promise.resolve();
+  assert.deepEqual(events, ["pause-start"]);
+
+  releasePause();
+  assert.deepEqual(await resumed, {
+    matched: true,
+    method: "web_audio",
+    paused: true,
+    resumed: true
+  });
+  assert.deepEqual(events, ["pause-start", "pause-end", "resume"]);
+});
+
+test("stale interruption requests cannot resume another playback", async () => {
+  const coordinator = createInterruptionPauseCoordinator();
+  let resumeCount = 0;
+  coordinator.begin({
+    runId: 8,
+    requestId: 13,
+    method: "native_cpal",
+    pause: async () => true,
+    resume: async () => {
+      resumeCount += 1;
+      return true;
+    }
+  });
+
+  assert.deepEqual(await coordinator.resume(8, 12), {
+    matched: false,
+    method: "none",
+    paused: false,
+    resumed: false
+  });
+  assert.equal(resumeCount, 0);
+  assert.deepEqual(await coordinator.resume(8, 13), {
+    matched: true,
+    method: "native_cpal",
+    paused: true,
+    resumed: true
+  });
+  assert.equal(resumeCount, 1);
+});
+
+test("a result resolved before onset prevents a late speculative pause", async () => {
+  const coordinator = createInterruptionPauseCoordinator();
+  let pauseCount = 0;
+
+  assert.deepEqual(await coordinator.resume(8, 13), {
+    matched: false,
+    method: "none",
+    paused: false,
+    resumed: false
+  });
+  assert.equal(
+    await coordinator.begin({
+      runId: 8,
+      requestId: 13,
+      method: "native_cpal",
+      pause: async () => {
+        pauseCount += 1;
+        return true;
+      },
+      resume: async () => true
+    }),
+    false
+  );
+  assert.equal(pauseCount, 0);
+});
+
+test("every playback backend treats a failed resume as terminal", async () => {
+  for (const method of ["native_cpal", "web_audio", "html_audio"]) {
+    const coordinator = createInterruptionPauseCoordinator();
+    await coordinator.begin({
+      runId: 8,
+      requestId: 13,
+      method,
+      pause: async () => true,
+      resume: async () => false
+    });
+    const outcome = await coordinator.resume(8, 13);
+    assert.equal(outcome.method, method);
+    assert.equal(interruptionResumeRequiresCancellation(outcome), true);
+  }
+  assert.equal(
+    interruptionResumeRequiresCancellation({
+      matched: true,
+      paused: false,
+      resumed: false
+    }),
+    false
+  );
+});
+
 test("ambient captions are ignored in voice loop", () => {
   for (const transcript of [
     "[MUSIC PLAYING]",
@@ -293,6 +412,14 @@ test("empty microphone captures are nonfatal ASR diagnostics", () => {
     severity: "nonfatal",
     event: "native_asr_no_input",
     status: "No speech transcript captured."
+  });
+});
+
+test("missing default microphone reports actionable device recovery", () => {
+  assert.deepEqual(classifyAsrError("no default microphone input device found"), {
+    severity: "error",
+    event: "native_asr_error",
+    status: "No microphone is available. Connect one and choose it as the Windows default input device."
   });
 });
 

@@ -96,7 +96,10 @@ their errors can numerically cancel each other:
 
 For each condition:
 
-1. Ask Iris for a response long enough to speak for at least 10 seconds.
+1. Select the intended Windows default microphone and output device, then ask
+   Iris for a response long enough to speak for at least 10 seconds. The
+   retained summary must name those endpoints under `input_devices` and
+   `output_devices`; a mislabeled route invalidates that condition.
 2. Start a fresh process for five silent replies. Iris must not pause or cancel
    itself. Close Iris, retain the log as `<condition>-silent`, and summarize it
    with `-ExpectedInterruptions 0`.
@@ -128,6 +131,8 @@ Release targets for each separate run are:
 - silent and non-command runs: zero cancellations and zero interruption errors;
 - intended run: all five intended interruptions detected and zero errors;
 - no permanent cancellation for either non-command utterance;
+- zero pause failures, resume failures, or resumes without later playback
+  completion, and completion evidence for every successful rejected resume;
 - median capture-to-VAD at or below 350 ms;
 - median VAD-to-pause at or below 150 ms; and
 - median confirmed-interruption resolution at or below 1,200 ms.

@@ -108,7 +108,7 @@ impl ProjectManifest {
     pub fn validate_v0_1_policy(&self) -> Result<(), String> {
         require(
             self.project.target_platform == "windows",
-            "Iris prototype target platform must be windows",
+            "Iris target platform must be windows",
         )?;
         require(
             !self.model_policy.runtime_loads_model,

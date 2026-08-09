@@ -26,7 +26,7 @@ source code, not third-party model files or downloaded assets.
 Model traffic remains local to Ollama loopback. Safe mode does not act.
 An explicitly approved Agentic Session can use the packaged Hermes file,
 PowerShell, process, and isolated browser tools. High-risk actions require
-separate confirmation, the browser uses a dedicated Iris profile, and clipboard,
+separate confirmation, the browser uses an isolated, nonpersistent Iris session, and clipboard,
 mouse, keyboard, general window control, arbitrary plugins, and cloud model APIs
 remain unavailable.
 
@@ -188,8 +188,8 @@ are missing.
 - `profiles\iris_agentic.json`
 - `.iris-runtime\hermes` pinned Hermes Agent environment
 - `.iris-runtime\browser` pinned Windows agent-browser runtime; the browser
-  engine is system Google Chrome installed/updated by WinGet, always with
-  a separate Iris profile
+  engine is system Google Chrome installed/updated by WinGet, always in
+  a separate domain-contained session; manual sign-ins do not persist after close
 - `capabilities\v0_1_capability_ledger.toml`
 - user-facing docs, license, notice, security notes, known limitations, assets
 

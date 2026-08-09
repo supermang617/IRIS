@@ -195,10 +195,10 @@ $runtimeManifest = [ordered]@{
         upstream_commit = "7c1a029553d87c43ecff8a3821336bc95872213b"
         wheel_sha256 = "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37"
         dependency_lock = "profiles/hermes_agent_python_3_13.lock.txt"
-        dependency_lock_sha256 = "faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47"
+        dependency_lock_sha256 = "0e2e636b49109143e4ddf6787f94bf24722cdbd491001436298515934f47be5f"
         dependency_count = 65
         security_overrides = [ordered]@{
-            cryptography = "48.0.1"
+            cryptography = "50.0.0"
             pillow = "12.3.0"
         }
         sigstore_entry = "2040635656"
@@ -223,7 +223,7 @@ $runtimeManifest = [ordered]@{
         upgrade_owner = "AlejandroPinto.Iris"
     }
     agent_browser = [ordered]@{
-        version = "0.27.2"
+        version = "0.33.2"
         platform = "windows-x64"
         binary_sha256 = $browserPrune.WindowsBinarySha256
         pruned_non_windows_binaries = $browserPrune.RemovedCount
@@ -234,7 +234,8 @@ $runtimeManifest = [ordered]@{
         preferred = "Google Chrome"
         winget_package = "Google.Chrome"
         executable_override = "IRIS_BROWSER_EXECUTABLE_PATH"
-        isolated_profile = $true
+        isolated_session = $true
+        persistent_profile = $false
     }
     volatile_data_packaged = $false
 }

@@ -5,11 +5,13 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 import uuid
+import zlib
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from iris_action_tools import _approve_once, _path_risk, _workspace_for_task
 
@@ -36,7 +38,6 @@ BROWSER_EXE = (
     / "bin"
     / "agent-browser-win32-x64.exe"
 )
-PROFILE_DIR = DATA_ROOT / "profile"
 DOWNLOAD_DIR = DATA_ROOT / "downloads"
 SCREENSHOT_DIR = STATE_ROOT / "diagnostics" / "browser"
 COMMAND_OUTPUT_DIR = _root_from_env(
@@ -44,6 +45,21 @@ COMMAND_OUTPUT_DIR = _root_from_env(
     DATA_ROOT / "command-output",
 )
 IRIS_BROWSER_TOOLSET = "iris-browser"
+SCREENSHOT_MAX_COUNT = 12
+SCREENSHOT_MAX_TOTAL_BYTES = 48 * 1024 * 1024
+SCREENSHOT_MAX_SINGLE_BYTES = 8 * 1024 * 1024
+SCREENSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
+SCREENSHOT_MAX_DIMENSION = 16_384
+COMMAND_STDOUT_MAX_BYTES = 256 * 1024
+COMMAND_STDERR_MAX_BYTES = 64 * 1024
+COMMAND_ARTIFACT_MAX_COUNT = 24
+COMMAND_ARTIFACT_MAX_TOTAL_BYTES = 2 * 1024 * 1024
+COMMAND_ARTIFACT_MAX_AGE_SECONDS = 60 * 60
+COMMAND_STREAM_DRAIN_TIMEOUT_SECONDS = 5
+COMMAND_STREAM_DRAIN_QUIET_SECONDS = 0.1
+COMMAND_ARTIFACT_PREFIX = "browser-command-"
+_screenshot_lock = threading.RLock()
+_command_artifact_lock = threading.RLock()
 IRIS_BROWSER_TOOLS = (
     "browser_open",
     "browser_snapshot",
@@ -89,6 +105,7 @@ EXECUTABLE_EXTENSIONS = {".bat", ".cmd", ".exe", ".msi", ".msix", ".ps1"}
 _snapshot_refs: dict[str, dict[str, dict[str, Any]]] = {}
 _allowed_domains = ""
 _command_artifacts: set[Path] = set()
+_command_session_id = uuid.uuid4().hex[:12]
 AddressResolver = Callable[[str], Iterable[str]]
 
 
@@ -266,8 +283,10 @@ def browser_open(args: dict[str, Any], **kwargs: Any) -> str:
             _run_browser(["close"], headed=headed, timeout_seconds=5)
         except RuntimeError:
             pass
-        _cleanup_command_artifacts()
-    _allowed_domains = host if _is_ip_address(host) else f"{host},*.{host}"
+    _start_command_artifact_session()
+    # Do not wildcard subdomains: a newly delegated or DNS-rebound subdomain could
+    # otherwise reach a private address before Iris can inspect the post-click URL.
+    _allowed_domains = host
     result = _run_browser(["open", url], headed=headed)
     return _with_preview(result)
 
@@ -285,7 +304,8 @@ def browser_snapshot(_: dict[str, Any], **kwargs: Any) -> str:
 
 def browser_click(args: dict[str, Any], **kwargs: Any) -> str:
     target = _required(args, "target")
-    label = _target_label(str(kwargs.get("task_id") or ""), target)
+    task_id = str(kwargs.get("task_id") or "")
+    label = _target_label(task_id, target)
     lowered = f"{target} {label}".lower()
     if any(word in lowered for word in PAYMENT_WORDS):
         if not _approve_once(f"payment browser click: {label or target}", "payment"):
@@ -296,13 +316,15 @@ def browser_click(args: dict[str, Any], **kwargs: Any) -> str:
             "consequential browser submission",
         ):
             return _denied("Consequential browser action denied; no click was performed.")
+    _validate_pre_action_destination(task_id, target)
     return _with_preview(_run_browser(["click", target]))
 
 
 def browser_fill(args: dict[str, Any], **kwargs: Any) -> str:
     target = _required(args, "target")
     text = _required(args, "text")
-    label = _target_label(str(kwargs.get("task_id") or ""), target)
+    task_id = str(kwargs.get("task_id") or "")
+    label = _target_label(task_id, target)
     lowered = f"{target} {label}".lower()
     if any(word in lowered for word in CREDENTIAL_WORDS):
         if not _approve_once(
@@ -310,16 +332,18 @@ def browser_fill(args: dict[str, Any], **kwargs: Any) -> str:
             "credentials",
         ):
             return _denied("Credential entry denied; no text was entered.")
+    _validate_pre_action_destination(task_id, target)
     return _with_preview(_run_browser(["fill", target, text]))
 
 
-def browser_press(args: dict[str, Any], **_: Any) -> str:
+def browser_press(args: dict[str, Any], **kwargs: Any) -> str:
     key = _required(args, "key")
     if key.lower() in {"enter", "return"} and not _approve_once(
         "consequential browser submission: press Enter",
         "consequential browser submission",
     ):
         return _denied("Browser submission denied; Enter was not pressed.")
+    _validate_pre_action_destination(str(kwargs.get("task_id") or ""))
     return _with_preview(_run_browser(["press", key]))
 
 
@@ -358,10 +382,11 @@ def browser_upload(args: dict[str, Any], **kwargs: Any) -> str:
         "consequential browser submission",
     ):
         return _denied("Browser upload denied; no file was uploaded.")
+    _validate_pre_action_destination(str(kwargs.get("task_id") or ""), target)
     return _with_preview(_run_browser(["upload", target, str(path)]))
 
 
-def browser_download(args: dict[str, Any], **_: Any) -> str:
+def browser_download(args: dict[str, Any], **kwargs: Any) -> str:
     target = _required(args, "target")
     filename = Path(_required(args, "filename")).name
     if not filename or filename in {".", ".."}:
@@ -373,6 +398,7 @@ def browser_download(args: dict[str, Any], **_: Any) -> str:
     )
     if not _approve_once(f"{risk}: {filename}", risk):
         return _denied("Browser download denied; no file was downloaded.")
+    _validate_pre_action_destination(str(kwargs.get("task_id") or ""), target)
     destination = DOWNLOAD_DIR / filename
     result = _run_browser(["download", target, str(destination)])
     result["downloadPath"] = str(destination)
@@ -387,7 +413,8 @@ def browser_close(_: dict[str, Any], **__: Any) -> str:
         ensure_ascii=False,
     )
     _allowed_domains = ""
-    _cleanup_command_artifacts()
+    _cleanup_command_artifacts(remove_all=True)
+    _cleanup_screenshot_artifacts(remove_all=True)
     return result
 
 
@@ -400,13 +427,12 @@ def _run_browser(
     if not BROWSER_EXE.is_file():
         raise RuntimeError(f"agent-browser runtime is missing: {BROWSER_EXE}")
     browser_executable = _browser_executable()
-    for directory in (PROFILE_DIR, DOWNLOAD_DIR, SCREENSHOT_DIR, COMMAND_OUTPUT_DIR):
+    for directory in (DOWNLOAD_DIR, SCREENSHOT_DIR, COMMAND_OUTPUT_DIR):
         directory.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(
         {
             "AGENT_BROWSER_SESSION": "iris-hermes",
-            "AGENT_BROWSER_PROFILE": str(PROFILE_DIR),
             "AGENT_BROWSER_EXECUTABLE_PATH": str(browser_executable),
             "AGENT_BROWSER_CONTENT_BOUNDARIES": "1",
             "AGENT_BROWSER_MAX_OUTPUT": "20000",
@@ -420,56 +446,358 @@ def _run_browser(
     )
     if headed is not None:
         env["AGENT_BROWSER_HEADED"] = "1" if headed else "0"
+    _cleanup_command_artifacts()
     artifact_id = uuid.uuid4().hex
-    stdout_path = COMMAND_OUTPUT_DIR / f"{artifact_id}.stdout"
-    stderr_path = COMMAND_OUTPUT_DIR / f"{artifact_id}.stderr"
-    _command_artifacts.update((stdout_path, stderr_path))
-    with (
-        stdout_path.open("w+", encoding="utf-8") as stdout_file,
-        stderr_path.open("w+", encoding="utf-8") as stderr_file,
-    ):
-        completed = subprocess.run(
+    artifact_name = f"{COMMAND_ARTIFACT_PREFIX}{_command_session_id}-{artifact_id}"
+    stdout_path = COMMAND_OUTPUT_DIR / f"{artifact_name}.stdout"
+    stderr_path = COMMAND_OUTPUT_DIR / f"{artifact_name}.stderr"
+    with _command_artifact_lock:
+        _command_artifacts.update((stdout_path, stderr_path))
+
+    drain_threads: list[threading.Thread] = []
+    finalized: set[Path] = set()
+    process: Any = None
+    drain_stop: threading.Event | None = None
+    try:
+        process = subprocess.Popen(
             [str(BROWSER_EXE), "--json", *arguments],
             cwd=str(RESOURCE_ROOT),
             env=env,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            text=True,
-            timeout=timeout_seconds,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            check=False,
         )
-        stdout_file.flush()
-        stderr_file.flush()
-        stdout_file.seek(0)
-        stderr_file.seek(0)
-        output = stdout_file.read().strip()
-        stderr = stderr_file.read().strip()
-    if not output:
-        raise RuntimeError(
-            f"agent-browser returned no JSON: {stderr or completed.returncode}"
-        )
-    try:
-        result = json.loads(output.splitlines()[-1])
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"agent-browser returned invalid JSON: {output[-1000:]}") from error
-    if completed.returncode != 0 or not result.get("success"):
-        message = result.get("error") or stderr or "browser command failed"
-        raise RuntimeError(str(message))
-    return result
+        if process.stdout is None or process.stderr is None:
+            process.kill()
+            process.wait(timeout=COMMAND_STREAM_DRAIN_TIMEOUT_SECONDS)
+            raise RuntimeError("agent-browser output streams were unavailable")
+        if not all(
+            _set_browser_stream_nonblocking(stream)
+            for stream in (process.stdout, process.stderr)
+        ):
+            process.kill()
+            process.wait(timeout=COMMAND_STREAM_DRAIN_TIMEOUT_SECONDS)
+            raise RuntimeError("agent-browser output streams could not be bounded safely")
 
+        stream_results: dict[str, tuple[int, bool]] = {}
+        stream_errors: dict[str, BaseException] = {}
+        drain_stop = threading.Event()
 
-def _cleanup_command_artifacts() -> None:
-    if COMMAND_OUTPUT_DIR.is_dir():
-        _command_artifacts.update(path for path in COMMAND_OUTPUT_DIR.iterdir() if path.is_file())
-    for path in tuple(_command_artifacts):
-        for _ in range(20):
+        def drain_stream(
+            name: str,
+            stream: Any,
+            path: Path,
+            max_bytes: int,
+        ) -> None:
             try:
-                path.unlink(missing_ok=True)
+                stream_results[name] = _drain_browser_stream(
+                    stream,
+                    path,
+                    max_bytes,
+                    stop_event=drain_stop,
+                )
+            except BaseException as error:  # Preserve failures from the reader thread.
+                stream_errors[name] = error
+
+        for name, stream, path, max_bytes in (
+            ("stdout", process.stdout, stdout_path, COMMAND_STDOUT_MAX_BYTES),
+            ("stderr", process.stderr, stderr_path, COMMAND_STDERR_MAX_BYTES),
+        ):
+            reader = threading.Thread(
+                target=drain_stream,
+                args=(name, stream, path, max_bytes),
+                name=f"iris-browser-{name}-drain",
+                daemon=True,
+            )
+            reader.start()
+            drain_threads.append(reader)
+
+        try:
+            try:
+                returncode = process.wait(timeout=timeout_seconds)
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                try:
+                    returncode = process.wait(timeout=COMMAND_STREAM_DRAIN_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError("agent-browser did not stop after its timeout") from error
+        finally:
+            drain_stop.set()
+
+        for reader in drain_threads:
+            reader.join(COMMAND_STREAM_DRAIN_TIMEOUT_SECONDS)
+        if any(reader.is_alive() for reader in drain_threads):
+            process.kill()
+            raise RuntimeError("agent-browser output streams did not close after the command")
+        process.stdout.close()
+        process.stderr.close()
+        if stream_errors:
+            name, error = next(iter(stream_errors.items()))
+            raise RuntimeError(f"failed to drain agent-browser {name}: {error}") from error
+
+        stdout_total, stdout_truncated = stream_results["stdout"]
+        _, stderr_truncated = stream_results["stderr"]
+        output, _ = _finalize_command_artifact(
+            stdout_path,
+            COMMAND_STDOUT_MAX_BYTES,
+            truncated=stdout_truncated,
+        )
+        finalized.add(stdout_path)
+        _, stderr = _finalize_command_artifact(
+            stderr_path,
+            COMMAND_STDERR_MAX_BYTES,
+            truncated=stderr_truncated,
+        )
+        finalized.add(stderr_path)
+
+        if timed_out:
+            detail = f": {stderr}" if stderr else ""
+            raise RuntimeError(f"agent-browser timed out after {timeout_seconds}s{detail}")
+        if stdout_truncated:
+            raise RuntimeError(
+                "agent-browser stdout exceeded the bounded "
+                f"{COMMAND_STDOUT_MAX_BYTES} byte limit (received at least {stdout_total} bytes)"
+            )
+        if not output:
+            raise RuntimeError(f"agent-browser returned no JSON: {stderr or returncode}")
+        try:
+            result = json.loads(output.splitlines()[-1])
+        except json.JSONDecodeError as error:
+            detail = _redact_browser_diagnostic(output[-1000:], 1000)
+            raise RuntimeError(f"agent-browser returned invalid JSON: {detail}") from error
+        if returncode != 0 or not result.get("success"):
+            message = result.get("error") or stderr or "browser command failed"
+            raise RuntimeError(_redact_browser_diagnostic(str(message), 4_000))
+        return result
+    except BaseException:
+        if drain_stop is not None:
+            drain_stop.set()
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=COMMAND_STREAM_DRAIN_TIMEOUT_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        raise
+    finally:
+        if not any(reader.is_alive() for reader in drain_threads):
+            for path, max_bytes in (
+                (stdout_path, COMMAND_STDOUT_MAX_BYTES),
+                (stderr_path, COMMAND_STDERR_MAX_BYTES),
+            ):
+                if path in finalized or not path.is_file():
+                    continue
+                try:
+                    _finalize_command_artifact(path, max_bytes, truncated=False)
+                except (OSError, RuntimeError):
+                    pass
+        _cleanup_command_artifacts()
+
+
+def _set_browser_stream_nonblocking(stream: Any) -> bool:
+    try:
+        os.set_blocking(stream.fileno(), False)
+    except (AttributeError, OSError):
+        return False
+    return True
+
+
+def _drain_browser_stream(
+    stream: Any,
+    path: Path,
+    max_bytes: int,
+    *,
+    stop_event: threading.Event | None = None,
+) -> tuple[int, bool]:
+    total_bytes = 0
+    retained_bytes = 0
+    last_data_at = time.monotonic()
+    read_chunk = getattr(stream, "read1", stream.read)
+    with path.open("wb") as output:
+        while True:
+            try:
+                chunk = read_chunk(64 * 1024)
+            except BlockingIOError:
+                chunk = None
+            if not chunk:
+                if stop_event is None:
+                    break
+                if (
+                    stop_event.is_set()
+                    and time.monotonic() - last_data_at
+                    >= COMMAND_STREAM_DRAIN_QUIET_SECONDS
+                ):
+                    break
+                time.sleep(0.01)
+                continue
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8", errors="replace")
+            last_data_at = time.monotonic()
+            total_bytes += len(chunk)
+            retained = chunk[: max(0, max_bytes - retained_bytes)]
+            if retained:
+                output.write(retained)
+                retained_bytes += len(retained)
+        output.flush()
+    return total_bytes, total_bytes > max_bytes
+
+
+def _read_command_artifact(path: Path, max_bytes: int) -> str:
+    if path.stat().st_size > max_bytes:
+        raise RuntimeError(f"browser command artifact exceeded its {max_bytes} byte limit")
+    with path.open("rb") as artifact:
+        data = artifact.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise RuntimeError(f"browser command artifact exceeded its {max_bytes} byte read limit")
+    return data.decode("utf-8", errors="replace").strip()
+
+
+def _finalize_command_artifact(
+    path: Path,
+    max_bytes: int,
+    *,
+    truncated: bool,
+) -> tuple[str, str]:
+    raw = _read_command_artifact(path, max_bytes)
+    clean = _redact_browser_diagnostic(raw, max_bytes)
+    if truncated:
+        clean = _bounded_diagnostic_text_with_suffix(
+            clean,
+            " [browser command output truncated]",
+            max_bytes,
+        )
+    path.write_bytes(clean.encode("utf-8"))
+    return raw, clean
+
+
+def _redact_browser_diagnostic(value: str, max_bytes: int) -> str:
+    sensitive_markers = (
+        "password",
+        "secret",
+        "api key",
+        "api_key",
+        "token=",
+        "token:",
+        "access_token",
+        "authorization:",
+        "bearer ",
+        "cookie:",
+        "set-cookie:",
+    )
+    clean = "\n".join(
+        "[redacted sensitive detail]"
+        if any(marker in line.lower() for marker in sensitive_markers)
+        else line
+        for line in value.splitlines()
+    )
+    profile = str(os.environ.get("USERPROFILE") or "")
+    if profile:
+        clean = clean.replace(profile, "%USERPROFILE%")
+        clean = clean.replace(profile.replace("\\", "/"), "%USERPROFILE%")
+    return _bounded_diagnostic_text(clean, max_bytes)
+
+
+def _bounded_diagnostic_text(value: str, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    suffix = b"..."
+    retained = encoded[: max(0, max_bytes - len(suffix))]
+    return retained.decode("utf-8", errors="ignore") + suffix.decode("ascii")
+
+
+def _bounded_diagnostic_text_with_suffix(
+    value: str,
+    suffix: str,
+    max_bytes: int,
+) -> str:
+    if max_bytes <= 0:
+        return ""
+    suffix_bytes = suffix.encode("utf-8")[-max_bytes:]
+    retained = value.encode("utf-8")[: max(0, max_bytes - len(suffix_bytes))]
+    return retained.decode("utf-8", errors="ignore").rstrip() + suffix_bytes.decode(
+        "utf-8", errors="ignore"
+    )
+
+
+def _start_command_artifact_session() -> None:
+    global _command_session_id
+    _cleanup_command_artifacts(remove_all=True)
+    _command_session_id = uuid.uuid4().hex[:12]
+
+
+def _is_command_artifact(path: Path) -> bool:
+    if path.suffix not in {".stdout", ".stderr"}:
+        return False
+    if path.name.startswith(COMMAND_ARTIFACT_PREFIX):
+        return True
+    return len(path.stem) == 32 and all(character in "0123456789abcdef" for character in path.stem)
+
+
+def _command_artifact_file_limit(path: Path) -> int:
+    return (
+        COMMAND_STDOUT_MAX_BYTES
+        if path.suffix == ".stdout"
+        else COMMAND_STDERR_MAX_BYTES
+    )
+
+
+def _unlink_command_artifact(path: Path) -> None:
+    for _ in range(20):
+        try:
+            path.unlink(missing_ok=True)
+            _command_artifacts.discard(path)
+            return
+        except OSError:
+            time.sleep(0.05)
+
+
+def _cleanup_command_artifacts(*, remove_all: bool = False) -> None:
+    with _command_artifact_lock:
+        if COMMAND_OUTPUT_DIR.is_dir():
+            _command_artifacts.update(
+                path
+                for path in COMMAND_OUTPUT_DIR.iterdir()
+                if path.is_file() and _is_command_artifact(path)
+            )
+        now = time.time()
+        current_prefix = f"{COMMAND_ARTIFACT_PREFIX}{_command_session_id}-"
+        artifacts: list[tuple[Path, os.stat_result]] = []
+        for path in tuple(_command_artifacts):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
                 _command_artifacts.discard(path)
-                break
+                continue
             except OSError:
-                time.sleep(0.05)
+                continue
+            if (
+                remove_all
+                or not path.name.startswith(current_prefix)
+                or now - stat.st_mtime > COMMAND_ARTIFACT_MAX_AGE_SECONDS
+                or stat.st_size > _command_artifact_file_limit(path)
+            ):
+                _unlink_command_artifact(path)
+                continue
+            artifacts.append((path, stat))
+
+        artifacts.sort(key=lambda item: item[1].st_mtime, reverse=True)
+        retained_count = 0
+        retained_bytes = 0
+        for path, stat in artifacts:
+            within_bounds = (
+                retained_count < COMMAND_ARTIFACT_MAX_COUNT
+                and retained_bytes + stat.st_size <= COMMAND_ARTIFACT_MAX_TOTAL_BYTES
+            )
+            if within_bounds:
+                retained_count += 1
+                retained_bytes += stat.st_size
+            else:
+                _unlink_command_artifact(path)
 
 
 def _with_preview(
@@ -478,22 +806,26 @@ def _with_preview(
     capture: bool = True,
     screenshot_path: Path | None = None,
 ) -> str:
-    effective_url = _current_url()
-    if effective_url:
-        _validate_effective_url(effective_url)
-    preview: dict[str, Any] = {"url": effective_url}
-    if screenshot_path is None and capture:
-        screenshot_path = _next_screenshot_path()
-        _run_browser(["screenshot", str(screenshot_path)])
-    if screenshot_path is not None:
-        preview["screenshotPath"] = str(screenshot_path)
-    result["browserPreview"] = preview
-    result["untrustedEvidence"] = True
-    result["instructionAuthority"] = False
-    result["content"] = "IRIS_BROWSER_PREVIEW:" + json.dumps(
-        preview, ensure_ascii=False, separators=(",", ":")
-    )
-    return json.dumps(result, ensure_ascii=False)
+    with _screenshot_lock:
+        _cleanup_screenshot_artifacts()
+        effective_url = _current_url()
+        if effective_url:
+            _validate_effective_url(effective_url)
+        preview: dict[str, Any] = {"url": effective_url}
+        if screenshot_path is None and capture:
+            screenshot_path = _next_screenshot_path()
+            _run_browser(["screenshot", str(screenshot_path)])
+        if screenshot_path is not None:
+            _validate_screenshot_artifact(screenshot_path)
+            _cleanup_screenshot_artifacts(keep=screenshot_path)
+            preview["screenshotPath"] = str(screenshot_path)
+        result["browserPreview"] = preview
+        result["untrustedEvidence"] = True
+        result["instructionAuthority"] = False
+        result["content"] = "IRIS_BROWSER_PREVIEW:" + json.dumps(
+            preview, ensure_ascii=False, separators=(",", ":")
+        )
+        return json.dumps(result, ensure_ascii=False)
 
 
 def _current_url() -> str:
@@ -510,6 +842,111 @@ def _url_from_result(result: dict[str, Any]) -> str:
 def _next_screenshot_path() -> Path:
     timestamp = int(time.time() * 1000)
     return SCREENSHOT_DIR / f"browser-{timestamp}-{uuid.uuid4().hex[:8]}.png"
+
+
+def _validate_screenshot_artifact(path: Path) -> None:
+    if not path.is_file():
+        raise RuntimeError("Browser preview screenshot was not created.")
+    size = path.stat().st_size
+    if size == 0:
+        path.unlink(missing_ok=True)
+        raise RuntimeError("Browser preview screenshot was empty.")
+    if size > SCREENSHOT_MAX_SINGLE_BYTES:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(
+            "Browser preview exceeded the bounded 8 MB screenshot limit."
+        )
+    try:
+        data = path.read_bytes()
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            raise ValueError("missing PNG signature")
+        cursor = 8
+        saw_header = False
+        saw_image_data = False
+        saw_end = False
+        while cursor + 12 <= len(data):
+            chunk_length = int.from_bytes(data[cursor : cursor + 4], "big")
+            chunk_type = data[cursor + 4 : cursor + 8]
+            chunk_end = cursor + 12 + chunk_length
+            if chunk_end > len(data):
+                raise ValueError("truncated PNG chunk")
+            chunk_data = data[cursor + 8 : cursor + 8 + chunk_length]
+            expected_crc = int.from_bytes(
+                data[cursor + 8 + chunk_length : chunk_end], "big"
+            )
+            actual_crc = zlib.crc32(chunk_data, zlib.crc32(chunk_type)) & 0xFFFFFFFF
+            if actual_crc != expected_crc:
+                raise ValueError("invalid PNG checksum")
+            if not saw_header:
+                if chunk_type != b"IHDR" or chunk_length != 13:
+                    raise ValueError("missing PNG header")
+                width = int.from_bytes(chunk_data[:4], "big")
+                height = int.from_bytes(chunk_data[4:8], "big")
+                if not (0 < width <= SCREENSHOT_MAX_DIMENSION):
+                    raise ValueError("invalid PNG width")
+                if not (0 < height <= SCREENSHOT_MAX_DIMENSION):
+                    raise ValueError("invalid PNG height")
+                saw_header = True
+            elif chunk_type == b"IDAT":
+                saw_image_data = True
+            elif chunk_type == b"IEND":
+                if chunk_length != 0 or chunk_end != len(data):
+                    raise ValueError("invalid PNG end chunk")
+                saw_end = True
+                break
+            cursor = chunk_end
+        if not (saw_header and saw_image_data and saw_end):
+            raise ValueError("incomplete PNG")
+    except (OSError, ValueError) as error:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(f"Browser preview screenshot was invalid: {error}") from error
+
+
+def _cleanup_screenshot_artifacts(
+    *,
+    remove_all: bool = False,
+    keep: Path | None = None,
+) -> None:
+    with _screenshot_lock:
+        _cleanup_screenshot_artifacts_unlocked(remove_all=remove_all, keep=keep)
+
+
+def _cleanup_screenshot_artifacts_unlocked(
+    *,
+    remove_all: bool = False,
+    keep: Path | None = None,
+) -> None:
+    if not SCREENSHOT_DIR.is_dir():
+        return
+    keep_resolved = keep.resolve(strict=False) if keep is not None else None
+    now = time.time()
+    artifacts: list[tuple[Path, os.stat_result]] = []
+    for path in SCREENSHOT_DIR.iterdir():
+        if not path.is_file() or not path.name.startswith("browser-"):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if remove_all or now - stat.st_mtime > SCREENSHOT_MAX_AGE_SECONDS:
+            path.unlink(missing_ok=True)
+            continue
+        artifacts.append((path, stat))
+
+    artifacts.sort(key=lambda item: item[1].st_mtime, reverse=True)
+    retained_count = 0
+    retained_bytes = 0
+    for path, stat in artifacts:
+        is_kept_preview = keep_resolved is not None and path.resolve(strict=False) == keep_resolved
+        within_bounds = (
+            retained_count < SCREENSHOT_MAX_COUNT
+            and retained_bytes + stat.st_size <= SCREENSHOT_MAX_TOTAL_BYTES
+        )
+        if is_kept_preview or within_bounds:
+            retained_count += 1
+            retained_bytes += stat.st_size
+        else:
+            path.unlink(missing_ok=True)
 
 
 def _public_url(raw: str, *, resolver: AddressResolver | None = None) -> str:
@@ -596,6 +1033,68 @@ def _validate_effective_url(url: str) -> None:
         raise
 
 
+def _validate_pre_action_destination(task_id: str, target: str | None = None) -> None:
+    allowed_hosts = {
+        value.strip().lower()
+        for value in _allowed_domains.split(",")
+        if value.strip()
+    }
+    if not allowed_hosts:
+        raise RuntimeError("Browser interaction requires an active public-domain session.")
+    if any(host.startswith("*.") for host in allowed_hosts):
+        _close_unsafe_browser_session()
+        raise RuntimeError(
+            "Wildcard browser domains are not permitted for interactive actions."
+        )
+
+    current_url = _current_url().strip()
+    if not current_url:
+        _close_unsafe_browser_session()
+        raise RuntimeError("Browser interaction requires a verifiable current URL.")
+    _validate_effective_url(current_url)
+    current_host = str(urlparse(current_url).hostname or "").strip("[]").lower()
+    if current_host not in allowed_hosts:
+        _close_unsafe_browser_session()
+        raise ValueError("Browser interaction left the exact allowed public host.")
+
+    destination = _target_destination(task_id, target) if target is not None else ""
+    if not destination:
+        return
+    parsed_destination = urlparse(destination)
+    if parsed_destination.scheme and parsed_destination.scheme.lower() not in {"http", "https"}:
+        return
+    absolute_destination = urljoin(current_url, destination)
+    try:
+        public_destination = _public_url(absolute_destination)
+    except ValueError:
+        _close_unsafe_browser_session()
+        raise
+    destination_host = (
+        str(urlparse(public_destination).hostname or "").strip("[]").lower()
+    )
+    if destination_host not in allowed_hosts:
+        _close_unsafe_browser_session()
+        raise ValueError("Browser action destination is outside the exact allowed public host.")
+
+
+def _target_destination(task_id: str, target: str) -> str:
+    ref = target.strip().lstrip("@")
+    item = _snapshot_refs.get(task_id, {}).get(ref, {})
+    if not isinstance(item, dict):
+        return ""
+    for key in ("href", "url", "action", "formAction", "form_action"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    attributes = item.get("attributes")
+    if isinstance(attributes, dict):
+        for key in ("href", "action", "formaction"):
+            value = attributes.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _close_unsafe_browser_session() -> None:
     global _allowed_domains
     try:
@@ -604,7 +1103,8 @@ def _close_unsafe_browser_session() -> None:
         pass
     _snapshot_refs.clear()
     _allowed_domains = ""
-    _cleanup_command_artifacts()
+    _cleanup_command_artifacts(remove_all=True)
+    _cleanup_screenshot_artifacts(remove_all=True)
 
 
 def _is_ip_address(host: str) -> bool:

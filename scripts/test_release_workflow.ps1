@@ -123,6 +123,8 @@ foreach ($fragment in @(
         "-DeferBypassVerification",
         "tag_name = `$env:IRIS_RELEASE_TAG",
         "Semantic releases require IRIS_SIGNING_PFX_BASE64",
+        "Source worktree changed during release provisioning or validation",
+        "git status --porcelain=v1 --untracked-files=all",
         '-ExpectedPublisher $env:IRIS_MSIX_PUBLISHER',
         "draft = `$true",
         'make_latest = "false"',
@@ -523,6 +525,32 @@ foreach ($invalidTag in @("v01.0.0", "v1.00.0", "v1.0.00", "v65536.0.0")) {
     }
     if (-not $rejected) {
         throw "Release version validation accepted noncanonical or impossible tag: $invalidTag"
+    }
+}
+
+$worktreeFixture = Join-Path ([System.IO.Path]::GetTempPath()) (
+    "iris-release-worktree-" + [System.Guid]::NewGuid().ToString("N")
+)
+try {
+    New-Item -ItemType Directory -Force -Path (Join-Path $worktreeFixture "plugins") | Out-Null
+    Set-Content -LiteralPath (Join-Path $worktreeFixture "tracked.txt") -Value "baseline"
+    & git -C $worktreeFixture init --quiet
+    & git -C $worktreeFixture add tracked.txt
+    & git -C $worktreeFixture -c user.name=Iris -c user.email=iris@example.invalid commit --quiet -m baseline
+    Set-Content -LiteralPath (Join-Path $worktreeFixture "plugins\untracked.py") -Value "untracked"
+    $worktreeChanges = @(git -C $worktreeFixture status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0 -or
+        -not ($worktreeChanges -contains "?? plugins/untracked.py")) {
+        throw "Release worktree gate did not expose an untracked packaged-source file."
+    }
+} finally {
+    if (Test-Path -LiteralPath $worktreeFixture) {
+        $resolvedFixture = [System.IO.Path]::GetFullPath($worktreeFixture)
+        $resolvedTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        if (-not $resolvedFixture.StartsWith($resolvedTemp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove release workflow fixture outside the temp directory."
+        }
+        Remove-Item -LiteralPath $resolvedFixture -Recurse -Force
     }
 }
 

@@ -89,7 +89,7 @@ function Get-RepairPlan {
         "^System browser executable$" {
             return [pscustomobject]@{
                 Title = "Install Google Chrome"
-                Description = "Iris uses an installed Google Chrome executable for approval-gated browser tools. Browser data remains in Iris' isolated profile."
+                Description = "Iris uses an installed Google Chrome executable in an isolated, domain-contained browser session. Manual sign-ins do not persist after that session closes."
                 Link = "https://www.google.com/chrome/"
                 Commands = @(
                     "winget install --id Google.Chrome -e --accept-source-agreements --accept-package-agreements"

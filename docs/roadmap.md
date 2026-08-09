@@ -2,7 +2,7 @@
 
 ## Current Direction
 
-Move fast on one Windows Iris prototype while keeping the public repository easy to test and safe to fix.
+Evolve one focused Windows Iris release while keeping the public repository easy to test and safe to fix.
 
 Out of scope for this workspace:
 

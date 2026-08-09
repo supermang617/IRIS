@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BROKER_URL = "http://127.0.0.1:48731"
 IRIS_OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 STATUS_ENDPOINT = "/memory/status"
 SEARCH_ENDPOINT = "/memory/search"
@@ -34,6 +34,15 @@ PROMPT_INJECTION_PHRASES = (
 )
 
 
+def _consume_broker_access_from_environment() -> tuple[str, str]:
+    endpoint = os.environ.pop("IRIS_HERMES_BROKER_URL", "").strip()
+    token = os.environ.pop("IRIS_HERMES_BROKER_TOKEN", "").strip()
+    return endpoint, token
+
+
+_CONFIGURED_BROKER_URL, _CONFIGURED_BROKER_TOKEN = _consume_broker_access_from_environment()
+
+
 class IrisBrokerUnavailable(RuntimeError):
     pass
 
@@ -43,10 +52,34 @@ def repo_root() -> Path:
 
 
 def broker_url() -> str:
-    configured = os.environ.get("IRIS_HERMES_BROKER_URL", DEFAULT_BROKER_URL).rstrip("/")
-    if configured not in (DEFAULT_BROKER_URL, "http://localhost:48731"):
+    configured = _CONFIGURED_BROKER_URL
+    if not configured:
+        raise IrisBrokerUnavailable("Iris broker endpoint was not provided by Iris")
+    try:
+        parsed = urllib.parse.urlsplit(configured)
+        port = parsed.port
+    except ValueError as error:
+        raise IrisBrokerUnavailable("Iris broker endpoint is invalid") from error
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or port == 0
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
         raise IrisBrokerUnavailable("Iris broker must be local loopback only")
-    return configured
+    return f"http://127.0.0.1:{port}"
+
+
+def broker_token() -> str:
+    token = _CONFIGURED_BROKER_TOKEN
+    if len(token) != 64 or any(character not in "0123456789abcdefABCDEF" for character in token):
+        raise IrisBrokerUnavailable("Iris broker credential was not provided by Iris")
+    return token
 
 
 def configured_iris_model() -> str:
@@ -89,6 +122,8 @@ def startup_check() -> dict[str, Any]:
         raise IrisBrokerUnavailable("Iris broker status did not return ok")
     if not status.get("loopbackOnly"):
         raise IrisBrokerUnavailable("Iris broker must report loopbackOnly=true")
+    if not status.get("authenticated"):
+        raise IrisBrokerUnavailable("Iris broker must report authenticated=true")
     _validate_staging_status_counts(status)
     inference_policy()
     return status
@@ -277,7 +312,10 @@ def _request(
         url,
         data=body,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {broker_token()}",
+            "Content-Type": "application/json",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:

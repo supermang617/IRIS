@@ -14,7 +14,7 @@ Implemented:
   memory, Dynamic System Context, Panic Stop, Safe Hermes, and approved Agentic
   Hermes flows.
 - Iris-owned RAG and staged memory accept/reject.
-- Isolated Agentic browser profile and approval-gated file/PowerShell/process
+- Isolated, domain-contained Agentic browser session and approval-gated file/PowerShell/process
   tools.
 - Portable ZIP, per-user installer, setup wizard, preflight, uninstall,
   upgrade-data preservation, CI, CodeQL, and release packaging.

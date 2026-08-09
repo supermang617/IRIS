@@ -5,6 +5,131 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not ("Iris.Runtime.BoundedCaptureStream" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Iris.Runtime {
+    public sealed class BoundedCaptureStream : Stream {
+        private readonly byte[] buffer;
+        private readonly object sync = new object();
+        private int length;
+        private long totalBytes;
+
+        public BoundedCaptureStream(int capacity) {
+            if (capacity < 1) throw new ArgumentOutOfRangeException("capacity");
+            buffer = new byte[capacity];
+        }
+        public string Text {
+            get {
+                lock (sync) {
+                    string value = Encoding.UTF8.GetString(buffer, 0, length);
+                    return totalBytes > buffer.Length
+                        ? value + Environment.NewLine + "[process output truncated by Iris]"
+                        : value;
+                }
+            }
+        }
+        public override bool CanRead { get { return false; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return true; } }
+        public override long Length { get { lock (sync) { return length; } } }
+        public override long Position {
+            get { return Length; }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken cancellationToken) {
+            return Task.CompletedTask;
+        }
+        public override void Write(byte[] source, int offset, int count) {
+            lock (sync) {
+                totalBytes += count;
+                int retained = Math.Min(count, buffer.Length - length);
+                if (retained > 0) {
+                    Buffer.BlockCopy(source, offset, buffer, length, retained);
+                    length += retained;
+                }
+            }
+        }
+        public override Task WriteAsync(
+            byte[] source,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) {
+            if (cancellationToken.IsCancellationRequested) {
+                return Task.FromCanceled(cancellationToken);
+            }
+            Write(source, offset, count);
+            return Task.CompletedTask;
+        }
+        public override int Read(byte[] target, int offset, int count) {
+            throw new NotSupportedException();
+        }
+        public override long Seek(long offset, SeekOrigin origin) {
+            throw new NotSupportedException();
+        }
+        public override void SetLength(long value) {
+            throw new NotSupportedException();
+        }
+    }
+}
+'@
+}
+
+function Start-BoundedProcessCapture {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [int]$MaximumBytesPerStream = (128 * 1024)
+    )
+
+    $stdoutSink = New-Object Iris.Runtime.BoundedCaptureStream($MaximumBytesPerStream)
+    $stderrSink = New-Object Iris.Runtime.BoundedCaptureStream($MaximumBytesPerStream)
+    return [pscustomobject]@{
+        Process = $Process
+        StdoutSink = $stdoutSink
+        StderrSink = $stderrSink
+        StdoutTask = $Process.StandardOutput.BaseStream.CopyToAsync($stdoutSink)
+        StderrTask = $Process.StandardError.BaseStream.CopyToAsync($stderrSink)
+    }
+}
+
+function Complete-BoundedProcessCapture {
+    param(
+        [Parameter(Mandatory = $true)]$Capture,
+        [int]$TimeoutMilliseconds = 5000
+    )
+
+    $tasks = [System.Threading.Tasks.Task[]]@($Capture.StdoutTask, $Capture.StderrTask)
+    $completedInTime = $false
+    try {
+        $completedInTime = [System.Threading.Tasks.Task]::WaitAll($tasks, $TimeoutMilliseconds)
+    } catch {
+        $completedInTime = $false
+    }
+    if (-not $completedInTime) {
+        $Capture.Process.StandardOutput.BaseStream.Dispose()
+        $Capture.Process.StandardError.BaseStream.Dispose()
+        try {
+            [void][System.Threading.Tasks.Task]::WaitAll($tasks, 1000)
+        } catch {
+        }
+    }
+    $streamsCompleted = @(
+        $tasks | Where-Object { -not $_.IsCompleted -or $_.IsFaulted -or $_.IsCanceled }
+    ).Count -eq 0
+    return [pscustomobject]@{
+        Output = $Capture.StdoutSink.Text
+        Error = $Capture.StderrSink.Text
+        StreamsCompleted = $streamsCompleted
+    }
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ((Split-Path -Leaf $root) -ieq "scripts") {
     $root = (Resolve-Path -LiteralPath (Join-Path $root "..")).Path
@@ -77,20 +202,36 @@ function Invoke-PreflightProbe {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
 
-    [void]$process.Start()
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        Stop-ProcessTree -ProcessId $process.Id
-        return [pscustomobject]@{
-            ExitCode = 124
-            Output = ""
-            Error = "timed out after $TimeoutSeconds seconds"
+    try {
+        [void]$process.Start()
+        $capture = Start-BoundedProcessCapture -Process $process
+        $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
+        if ($timedOut) {
+            Stop-ProcessTree -ProcessId $process.Id
+            [void]$process.WaitForExit(5000)
+        } else {
+            $process.WaitForExit()
         }
-    }
-
-    return [pscustomobject]@{
-        ExitCode = $process.ExitCode
-        Output = $process.StandardOutput.ReadToEnd()
-        Error = $process.StandardError.ReadToEnd()
+        $captured = Complete-BoundedProcessCapture -Capture $capture
+        $output = $captured.Output
+        $errorOutput = $captured.Error
+        if (-not $captured.StreamsCompleted) {
+            $errorOutput = @($errorOutput, "process output streams did not close within 5 seconds") -join "`n"
+        }
+        if ($timedOut) {
+            return [pscustomobject]@{
+                ExitCode = 124
+                Output = $output
+                Error = @($errorOutput, "timed out after $TimeoutSeconds seconds") -join "`n"
+            }
+        }
+        return [pscustomobject]@{
+            ExitCode = if ($captured.StreamsCompleted) { $process.ExitCode } else { 125 }
+            Output = $output
+            Error = $errorOutput
+        }
+    } finally {
+        $process.Dispose()
     }
 }
 

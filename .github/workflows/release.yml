@@ -297,6 +297,10 @@ jobs:
           foreach ($name in $portableWhisperFlags.Keys) {
             Set-Item -Path "Env:$name" -Value $portableWhisperFlags[$name]
           }
+          $worktreeChanges = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $worktreeChanges.Count -ne 0) {
+            throw "Source worktree changed during release provisioning or validation: $($worktreeChanges -join '; ')"
+          }
           cargo build --workspace --release --locked
           if ($LASTEXITCODE -ne 0) {
             throw "Locked portable release build failed."

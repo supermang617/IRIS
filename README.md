@@ -88,16 +88,18 @@ Object. It exposes Iris-owned memory query/proposal plus reviewed `read_file`,
 `write_file`, `patch`, `search_files`, `terminal`, `process`, and reviewed
 isolated browser tools. Ordinary lookup, read, page-open, and page-snapshot work
 uses the active session approval and does not ask again when the user already
-requested research. General web lookup opens Brave Search through the dedicated
-Iris browser profile; direct public URLs or obvious primary sources are opened
+requested research. General web lookup opens Brave Search through an isolated
+Iris browser session; direct public URLs or obvious primary sources are opened
 directly. Destructive, sensitive, credential, install/admin, payment,
 submission, executable-download, and scope-expanding actions require separate
 confirmation. Tool results carry source and provenance back to Iris, browser
 content is treated as untrusted evidence with no instruction authority, and
 memory proposals remain staged until the user accepts them.
-Pinned executable environments live under `.iris-runtime`; persistent Hermes
-browser profile/download state and Hermes home state live under `.iris-data` so
-installer upgrades replace binaries without erasing user state.
+Pinned executable environments live under `.iris-runtime`; approved browser
+downloads and Hermes home state live under `.iris-data` so installer upgrades
+replace binaries without erasing user state. Browser sessions are isolated and
+domain-contained but intentionally nonpersistent; a headed manual sign-in must
+be repeated after the session closes.
 ## Validate
 
 Run from `C:\Projects\IRIS`:

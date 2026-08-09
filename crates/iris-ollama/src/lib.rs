@@ -3,7 +3,10 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -24,6 +27,67 @@ const MAX_OCR_DIRECT_ANSWER_CHARS: usize = 240;
 const OCR_TIMEOUT: Duration = Duration::from_secs(8);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+static INFERENCE_GATE: InferenceGate = InferenceGate {
+    busy: Mutex::new(false),
+    available: Condvar::new(),
+};
+
+struct InferenceGate {
+    busy: Mutex<bool>,
+    available: Condvar,
+}
+
+#[must_use = "dropping the permit releases the single-inference gate"]
+pub struct OllamaInferencePermit {
+    gate: &'static InferenceGate,
+}
+
+impl InferenceGate {
+    fn acquire(
+        &'static self,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<Option<OllamaInferencePermit>, String> {
+        let mut busy = self
+            .busy
+            .lock()
+            .map_err(|_| "Ollama inference gate is unavailable".to_string())?;
+        loop {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                return Ok(None);
+            }
+            if !*busy {
+                *busy = true;
+                return Ok(Some(OllamaInferencePermit { gate: self }));
+            }
+            let (next, _) = self
+                .available
+                .wait_timeout(busy, CANCELLATION_POLL_INTERVAL)
+                .map_err(|_| "Ollama inference gate is unavailable".to_string())?;
+            busy = next;
+        }
+    }
+}
+
+impl Drop for OllamaInferencePermit {
+    fn drop(&mut self) {
+        let mut busy = self
+            .gate
+            .busy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *busy = false;
+        self.gate.available.notify_one();
+    }
+}
+
+/// Reserves Iris' one-stream local model budget for an external supervised
+/// worker such as Hermes. Normal `OllamaClient` calls acquire the same gate.
+pub fn acquire_inference_permit() -> Result<OllamaInferencePermit, String> {
+    INFERENCE_GATE
+        .acquire(None)?
+        .ok_or_else(|| "Ollama inference gate was cancelled".to_string())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationTurn {
@@ -83,6 +147,7 @@ pub struct OllamaClient {
     settings: OllamaSettings,
     client: reqwest::blocking::Client,
     streaming_client: reqwest::Client,
+    streaming_runtime: Arc<Mutex<tokio::runtime::Runtime>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,10 +200,15 @@ impl OllamaClient {
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|err| format!("failed to create streaming Ollama client: {err}"))?;
+        let streaming_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| format!("failed to create Ollama streaming runtime: {err}"))?;
         Ok(Self {
             settings,
             client,
             streaming_client,
+            streaming_runtime: Arc::new(Mutex::new(streaming_runtime)),
         })
     }
 
@@ -359,6 +429,7 @@ impl OllamaClient {
         request: &GenerateRequest,
         response_kind: &str,
     ) -> Result<String, String> {
+        let _inference_permit = acquire_inference_permit()?;
         self.with_safe_gpu_fallback(request, |attempt| {
             self.generate_full_once(attempt, response_kind)
         })
@@ -373,11 +444,10 @@ impl OllamaClient {
         if cancellation.load(Ordering::Acquire) {
             return Ok(StreamingOutcome::Cancelled(String::new()));
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| GenerateAttemptError::new(err.to_string()))?;
-        runtime.block_on(self.generate_streaming_once_async(request, cancellation, on_chunk))
+        self.streaming_runtime
+            .lock()
+            .map_err(|_| GenerateAttemptError::new("Ollama streaming runtime is unavailable"))?
+            .block_on(self.generate_streaming_once_async(request, cancellation, on_chunk))
     }
 
     async fn generate_streaming_once_async(
@@ -447,6 +517,9 @@ impl OllamaClient {
         cancellation: &AtomicBool,
         on_chunk: &mut impl FnMut(&str),
     ) -> Result<StreamingOutcome, String> {
+        let Some(_inference_permit) = INFERENCE_GATE.acquire(Some(cancellation))? else {
+            return Ok(StreamingOutcome::Cancelled(String::new()));
+        };
         match self.generate_streaming_once(request, cancellation, on_chunk) {
             Ok(outcome) => Ok(outcome),
             Err(primary_error)
@@ -1204,7 +1277,10 @@ mod tests {
     use iris_core_types::{ContextSource, RawContextItem};
     use std::io::{Cursor, Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::Arc;
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+    };
 
     use super::*;
 
@@ -1269,6 +1345,19 @@ mod tests {
                 return;
             }
         }
+    }
+
+    fn write_test_generate_response(stream: &mut TcpStream, response: &str) {
+        let body =
+            format!("{{\"response\":\"{response}\",\"done\":true,\"done_reason\":\"stop\"}}");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        stream.flush().unwrap();
     }
 
     #[test]
@@ -1512,8 +1601,23 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
-            let (_stream, _) = listener.accept().unwrap();
-            thread::sleep(Duration::from_millis(400));
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(500);
+            loop {
+                match listener.accept() {
+                    Ok((_stream, _)) => {
+                        thread::sleep(Duration::from_millis(400));
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("test server accept failed: {error}"),
+                }
+            }
         });
         let client = OllamaClient::new(OllamaSettings {
             generate_url: format!("http://{address}/api/generate"),
@@ -1546,6 +1650,89 @@ mod tests {
             elapsed < Duration::from_millis(250),
             "header cancellation took {elapsed:?}"
         );
+    }
+
+    #[test]
+    fn concurrent_full_requests_share_one_inference_slot() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let maximum_in_flight = Arc::new(AtomicUsize::new(0));
+        let server_in_flight = Arc::clone(&in_flight);
+        let server_maximum = Arc::clone(&maximum_in_flight);
+        let server = thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let current = Arc::clone(&server_in_flight);
+                let maximum = Arc::clone(&server_maximum);
+                handlers.push(thread::spawn(move || {
+                    read_test_http_request(&mut stream);
+                    let active = current.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                    maximum.fetch_max(active, AtomicOrdering::SeqCst);
+                    thread::sleep(Duration::from_millis(75));
+                    write_test_generate_response(&mut stream, &format!("ready-{index}"));
+                    current.fetch_sub(1, AtomicOrdering::SeqCst);
+                }));
+            }
+            for handler in handlers {
+                handler.join().unwrap();
+            }
+        });
+        let client = Arc::new(
+            OllamaClient::new(OllamaSettings {
+                generate_url: format!("http://{address}/api/generate"),
+                model_id: "test-model".to_string(),
+                num_ctx: 8192,
+                num_gpu_layers: 1,
+            })
+            .unwrap(),
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let workers = (0..2)
+            .map(|index| {
+                let client = Arc::clone(&client);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let bundle = gate_context(vec![RawContextItem::new(
+                        ContextSource::UserUtterance,
+                        format!("request {index}"),
+                    )]);
+                    barrier.wait();
+                    client.health_check(&bundle)
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+        server.join().unwrap();
+
+        assert_eq!(maximum_in_flight.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancelled_stream_does_not_wait_for_busy_inference_slot() {
+        let permit = acquire_inference_permit().unwrap();
+        let client = test_client();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        let worker = thread::spawn(move || {
+            let bundle = gate_context(vec![RawContextItem::new(
+                ContextSource::UserUtterance,
+                "cancel while queued",
+            )]);
+            client.stream_response_cancellable(&bundle, &worker_cancellation, |_| {})
+        });
+        thread::sleep(Duration::from_millis(60));
+        let started = Instant::now();
+        cancellation.store(true, Ordering::Release);
+        let outcome = worker.join().unwrap().unwrap();
+        drop(permit);
+
+        assert_eq!(outcome, StreamingOutcome::Cancelled(String::new()));
+        assert!(started.elapsed() < Duration::from_millis(150));
     }
 
     #[test]
