@@ -200,10 +200,34 @@ struct HermesAcpBridge {
 struct BoundedAcpEvents {
     values: VecDeque<Value>,
     total_bytes: usize,
+    action_audit: Option<ActionAuditContext>,
+    action_audit_error: Option<String>,
 }
 
 impl BoundedAcpEvents {
+    fn with_action_audit(state_root: &Path, session_id: &str) -> Self {
+        Self {
+            action_audit: Some(ActionAuditContext {
+                state_root: state_root.to_path_buf(),
+                session_id: session_id.to_string(),
+            }),
+            ..Self::default()
+        }
+    }
+
     fn push(&mut self, value: Value) {
+        if self.action_audit_error.is_none() && action_update(&value).is_some() {
+            let audit_result = self.action_audit.as_ref().map(|audit| {
+                append_action_audit(
+                    &audit.state_root,
+                    &audit.session_id,
+                    std::slice::from_ref(&value),
+                )
+            });
+            if let Some(Err(error)) = audit_result {
+                self.action_audit_error = Some(error);
+            }
+        }
         let Ok(bytes) = serde_json::to_vec(&value).map(|bytes| bytes.len()) else {
             return;
         };
@@ -227,6 +251,11 @@ impl BoundedAcpEvents {
     fn snapshot(&self) -> Vec<Value> {
         self.values.iter().cloned().collect()
     }
+}
+
+struct ActionAuditContext {
+    state_root: PathBuf,
+    session_id: String,
 }
 
 struct AcpEventRegistration {
@@ -396,7 +425,10 @@ pub fn submit_task(
     }
     let bridge = ensure_bridge(resource_root, state_root, model)?;
     let session_id = bridge.ensure_session(workspace_path)?;
-    let event_sink = Arc::new(Mutex::new(BoundedAcpEvents::default()));
+    let event_sink = Arc::new(Mutex::new(BoundedAcpEvents::with_action_audit(
+        state_root,
+        &session_id,
+    )));
     let event_registration = register_acp_event_sink(&bridge.event_sink, event_sink.clone())?;
     let first_response = bridge.request(
         "session/prompt",
@@ -445,7 +477,6 @@ pub fn submit_task(
     );
     text = assistant_text_from_notifications(&raw_events);
     let provenance = provenance_from_notifications(&raw_events);
-    append_action_audit(state_root, &session_id, &raw_events)?;
     reject_repeated_tool_failures(&raw_events)?;
     if is_empty_agent_text(&text) {
         text = fallback_text_from_successful_tool(&raw_events)
@@ -482,14 +513,26 @@ fn register_acp_event_sink(
 }
 
 fn acp_event_snapshot(sink: &AcpEventSink) -> Result<Vec<Value>, String> {
-    sink.lock()
-        .map_err(|_| "Hermes ACP event buffer is unavailable".to_string())
-        .map(|events| events.snapshot())
+    let events = sink
+        .lock()
+        .map_err(|_| "Hermes ACP event buffer is unavailable".to_string())?;
+    if let Some(error) = &events.action_audit_error {
+        return Err(error.clone());
+    }
+    Ok(events.snapshot())
 }
 
 fn push_acp_event(sink: &AcpEventSink, value: Value) {
     if let Ok(mut events) = sink.lock() {
         events.push(value);
+    }
+}
+
+fn push_registered_acp_event(registry: &SharedAcpEventSink, value: Value) {
+    if let Ok(current) = registry.lock()
+        && let Some(sink) = current.as_ref()
+    {
+        push_acp_event(sink, value);
     }
 }
 
@@ -1171,19 +1214,13 @@ fn start_reader(
                     stored = true;
                 }
                 if stored {
-                    if let Some(sink) = event_sink
-                        .lock()
-                        .ok()
-                        .and_then(|sink| sink.as_ref().cloned())
-                    {
-                        push_acp_event(
-                            &sink,
-                            json!({
-                                "method": "iris/approval_request",
-                                "params": {"approval": approval.request}
-                            }),
-                        );
-                    }
+                    push_registered_acp_event(
+                        &event_sink,
+                        json!({
+                            "method": "iris/approval_request",
+                            "params": {"approval": approval.request}
+                        }),
+                    );
                 } else {
                     let response = json!({
                         "jsonrpc": "2.0",
@@ -1218,13 +1255,8 @@ fn start_reader(
                 }
                 continue;
             }
-            if value.get("method").and_then(Value::as_str) == Some("session/update")
-                && let Some(sink) = event_sink
-                    .lock()
-                    .ok()
-                    .and_then(|sink| sink.as_ref().cloned())
-            {
-                push_acp_event(&sink, value);
+            if value.get("method").and_then(Value::as_str) == Some("session/update") {
+                push_registered_acp_event(&event_sink, value);
             }
         }
         fail_pending_requests(&pending, "Hermes ACP stream closed or became malformed");
@@ -1603,18 +1635,9 @@ fn append_action_audit(
         .open(path)
         .map_err(|err| err.to_string())?;
     for notification in notifications {
-        let Some(update) = notification
-            .get("params")
-            .and_then(|params| params.get("update"))
-        else {
+        let Some(update) = action_update(notification) else {
             continue;
         };
-        if !matches!(
-            update.get("sessionUpdate").and_then(Value::as_str),
-            Some("tool_call") | Some("tool_call_update")
-        ) {
-            continue;
-        }
         let title = update
             .get("title")
             .and_then(Value::as_str)
@@ -1635,6 +1658,15 @@ fn append_action_audit(
         output.write_all(b"\n").map_err(|err| err.to_string())?;
     }
     output.flush().map_err(|err| err.to_string())
+}
+
+fn action_update(notification: &Value) -> Option<&Value> {
+    let update = notification.get("params")?.get("update")?;
+    matches!(
+        update.get("sessionUpdate").and_then(Value::as_str),
+        Some("tool_call") | Some("tool_call_update")
+    )
+    .then_some(update)
 }
 
 fn reject_repeated_tool_failures(notifications: &[Value]) -> Result<(), String> {
@@ -2204,6 +2236,93 @@ mod tests {
                 .and_then(Value::as_u64),
             Some((MAX_ACP_TASK_EVENTS + 31) as u64)
         );
+    }
+
+    #[test]
+    fn action_audit_keeps_events_evicted_from_bounded_task_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-hermes-action-audit-overflow-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let sink = Arc::new(Mutex::new(BoundedAcpEvents::with_action_audit(
+            &root,
+            "overflow-session",
+        )));
+        let action = |title: &str, status: &str, detail: &str| {
+            json!({
+                "method": "session/update",
+                "params": {"update": {
+                    "sessionUpdate": "tool_call_update",
+                    "title": title,
+                    "status": status,
+                    "content": [{"type": "text", "text": detail}]
+                }}
+            })
+        };
+
+        push_acp_event(
+            &sink,
+            action(
+                "Early action",
+                "in_progress",
+                "Authorization: Bearer early-secret",
+            ),
+        );
+        for index in 0..(MAX_ACP_TASK_EVENTS + 32) {
+            push_acp_event(
+                &sink,
+                json!({
+                    "method": "session/update",
+                    "params": {"update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": format!("noise-{index}")}
+                    }}
+                }),
+            );
+        }
+        push_acp_event(
+            &sink,
+            action("Late action", "completed", "late action detail"),
+        );
+
+        let snapshot = acp_event_snapshot(&sink).expect("bounded event snapshot");
+        let buffered = sink.lock().expect("bounded event buffer");
+        assert!(snapshot.len() <= MAX_ACP_TASK_EVENTS);
+        assert!(buffered.total_bytes <= MAX_ACP_TASK_EVENT_BYTES);
+        assert!(!snapshot.iter().any(|event| {
+            action_update(event)
+                .and_then(|update| update.get("title"))
+                .and_then(Value::as_str)
+                == Some("Early action")
+        }));
+        assert!(snapshot.iter().any(|event| {
+            action_update(event)
+                .and_then(|update| update.get("title"))
+                .and_then(Value::as_str)
+                == Some("Late action")
+        }));
+        drop(buffered);
+
+        let audit = fs::read_to_string(root.join("diagnostics/hermes-actions.jsonl"))
+            .expect("action audit");
+        let records = audit
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("action audit record"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records.len(),
+            2,
+            "surviving actions must not be audited twice"
+        );
+        assert_eq!(records[0]["title"], "Early action");
+        assert_eq!(records[1]["title"], "Late action");
+        assert_eq!(records[0]["sessionId"], "overflow-session");
+        assert_eq!(records[0]["detail"], "[redacted sensitive detail]");
+        assert!(!audit.contains("early-secret"));
+
+        fs::remove_dir_all(root).expect("remove action audit test root");
     }
 
     #[test]
