@@ -7,6 +7,8 @@ $fixture = Join-Path $testRoot "voice-events.jsonl"
 $silentFixture = Join-Path $testRoot "silent.jsonl"
 $intendedFixture = Join-Path $testRoot "intended.jsonl"
 $resumeFixture = Join-Path $testRoot "resume.jsonl"
+$interruptedAfterResumeFixture = Join-Path $testRoot "interrupted-after-resume.jsonl"
+$unrelatedCancellationFixture = Join-Path $testRoot "unrelated-cancellation.jsonl"
 $failedControlFixture = Join-Path $testRoot "failed-control.jsonl"
 $missingCompletionFixture = Join-Path $testRoot "missing-completion.jsonl"
 $terminalPlaybackFixture = Join-Path $testRoot "terminal-playback.jsonl"
@@ -97,6 +99,45 @@ try {
         $resumeSummary.median_vad_to_pause_ms -ne 25
     ) {
         throw "Voice interruption analyzer did not prove a successful pause, resume, and playback completion."
+    }
+
+    $interruptedAfterResumeRecords = @(
+        [ordered]@{ session_id = "interrupted-after-resume"; timestamp_ms = $now + 34; event = "speech_started"; detail = "run=9" },
+        [ordered]@{ session_id = "interrupted-after-resume"; timestamp_ms = $now + 35; event = "speech_interruption_vad_pause"; detail = "run=9; request=12; vad_to_pause_ms=18; paused=True" },
+        [ordered]@{ session_id = "interrupted-after-resume"; timestamp_ms = $now + 36; event = "speech_interruption_playback_resumed"; detail = "run=9; request=12; paused=True; resumed=True" },
+        [ordered]@{ session_id = "interrupted-after-resume"; timestamp_ms = $now + 37; event = "speech_interruption_listen_start"; detail = "run=9; request=13" },
+        [ordered]@{ session_id = "interrupted-after-resume"; timestamp_ms = $now + 38; event = "speech_interruption_detected"; detail = "resolution_ms=510; request=13; transcript_chars=4" },
+        [ordered]@{ session_id = "interrupted-after-resume"; timestamp_ms = $now + 39; event = "speech_cancelled"; detail = "run=9; chunks=2" }
+    )
+    $interruptedAfterResumeRecords | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+        Set-Content -LiteralPath $interruptedAfterResumeFixture -Encoding utf8
+    $interruptedAfterResumeSummary = & $analyzer -Path $interruptedAfterResumeFixture -ExpectedInterruptions 1
+    if (
+        $interruptedAfterResumeSummary.confirmed_interruptions -ne 1 -or
+        $interruptedAfterResumeSummary.total_cancellations -ne 1 -or
+        $interruptedAfterResumeSummary.resume_completion_evidence -ne 1 -or
+        $interruptedAfterResumeSummary.resumes_without_completion -ne 0 -or
+        $interruptedAfterResumeSummary.interruption_errors -ne 0
+    ) {
+        throw "Voice interruption analyzer rejected a resumed run that ended in a later confirmed interruption."
+    }
+
+    $unrelatedCancellationRecords = @(
+        [ordered]@{ session_id = "unrelated-cancellation"; timestamp_ms = $now + 40; event = "speech_started"; detail = "run=10" },
+        [ordered]@{ session_id = "unrelated-cancellation"; timestamp_ms = $now + 41; event = "speech_interruption_vad_pause"; detail = "run=10; request=14; vad_to_pause_ms=17; paused=True" },
+        [ordered]@{ session_id = "unrelated-cancellation"; timestamp_ms = $now + 42; event = "speech_interruption_playback_resumed"; detail = "run=10; request=14; paused=True; resumed=True" },
+        [ordered]@{ session_id = "unrelated-cancellation"; timestamp_ms = $now + 43; event = "speech_cancelled"; detail = "run=10; chunks=2" }
+    )
+    $unrelatedCancellationRecords | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+        Set-Content -LiteralPath $unrelatedCancellationFixture -Encoding utf8
+    $unrelatedCancellationSummary = & $analyzer -Path $unrelatedCancellationFixture -ExpectedInterruptions 0
+    if (
+        $unrelatedCancellationSummary.confirmed_interruptions -ne 0 -or
+        $unrelatedCancellationSummary.resume_completion_evidence -ne 0 -or
+        $unrelatedCancellationSummary.resumes_without_completion -ne 1 -or
+        $unrelatedCancellationSummary.interruption_errors -ne 1
+    ) {
+        throw "Voice interruption analyzer accepted an unrelated cancellation as resume completion."
     }
 
     $failedControlRecords = @(

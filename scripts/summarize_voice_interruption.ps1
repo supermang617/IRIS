@@ -129,6 +129,52 @@ function Get-Median {
     return [Math]::Round(($sorted[$middle - 1] + $sorted[$middle]) / 2, 1)
 }
 
+function Test-DetailIdentifier {
+    param(
+        [string]$Detail,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+    return [regex]::IsMatch(
+        $Detail,
+        "(?:^|;\s*)$([regex]::Escape($Name))=$([regex]::Escape($Value))(?:;|$)"
+    )
+}
+
+function Test-ConfirmedInterruptionForRun {
+    param(
+        [Parameter(Mandatory = $true)][object]$Record,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][int]$AfterLine
+    )
+    if ([string]$Record.event -ne "speech_interruption_detected") {
+        return $false
+    }
+    if (Test-DetailIdentifier -Detail ([string]$Record.detail) -Name "run" -Value $RunId) {
+        return $true
+    }
+    $requestMatch = [regex]::Match(
+        [string]$Record.detail,
+        "(?:^|;\s*)request=(?<value>[0-9]+)(?:;|$)"
+    )
+    if (-not $requestMatch.Success) {
+        return $false
+    }
+    $requestId = $requestMatch.Groups["value"].Value
+    $matchingListen = @(
+        $session |
+            Where-Object {
+                [int]$_._line_number -gt $AfterLine -and
+                [int]$_._line_number -lt [int]$Record._line_number -and
+                [string]$_.event -eq "speech_interruption_listen_start" -and
+                (Test-DetailIdentifier -Detail ([string]$_.detail) -Name "run" -Value $RunId) -and
+                (Test-DetailIdentifier -Detail ([string]$_.detail) -Name "request" -Value $requestId)
+            } |
+            Select-Object -First 1
+    )
+    return $matchingListen.Count -gt 0
+}
+
 $confirmed = Get-EventCount -Name "speech_interruption_detected"
 $fallback = Get-EventCount -Name "speech_interruption_fallback_cancelled"
 $totalCancellations = $confirmed + $fallback
@@ -188,6 +234,11 @@ $failedResumeRecords = @(
 )
 $resumeCompletionEvidence = 0
 $resumesWithoutCompletion = 0
+$validResumeTerminalEvents = @(
+    "speech_playback_finished",
+    "speech_finished",
+    "speech_interruption_fallback_cancelled"
+)
 foreach ($resumeRecord in $successfulResumeRecords) {
     $runMatch = [regex]::Match([string]$resumeRecord.detail, "(?:^|;\s*)run=(?<value>[0-9]+)")
     if (-not $runMatch.Success) {
@@ -195,30 +246,36 @@ foreach ($resumeRecord in $successfulResumeRecords) {
         continue
     }
     $runId = $runMatch.Groups["value"].Value
-    $completionRecord = @(
+    $terminalOutcomeRecord = @(
         $session |
             Where-Object {
                 [int]$_._line_number -gt [int]$resumeRecord._line_number -and
-                [string]$_.event -in @("speech_playback_finished", "speech_finished") -and
-                [string]$_.detail -match "(?:^|;\s*)run=$([regex]::Escape($runId))(?:;|$)"
+                (
+                    (
+                        [string]$_.event -in $validResumeTerminalEvents -and
+                        (Test-DetailIdentifier -Detail ([string]$_.detail) -Name "run" -Value $runId)
+                    ) -or
+                    (Test-ConfirmedInterruptionForRun -Record $_ -RunId $runId -AfterLine ([int]$resumeRecord._line_number))
+                )
             } |
+            Sort-Object -Property _line_number |
             Select-Object -First 1
     )
-    $completionLine = if ($completionRecord.Count -gt 0) {
-        [int]$completionRecord[0]._line_number
+    $terminalOutcomeLine = if ($terminalOutcomeRecord.Count -gt 0) {
+        [int]$terminalOutcomeRecord[0]._line_number
     } else {
         [int]::MaxValue
     }
-    $terminalBeforeCompletion = @(
+    $terminalBeforeOutcome = @(
         $session |
             Where-Object {
                 [int]$_._line_number -gt [int]$resumeRecord._line_number -and
-                [int]$_._line_number -lt $completionLine -and
+                [int]$_._line_number -lt $terminalOutcomeLine -and
                 [string]$_.event -in $terminalPlaybackEvents -and
-                [string]$_.detail -match "(?:^|;\s*)run=$([regex]::Escape($runId))(?:;|$)"
+                (Test-DetailIdentifier -Detail ([string]$_.detail) -Name "run" -Value $runId)
             }
     ).Count -gt 0
-    if ($completionRecord.Count -gt 0 -and -not $terminalBeforeCompletion) {
+    if ($terminalOutcomeRecord.Count -gt 0 -and -not $terminalBeforeOutcome) {
         $resumeCompletionEvidence += 1
     } else {
         $resumesWithoutCompletion += 1

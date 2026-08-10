@@ -131,8 +131,9 @@ Release targets for each separate run are:
 - silent and non-command runs: zero cancellations and zero interruption errors;
 - intended run: all five intended interruptions detected and zero errors;
 - no permanent cancellation for either non-command utterance;
-- zero pause failures, resume failures, or resumes without later playback
-  completion, and completion evidence for every successful rejected resume;
+- zero pause failures, resume failures, or resumes without a later valid terminal
+  outcome, and completion-or-confirmed-cancellation evidence for every
+  successful rejected resume;
 - median capture-to-VAD at or below 350 ms;
 - median VAD-to-pause at or below 150 ms; and
 - median confirmed-interruption resolution at or below 1,200 ms.
