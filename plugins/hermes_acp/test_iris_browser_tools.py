@@ -542,13 +542,16 @@ class IrisBrowserToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "command.stderr"
             secret = "Authorization: Bearer browser-test-secret"
-            path.write_text(f"{secret}\nsafe diagnostic", encoding="utf-8")
-
-            raw, persisted = iris_browser_tools._finalize_command_artifact(
-                path,
-                1024,
-                truncated=False,
-            )
+            with patch.object(
+                iris_browser_tools,
+                "_read_command_artifact",
+                return_value=f"{secret}\nsafe diagnostic",
+            ):
+                raw, persisted = iris_browser_tools._finalize_command_artifact(
+                    path,
+                    1024,
+                    truncated=False,
+                )
 
             self.assertIn(secret, raw)
             self.assertIn("[redacted sensitive detail]", persisted)
