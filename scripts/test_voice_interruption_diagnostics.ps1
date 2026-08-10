@@ -8,6 +8,8 @@ $silentFixture = Join-Path $testRoot "silent.jsonl"
 $intendedFixture = Join-Path $testRoot "intended.jsonl"
 $resumeFixture = Join-Path $testRoot "resume.jsonl"
 $interruptedAfterResumeFixture = Join-Path $testRoot "interrupted-after-resume.jsonl"
+$detectedWithoutTerminalFixture = Join-Path $testRoot "detected-without-terminal.jsonl"
+$nativeCancelErrorFixture = Join-Path $testRoot "native-cancel-error.jsonl"
 $unrelatedCancellationFixture = Join-Path $testRoot "unrelated-cancellation.jsonl"
 $failedControlFixture = Join-Path $testRoot "failed-control.jsonl"
 $missingCompletionFixture = Join-Path $testRoot "missing-completion.jsonl"
@@ -120,6 +122,47 @@ try {
         $interruptedAfterResumeSummary.interruption_errors -ne 0
     ) {
         throw "Voice interruption analyzer rejected a resumed run that ended in a later confirmed interruption."
+    }
+
+    $detectedWithoutTerminalRecords = @(
+        [ordered]@{ session_id = "detected-without-terminal"; timestamp_ms = $now + 40; event = "speech_started"; detail = "run=10" },
+        [ordered]@{ session_id = "detected-without-terminal"; timestamp_ms = $now + 41; event = "speech_interruption_vad_pause"; detail = "run=10; request=14; vad_to_pause_ms=17; paused=True" },
+        [ordered]@{ session_id = "detected-without-terminal"; timestamp_ms = $now + 42; event = "speech_interruption_playback_resumed"; detail = "run=10; request=14; paused=True; resumed=True" },
+        [ordered]@{ session_id = "detected-without-terminal"; timestamp_ms = $now + 43; event = "speech_interruption_listen_start"; detail = "run=10; request=15" },
+        [ordered]@{ session_id = "detected-without-terminal"; timestamp_ms = $now + 44; event = "speech_interruption_detected"; detail = "resolution_ms=490; request=15; transcript_chars=4" }
+    )
+    $detectedWithoutTerminalRecords | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+        Set-Content -LiteralPath $detectedWithoutTerminalFixture -Encoding utf8
+    $detectedWithoutTerminalSummary = & $analyzer -Path $detectedWithoutTerminalFixture -ExpectedInterruptions 1
+    if (
+        $detectedWithoutTerminalSummary.confirmed_interruptions -ne 1 -or
+        $detectedWithoutTerminalSummary.resume_completion_evidence -ne 0 -or
+        $detectedWithoutTerminalSummary.resumes_without_completion -ne 1 -or
+        $detectedWithoutTerminalSummary.interruption_errors -ne 1
+    ) {
+        throw "Voice interruption analyzer accepted detection without a later cancellation terminal."
+    }
+
+    $nativeCancelErrorRecords = @(
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 45; event = "speech_started"; detail = "run=11" },
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 46; event = "speech_interruption_vad_pause"; detail = "run=11; request=16; vad_to_pause_ms=16; paused=True" },
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 47; event = "speech_interruption_playback_resumed"; detail = "run=11; request=16; paused=True; resumed=True" },
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 48; event = "speech_interruption_listen_start"; detail = "run=11; request=17" },
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 49; event = "speech_interruption_detected"; detail = "resolution_ms=505; request=17; transcript_chars=4" },
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 50; event = "speech_native_cancel_error"; detail = "run=11; output device cancellation failed" },
+        [ordered]@{ session_id = "native-cancel-error"; timestamp_ms = $now + 51; event = "speech_cancelled"; detail = "run=11; chunks=2" }
+    )
+    $nativeCancelErrorRecords | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+        Set-Content -LiteralPath $nativeCancelErrorFixture -Encoding utf8
+    $nativeCancelErrorSummary = & $analyzer -Path $nativeCancelErrorFixture -ExpectedInterruptions 1
+    if (
+        $nativeCancelErrorSummary.confirmed_interruptions -ne 1 -or
+        $nativeCancelErrorSummary.resume_completion_evidence -ne 0 -or
+        $nativeCancelErrorSummary.resumes_without_completion -ne 1 -or
+        $nativeCancelErrorSummary.playback_terminal_errors -ne 1 -or
+        $nativeCancelErrorSummary.interruption_errors -lt 2
+    ) {
+        throw "Voice interruption analyzer did not fail a native playback cancellation error."
     }
 
     $unrelatedCancellationRecords = @(

@@ -153,7 +153,8 @@ try {
         "docs\signed-installer-decision.md",
         "docs\winget-release.md",
         "docs\runtime-orchestration.md",
-        "docs\manual-end-user-test-v0.1.0.md",
+        "docs\manual-test.md",
+        "docs\manual-end-user-test.md",
         "manifest.json",
         "bin\iris-runtime.exe",
         "bin\iris-tauri.exe",
@@ -183,6 +184,43 @@ try {
 
     foreach ($relative in $required) {
         Require-File -Path (Join-Path $extractRoot $relative)
+    }
+
+    $releaseReadme = Get-Content -LiteralPath (Join-Path $extractRoot "README_RELEASE.md") -Raw
+    foreach ($requiredManualLink in @("docs/manual-test.md", "docs/manual-end-user-test.md")) {
+        if (-not $releaseReadme.Contains($requiredManualLink)) {
+            throw "README_RELEASE.md must link to the packaged $requiredManualLink guide."
+        }
+    }
+    $releaseDocReferences = @([regex]::Matches($releaseReadme, "docs/[A-Za-z0-9._/-]+\.md") |
+            ForEach-Object { $_.Value } |
+            Sort-Object -Unique)
+    foreach ($releaseDocReference in $releaseDocReferences) {
+        Require-File -Path (Join-Path $extractRoot $releaseDocReference.Replace("/", "\"))
+    }
+    foreach ($manualRelative in @("docs\manual-test.md", "docs\manual-end-user-test.md")) {
+        $manual = Get-Content -LiteralPath (Join-Path $extractRoot $manualRelative) -Raw
+        foreach ($requiredGuidance in @(
+                "Safe is the startup default",
+                "Agentic Session",
+                "file, PowerShell, process, and isolated browser tools",
+                "separate confirmation"
+            )) {
+            if (-not $manual.Contains($requiredGuidance)) {
+                throw "$manualRelative is missing current Hermes guidance: $requiredGuidance"
+            }
+        }
+        foreach ($staleGuidance in @(
+                "v0.1.0",
+                "latest Windows end-user test",
+                "should expose no acting tools",
+                "Hermes cannot run commands, edit files, control browsers/windows",
+                "- No system control should occur."
+            )) {
+            if ($manual.Contains($staleGuidance)) {
+                throw "$manualRelative contains stale Hermes/release guidance: $staleGuidance"
+            }
+        }
     }
     foreach ($volatile in @(
         ".iris-data",

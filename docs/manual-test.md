@@ -132,8 +132,9 @@ Release targets for each separate run are:
 - intended run: all five intended interruptions detected and zero errors;
 - no permanent cancellation for either non-command utterance;
 - zero pause failures, resume failures, or resumes without a later valid terminal
-  outcome, and completion-or-confirmed-cancellation evidence for every
-  successful rejected resume;
+  outcome, with run-correlated playback completion or cancellation after every
+  successful rejected resume; a detection record alone is not terminal evidence;
+- zero native playback cancellation errors;
 - median capture-to-VAD at or below 350 ms;
 - median VAD-to-pause at or below 150 ms; and
 - median confirmed-interruption resolution at or below 1,200 ms.
@@ -187,14 +188,19 @@ cargo run -p iris-runtime -- --dashboard-json
 
 Expected:
 
-- Hermes is enabled by default as an Iris-owned research, local RAG, and memory-transfer helper.
-- Hermes exposes only `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
+- Safe is the startup default. In Safe mode, Hermes is an Iris-owned research,
+  local RAG, and memory-transfer helper that exposes only
+  `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Natural Iris requests such as `look online for the latest Ollama release` route through Hermes research.
 - Natural Iris requests such as `generate an image of Iris as an electric blue logo` open an approval request, call the configured provider only after approval, save the file under `.iris-data\generated-images`, and show the generated preview.
 - Hermes can propose staged memory, and Iris can transfer it into active memory only after explicit `hermes accept <number>`.
 - Hermes cannot access raw memory files.
 - Hermes cannot access cloud-sync storage.
-- Hermes cannot run commands, edit files, control browsers/windows, use clipboard, or operate the computer.
+- Safe mode cannot run commands, edit files, control browsers/windows, use the
+  clipboard, or operate the computer.
+- An explicit Agentic Session can use the reviewed file, PowerShell, process, and isolated browser tools through Iris supervision. Its selected workspace
+  boundary is advisory rather than an OS sandbox. Scope-expanding and high-risk
+  actions require separate confirmation, and Panic Stop terminates the session.
 - Memory search is enabled for local approved memory by default.
 - Memory proposals go to staging and require Iris/user approval before promotion.
 - Memory archive export remains unavailable until real local encryption is implemented.
@@ -231,7 +237,9 @@ If Iris stops listening, the last few lines of this file should show whether nat
 
 - No fallback model should be used.
 - No model download should start.
-- No system control should occur.
+- No system control should occur in Safe mode or outside an explicitly approved
+  Agentic Session. Agentic control remains limited to the reviewed file,
+  PowerShell, process, and isolated browser tools.
 - No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
 - No continuous screen capture should occur. The screen icon performs one explicit capped capture of the area under Iris.
 - File attachments are user selected through the attachment icon, paste, or drag/drop, and are consumed by the next prompt only.

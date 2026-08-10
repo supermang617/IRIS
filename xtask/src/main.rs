@@ -411,7 +411,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
         "docs/manual-test-checklist-v0.1.1.md",
-        "docs/manual-end-user-test-v0.1.0.md",
+        "docs/manual-end-user-test.md",
         "docs/manual-test.md",
         "docs/signed-installer-decision.md",
         "docs/runtime-orchestration.md",
@@ -743,7 +743,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let dependabot = read(root.join(".github/dependabot.yml"))?;
     let github_settings = read(root.join("docs/github-settings.md"))?;
     let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.1.md"))?;
-    let manual_end_user_test = read(root.join("docs/manual-end-user-test-v0.1.0.md"))?;
+    let manual_test = read(root.join("docs/manual-test.md"))?;
+    let manual_end_user_test = read(root.join("docs/manual-end-user-test.md"))?;
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
     let preflight_script = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
@@ -796,6 +797,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
                 "public docs contain stale limitation `{forbidden}`"
             ));
         }
+    }
+    if !readme.contains("Current v1 manual end-user test guide: `docs/manual-end-user-test.md`.")
+        || readme.contains("manual-end-user-test-v0.1.0.md")
+    {
+        return Err(
+            "README.md must link the current version-neutral manual end-user guide".to_string(),
+        );
     }
     for (name, content) in [
         ("known-limitations.md", limitations.as_str()),
@@ -902,6 +910,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !download.contains("git clone https://github.com/supermang617/IRIS.git")
         || !download.contains("docs/manual-test.md")
+        || !download.contains("docs/manual-end-user-test.md")
         || !download.contains("Bug fixes")
     {
         return Err(
@@ -1095,16 +1104,48 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             return Err(format!("manual test checklist missing `{required}`"));
         }
     }
-    if !manual_end_user_test
-        .contains("Ollama `/api/show` reports the configured model has `vision`")
-        || !manual_end_user_test.contains("Hermes should not be opened separately")
-        || !manual_end_user_test.contains("install-iris-windows.ps1")
-        || !manual_end_user_test.contains("Tesseract document OCR")
-    {
-        return Err(
-            "manual end-user test report must capture installer, Hermes, and image-probe status"
-                .to_string(),
-        );
+    for required in [
+        "This guide defines the Windows end-user acceptance checks",
+        "Ollama `/api/show` reports the configured model has `vision`",
+        "Hermes should not be opened separately",
+        "Safe is the startup default",
+        "Agentic Session is a separate, explicit, approval-gated mode",
+        "file, PowerShell, process, and isolated browser tools",
+        "require separate confirmation",
+        "Tesseract document OCR",
+        "`BLOCKED` is the truthful current result",
+        "do not certify acoustic interruption behavior",
+    ] {
+        if !manual_end_user_test.contains(required) {
+            return Err(format!(
+                "manual end-user test guide missing current acceptance guidance `{required}`"
+            ));
+        }
+    }
+    for stale in [
+        "v0.1.0",
+        "latest Windows end-user test",
+        "should expose no acting tools",
+        "Hermes cannot run commands, edit files, control browsers/windows",
+        "- No system control should occur.",
+    ] {
+        if manual_end_user_test.contains(stale) || manual_test.contains(stale) {
+            return Err(format!(
+                "manual test guidance contains stale release or Hermes guidance `{stale}`"
+            ));
+        }
+    }
+    for required in [
+        "Safe is the startup default",
+        "Agentic Session can use the reviewed file, PowerShell, process,",
+        "Scope-expanding and high-risk",
+        "outside an explicitly approved",
+    ] {
+        if !manual_test.contains(required) {
+            return Err(format!(
+                "manual desktop test guide missing current Safe/Agentic guidance `{required}`"
+            ));
+        }
     }
     Ok(())
 }
@@ -1610,6 +1651,8 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "system_browser = [ordered]@{",
         "winget_package = \"Google.Chrome\"",
         "volatile_data_packaged = $false",
+        "docs\\manual-test.md\") -Destination (Join-Path $packageRoot \"docs\\manual-test.md",
+        "docs\\manual-end-user-test.md\") -Destination (Join-Path $packageRoot \"docs\\manual-end-user-test.md",
     ] {
         if !package.contains(required) {
             return Err(format!("release package script missing `{required}`"));
@@ -1714,6 +1757,15 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     for required in [
         "CI release launcher self-check unexpectedly succeeded without runner prerequisites",
         "Test-ExpectedCiPrerequisiteFailure",
+        "README_RELEASE.md must link to the packaged $requiredManualLink guide.",
+        "docs/[A-Za-z0-9._/-]+\\.md",
+        "docs\\manual-test.md",
+        "docs\\manual-end-user-test.md",
+        "Safe is the startup default",
+        "Agentic Session",
+        "should expose no acting tools",
+        "Hermes cannot run commands, edit files, control browsers/windows",
+        "- No system control should occur.",
     ] {
         if !release_smoke.contains(required) {
             return Err(format!("release ZIP smoke test missing `{required}`"));

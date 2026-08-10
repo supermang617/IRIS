@@ -175,6 +175,30 @@ function Test-ConfirmedInterruptionForRun {
     return $matchingListen.Count -gt 0
 }
 
+function Test-ConfirmedInterruptionTerminalForRun {
+    param(
+        [Parameter(Mandatory = $true)][object]$Record,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][int]$AfterLine
+    )
+    if (
+        [string]$Record.event -ne "speech_cancelled" -or
+        -not (Test-DetailIdentifier -Detail ([string]$Record.detail) -Name "run" -Value $RunId)
+    ) {
+        return $false
+    }
+    $matchingDetection = @(
+        $session |
+            Where-Object {
+                [int]$_._line_number -gt $AfterLine -and
+                [int]$_._line_number -lt [int]$Record._line_number -and
+                (Test-ConfirmedInterruptionForRun -Record $_ -RunId $RunId -AfterLine $AfterLine)
+            } |
+            Select-Object -First 1
+    )
+    return $matchingDetection.Count -gt 0
+}
+
 $confirmed = Get-EventCount -Name "speech_interruption_detected"
 $fallback = Get-EventCount -Name "speech_interruption_fallback_cancelled"
 $totalCancellations = $confirmed + $fallback
@@ -190,7 +214,8 @@ $missed = if ($ExpectedInterruptions -ge 0) {
 }
 $terminalPlaybackEvents = @(
     "speech_playback_error",
-    "speech_interruption_resume_error"
+    "speech_interruption_resume_error",
+    "speech_native_cancel_error"
 )
 $terminalPlaybackRecords = @(
     $session |
@@ -255,7 +280,7 @@ foreach ($resumeRecord in $successfulResumeRecords) {
                         [string]$_.event -in $validResumeTerminalEvents -and
                         (Test-DetailIdentifier -Detail ([string]$_.detail) -Name "run" -Value $runId)
                     ) -or
-                    (Test-ConfirmedInterruptionForRun -Record $_ -RunId $runId -AfterLine ([int]$resumeRecord._line_number))
+                    (Test-ConfirmedInterruptionTerminalForRun -Record $_ -RunId $runId -AfterLine ([int]$resumeRecord._line_number))
                 )
             } |
             Sort-Object -Property _line_number |

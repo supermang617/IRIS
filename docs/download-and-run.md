@@ -259,7 +259,8 @@ Manual Windows launcher from the repository root:
 .\Start Iris.vbs
 ```
 
-Then follow `docs/manual-test.md`.
+Then follow `docs/manual-test.md`. For the bounded end-user release acceptance
+path, also use `docs/manual-end-user-test.md`.
 
 For release testing, use `docs/finish-checklist.md` and the GitHub manual tester
 issue template.

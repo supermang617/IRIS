@@ -159,7 +159,7 @@ exact signed MSIX and WACK report hashes. In-place upgrade testing begins with
 the first genuine higher semantic release.
 Runtime orchestration: `docs/runtime-orchestration.md`.
 Privacy policy: `PRIVACY.md`.
-Historical manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
+Current v1 manual end-user test guide: `docs/manual-end-user-test.md`.
 The recommended beginner download is `iris-windows-installer.zip`: extract it
 and double-click `Install Iris.bat`. The portable release remains available for
 advanced/manual use and includes `Iris Setup Wizard.bat` plus read-only
