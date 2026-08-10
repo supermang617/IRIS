@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -420,6 +420,160 @@ class IrisBrowserToolTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "exact allowed public host"):
                 iris_browser_tools.browser_click({"target": "@e1"}, task_id="task")
+
+        run_browser.assert_called_once_with(["get", "url"])
+        close_session.assert_called_once_with()
+
+    def test_click_rejects_and_closes_for_non_http_destination_schemes(self):
+        forbidden_destinations = (
+            "file:///C:/Users/example/secret.txt",
+            "javascript:alert(1)",
+            "data:text/html,<h1>unsafe</h1>",
+            "custom:payload",
+            "JaVaScRiPt:alert(1)",
+            "java\tscript:alert(1)",
+            "DaTa:\ntext/html,<h1>unsafe</h1>",
+            "CuStOm:\rpayload",
+            "ftp://example.com/archive.zip",
+            "mailto:user@example.com",
+            "about:blank",
+            "blob:https://example.com/identifier",
+            r"https:\\evil.example\x",
+            r"\\evil.example\x",
+            r"/reference\..\admin",
+        )
+
+        for destination in forbidden_destinations:
+            with self.subTest(destination=destination):
+                iris_browser_tools._allowed_domains = "example.com"
+                iris_browser_tools._snapshot_refs["task"] = {
+                    "e1": {
+                        "role": "link",
+                        "name": "Documentation",
+                        "href": destination,
+                    }
+                }
+                with (
+                    patch.object(
+                        iris_browser_tools,
+                        "_run_browser",
+                        side_effect=(
+                            {
+                                "success": True,
+                                "data": {"url": "https://example.com/docs/page"},
+                            },
+                            {"success": True, "data": {}},
+                        ),
+                    ) as run_browser,
+                    patch.object(
+                        iris_browser_tools,
+                        "_resolve_host_addresses",
+                        return_value=("93.184.216.34",),
+                    ) as resolve_host,
+                    patch.object(
+                        iris_browser_tools,
+                        "_cleanup_command_artifacts",
+                    ) as cleanup_commands,
+                    patch.object(
+                        iris_browser_tools,
+                        "_cleanup_screenshot_artifacts",
+                    ) as cleanup_screenshots,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, "HTTP or HTTPS|backslashes"
+                    ):
+                        iris_browser_tools.browser_click(
+                            {"target": "@e1"}, task_id="task"
+                        )
+
+                self.assertEqual(
+                    run_browser.call_args_list,
+                    [
+                        call(["get", "url"]),
+                        call(["close"], timeout_seconds=5),
+                    ],
+                )
+                resolve_host.assert_called_once_with("example.com")
+                cleanup_commands.assert_called_once_with(remove_all=True)
+                cleanup_screenshots.assert_called_once_with(remove_all=True)
+                self.assertEqual(iris_browser_tools._allowed_domains, "")
+                self.assertEqual(iris_browser_tools._snapshot_refs, {})
+
+    def test_pre_action_destination_accepts_safe_http_and_relative_targets(self):
+        destinations = (
+            "../reference?topic=browser",
+            "/downloads/latest",
+            "?topic=browser",
+            "#examples",
+            "https://example.com/reference",
+            "http://example.com/reference",
+        )
+
+        for destination in destinations:
+            with self.subTest(destination=destination):
+                iris_browser_tools._allowed_domains = "example.com"
+                iris_browser_tools._snapshot_refs["task"] = {
+                    "e1": {
+                        "role": "link",
+                        "name": "Documentation",
+                        "href": destination,
+                    }
+                }
+                with (
+                    patch.object(
+                        iris_browser_tools,
+                        "_run_browser",
+                        return_value={
+                            "success": True,
+                            "data": {"url": "https://example.com/docs/page"},
+                        },
+                    ) as run_browser,
+                    patch.object(
+                        iris_browser_tools,
+                        "_resolve_host_addresses",
+                        return_value=("93.184.216.34",),
+                    ) as resolve_host,
+                    patch.object(
+                        iris_browser_tools,
+                        "_close_unsafe_browser_session",
+                    ) as close_session,
+                ):
+                    iris_browser_tools._validate_pre_action_destination(
+                        "task", "@e1"
+                    )
+
+                run_browser.assert_called_once_with(["get", "url"])
+                self.assertEqual(
+                    resolve_host.call_args_list,
+                    [call("example.com"), call("example.com")],
+                )
+                close_session.assert_not_called()
+
+    def test_relative_destination_rejects_unsafe_current_url(self):
+        iris_browser_tools._allowed_domains = "example.com"
+        iris_browser_tools._snapshot_refs["task"] = {
+            "e1": {
+                "role": "link",
+                "name": "Same-page section",
+                "href": "#examples",
+            }
+        }
+        with (
+            patch.object(
+                iris_browser_tools,
+                "_run_browser",
+                return_value={
+                    "success": True,
+                    "data": {"url": "file:///C:/Users/example/page.html"},
+                },
+            ) as run_browser,
+            patch.object(
+                iris_browser_tools,
+                "_close_unsafe_browser_session",
+            ) as close_session,
+        ):
+            with self.assertRaisesRegex(ValueError, "HTTP or HTTPS"):
+                iris_browser_tools._validate_pre_action_destination("task", "@e1")
 
         run_browser.assert_called_once_with(["get", "url"])
         close_session.assert_called_once_with()

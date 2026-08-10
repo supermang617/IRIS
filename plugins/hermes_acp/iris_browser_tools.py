@@ -1060,9 +1060,13 @@ def _validate_pre_action_destination(task_id: str, target: str | None = None) ->
     destination = _target_destination(task_id, target) if target is not None else ""
     if not destination:
         return
+    if "\\" in destination:
+        _close_unsafe_browser_session()
+        raise ValueError("Browser action destination must not contain backslashes.")
     parsed_destination = urlparse(destination)
     if parsed_destination.scheme and parsed_destination.scheme.lower() not in {"http", "https"}:
-        return
+        _close_unsafe_browser_session()
+        raise ValueError("Browser action destination must use HTTP or HTTPS.")
     absolute_destination = urljoin(current_url, destination)
     try:
         public_destination = _public_url(absolute_destination)
