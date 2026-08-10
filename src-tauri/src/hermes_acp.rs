@@ -1710,7 +1710,11 @@ fn redact_and_truncate(input: &str, limit: usize) -> String {
         }
     }
     if output.len() > limit {
-        output.truncate(limit);
+        let mut truncate_at = limit;
+        while truncate_at > 0 && !output.is_char_boundary(truncate_at) {
+            truncate_at -= 1;
+        }
+        output.truncate(truncate_at);
         output.push_str("...");
     }
     output
@@ -2527,6 +2531,22 @@ mod tests {
             redact_and_truncate("command\nAuthorization: Bearer private", 500),
             "command\n[redacted sensitive detail]"
         );
+    }
+
+    #[test]
+    fn diagnostic_truncation_is_utf8_boundary_safe_and_redacted() {
+        const LIMIT: usize = 2_000;
+        let redacted_prefix = "[redacted sensitive detail]\n";
+        let filler = "x".repeat(LIMIT - 1 - redacted_prefix.len());
+        let input = format!("Authorization: Bearer private\n{filler}🦀");
+
+        let output = redact_and_truncate(&input, LIMIT);
+
+        assert!(output.starts_with(redacted_prefix));
+        assert!(!output.contains("private"));
+        assert!(!output.contains('🦀'));
+        assert!(output.ends_with("..."));
+        assert!(output.len() <= LIMIT + "...".len());
     }
 
     #[test]

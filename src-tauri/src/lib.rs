@@ -48,6 +48,19 @@ use windows::{
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+#[cfg(windows)]
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    #[link_name = "MoveFileExW"]
+    fn move_file_ex_w(existing_file_name: *const u16, new_file_name: *const u16, flags: u32)
+    -> i32;
+}
+
 static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
 static OLLAMA_CLIENT: OnceLock<iris_ollama::OllamaClient> = OnceLock::new();
 static IMAGE_PROVIDER_CHILD: OnceLock<Mutex<Option<Arc<ImageProviderProcess>>>> = OnceLock::new();
@@ -2982,6 +2995,45 @@ fn cleanup_stale_atomic_temps(path: &Path) {
     }
 }
 
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fn wide_path(path: &Path) -> std::io::Result<Vec<u16>> {
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Windows file path contains NUL",
+            ));
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    // SAFETY: both buffers are NUL-terminated and remain alive for the call.
+    // The temporary source and destination share a parent, so MoveFileExW is
+    // an atomic same-volume replacement; WRITE_THROUGH preserves the existing
+    // durable-temp-write contract before success is reported.
+    let replaced = unsafe {
+        move_file_ex_w(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
 fn atomic_replace_file_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -3038,7 +3090,7 @@ fn atomic_replace_file_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(
         ));
     }
     drop(temporary_file);
-    if let Err(error) = fs::rename(&temporary_path, path) {
+    if let Err(error) = replace_file_atomically(&temporary_path, path) {
         let _ = fs::remove_file(&temporary_path);
         return Err(format!(
             "failed to atomically replace {label} {}: {error}",
@@ -8185,6 +8237,53 @@ mod tests {
         );
 
         fs::remove_dir_all(root).expect("remove memory promotion test directory");
+    }
+
+    #[test]
+    fn repeated_memory_saves_replace_active_and_previous_generations() {
+        let unique = MEMORY_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "iris-memory-repeated-save-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("repeated memory save directory");
+        let path = root.join("memories.json");
+        let previous_path = memory_previous_file_path(&path);
+        let mut prior_generation: Option<MemoryItem> = None;
+
+        for generation in 1..=8_u64 {
+            let current = MemoryItem {
+                id: generation,
+                text: format!("durable memory generation {generation}"),
+                created_ms: u128::from(generation),
+                updated_ms: u128::from(generation),
+            };
+            save_memories_to_path(&path, std::slice::from_ref(&current))
+                .expect("replace repeated active memory generation");
+
+            let active = load_memories_from_path(&path).expect("load repeated active memory");
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].id, current.id);
+            assert_eq!(active[0].text, current.text);
+
+            if let Some(prior) = prior_generation {
+                let previous =
+                    load_memories_from_path(&previous_path).expect("load repeated previous memory");
+                assert_eq!(previous.len(), 1);
+                assert_eq!(previous[0].id, prior.id);
+                assert_eq!(previous[0].text, prior.text);
+            }
+            prior_generation = Some(current);
+        }
+
+        assert!(
+            fs::read_dir(&root)
+                .expect("repeated memory save artifacts")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+        );
+        fs::remove_dir_all(root).expect("remove repeated memory save directory");
     }
 
     #[test]
