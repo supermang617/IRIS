@@ -680,6 +680,8 @@ impl OllamaClient {
         if image_bytes.is_empty() {
             return Err("image probe requires non-empty image bytes".to_string());
         }
+        bounded_ocr_image_format_and_dimensions(image_bytes)
+            .map_err(|error| format!("image probe rejected unsafe image data: {error}"))?;
         let simple_geometry = analyze_simple_visual_geometry_for_source(image_bytes, source);
         let geometry_answer = answer_from_simple_visual_geometry(trimmed_prompt, simple_geometry);
         if !prompt_requests_visible_text(trimmed_prompt)
@@ -1221,34 +1223,128 @@ fn prompt_with_simple_geometry_evidence(
 
 fn prompt_requests_visible_text(prompt: &str) -> bool {
     let prompt = prompt.to_ascii_lowercase();
-    let keywords = [
-        "read",
-        "reads",
-        "reading",
-        "text",
-        "word",
-        "words",
-        "letter",
-        "letters",
-        "number",
-        "numbers",
-        "says",
-        "say",
-        "written",
-        "quote",
-        "transcribe",
-        "transcription",
-        "ocr",
-        "label",
-        "labels",
-        "caption",
-        "captions",
-        "heading",
-        "headings",
-    ];
-    prompt
+    let words = prompt
         .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|word| keywords.contains(&word))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let contains_phrase =
+        |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
+    let explicit_phrases = [
+        &["can", "you", "read"][..],
+        &["could", "you", "read"],
+        &["would", "you", "read"],
+        &["will", "you", "read"],
+        &["help", "me", "read"],
+        &["you", "to", "read"],
+        &["can", "you", "transcribe"],
+        &["could", "you", "transcribe"],
+        &["please", "transcribe"],
+        &["use", "ocr"],
+        &["run", "ocr"],
+        &["perform", "ocr"],
+        &["extract", "text"],
+        &["visible", "text"],
+        &["readable", "text"],
+        &["what", "text"],
+        &["which", "text"],
+        &["text", "is", "visible"],
+        &["text", "is", "shown"],
+        &["what", "word", "is", "visible"],
+        &["what", "word", "is", "shown"],
+        &["what", "words", "are", "visible"],
+        &["what", "words", "are", "shown"],
+        &["what", "words", "are", "written"],
+        &["what", "words", "are", "printed"],
+        &["which", "word", "is", "visible"],
+        &["which", "words", "are", "visible"],
+        &["what", "letter", "is", "visible"],
+        &["what", "letters", "are", "visible"],
+        &["which", "letter", "is", "shown"],
+        &["which", "letters", "are", "shown"],
+        &["what", "label", "is", "visible"],
+        &["what", "label", "is", "shown"],
+        &["what", "caption", "is", "visible"],
+        &["what", "caption", "is", "shown"],
+        &["what", "heading", "is", "visible"],
+        &["what", "heading", "is", "shown"],
+        &["what", "is", "written"],
+        &["what", "s", "written"],
+        &["what", "was", "written"],
+        &["what", "is", "printed"],
+        &["what", "s", "printed"],
+        &["anything", "written"],
+        &["what", "number", "is"][..],
+        &["which", "number", "is"],
+        &["what", "number", "appears"],
+        &["which", "number", "appears"],
+        &["what", "numbers", "are", "visible"],
+        &["which", "numbers", "are", "visible"],
+        &["what", "numbers", "are", "shown"],
+        &["which", "numbers", "are", "shown"],
+        &["what", "is", "the", "number"],
+        &["what", "are", "the", "numbers"],
+        &["tell", "me", "the", "number"],
+        &["tell", "me", "the", "numbers"],
+    ];
+    let direct_request = words
+        .first()
+        .is_some_and(|word| matches!(*word, "read" | "transcribe" | "ocr" | "quote"))
+        || words.get(..2).is_some_and(|prefix| {
+            prefix[0] == "please" && matches!(prefix[1], "read" | "transcribe" | "ocr" | "quote")
+        });
+    let readable_text_subject = |word: &str| {
+        matches!(
+            word,
+            "sign"
+                | "label"
+                | "caption"
+                | "heading"
+                | "text"
+                | "word"
+                | "words"
+                | "letter"
+                | "letters"
+                | "number"
+                | "numbers"
+                | "button"
+                | "screen"
+        )
+    };
+
+    direct_request
+        || explicit_phrases
+            .iter()
+            .any(|phrase| contains_phrase(phrase))
+        || words.iter().enumerate().any(|(index, word)| {
+            *word == "what"
+                && words
+                    .get(index + 1)
+                    .is_some_and(|word| matches!(*word, "do" | "does" | "did"))
+                && words[index + 2..]
+                    .iter()
+                    .take(5)
+                    .position(|word| matches!(*word, "say" | "says"))
+                    .is_some_and(|say_offset| {
+                        let subject = &words[index + 2..index + 2 + say_offset];
+                        let following_word = words.get(index + 3 + say_offset);
+                        subject.iter().any(|word| readable_text_subject(word))
+                            || (matches!(subject, ["it"] | ["this"])
+                                && !following_word
+                                    .is_some_and(|word| matches!(*word, "about" | "regarding")))
+                    })
+        })
+        || words.windows(3).enumerate().any(|(index, prefix)| {
+            prefix == ["tell", "me", "what"]
+                && words[index + 3..]
+                    .iter()
+                    .take(7)
+                    .position(|word| *word == "says")
+                    .is_some_and(|say_offset| {
+                        words[index + 3..index + 3 + say_offset]
+                            .iter()
+                            .any(|word| readable_text_subject(word))
+                    })
+        })
 }
 
 fn compact_ocr_answer_text(text: &str) -> String {
@@ -1354,10 +1450,17 @@ fn local_ocr_text_result(image_bytes: &[u8], image_name: &str) -> Result<Option<
     if image_bytes.is_empty() {
         return Ok(None);
     }
+    let (format, _, _) = bounded_ocr_image_format_and_dimensions(image_bytes)
+        .map_err(|error| format!("local OCR rejected {image_name}: {error}"))?;
     let Some(tesseract) = find_tesseract_executable() else {
         return Ok(None);
     };
-    let extension = supported_ocr_extension(image_name);
+    let extension = match format {
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::WebP => "webp",
+        image::ImageFormat::Png => "png",
+        _ => unreachable!("the OCR image gate returns only supported formats"),
+    };
     let image_path = std::env::temp_dir().join(format!(
         "iris-vision-ocr-{}-{}.{}",
         std::process::id(),
@@ -1378,15 +1481,304 @@ fn local_ocr_text_result(image_bytes: &[u8], image_name: &str) -> Result<Option<
     result
 }
 
-fn supported_ocr_extension(image_name: &str) -> &'static str {
-    let lower = image_name.to_ascii_lowercase();
-    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "jpg"
-    } else if lower.ends_with(".webp") {
-        "webp"
-    } else {
-        "png"
+fn bounded_ocr_image_format_and_dimensions(
+    image_bytes: &[u8],
+) -> Result<(image::ImageFormat, u32, u32), String> {
+    let byte_count = u64::try_from(image_bytes.len()).unwrap_or(u64::MAX);
+    if byte_count == 0 || byte_count > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "image byte size {byte_count} is outside the 1..={MAX_IMAGE_BYTES} byte limit"
+        ));
     }
+
+    let format = image::guess_format(image_bytes)
+        .map_err(|_| "image is not a recognized PNG, JPEG, or WebP file".to_string())?;
+    let dimensions = match format {
+        image::ImageFormat::Png => png_header_dimensions(image_bytes),
+        image::ImageFormat::Jpeg => jpeg_header_dimensions(image_bytes),
+        image::ImageFormat::WebP => webp_header_dimensions(image_bytes),
+        _ => return Err("image is not a supported PNG, JPEG, or WebP file".to_string()),
+    }
+    .ok_or_else(|| "image has a malformed or truncated dimension header".to_string())?;
+    let (width, height) = dimensions;
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| "image dimensions overflow the decoded-pixel limit".to_string())?;
+    if !ocr_dimensions_within_limits(width, height) {
+        return Err(format!(
+            "decoded image dimensions {width}x{height} ({pixels} pixels) exceed the {MAX_LOCAL_VISUAL_DIMENSION}x{MAX_LOCAL_VISUAL_DIMENSION} and {MAX_LOCAL_VISUAL_PIXELS}-pixel limits"
+        ));
+    }
+
+    Ok((format, width, height))
+}
+
+fn ocr_dimensions_within_limits(width: u32, height: u32) -> bool {
+    width != 0
+        && height != 0
+        && width <= MAX_LOCAL_VISUAL_DIMENSION
+        && height <= MAX_LOCAL_VISUAL_DIMENSION
+        && u64::from(width)
+            .checked_mul(u64::from(height))
+            .is_some_and(|pixels| pixels <= MAX_LOCAL_VISUAL_PIXELS)
+}
+
+fn png_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if image_bytes.len() < 33
+        || &image_bytes[..8] != PNG_SIGNATURE
+        || u32::from_be_bytes(image_bytes[8..12].try_into().ok()?) != 13
+        || &image_bytes[12..16] != b"IHDR"
+    {
+        return None;
+    }
+    let expected_crc = u32::from_be_bytes(image_bytes[29..33].try_into().ok()?);
+    if png_crc32(&image_bytes[12..29]) != expected_crc {
+        return None;
+    }
+    let bit_depth = image_bytes[24];
+    let color_type = image_bytes[25];
+    let valid_color_depth = match color_type {
+        0 => matches!(bit_depth, 1 | 2 | 4 | 8 | 16),
+        2 | 4 | 6 => matches!(bit_depth, 8 | 16),
+        3 => matches!(bit_depth, 1 | 2 | 4 | 8),
+        _ => false,
+    };
+    if !valid_color_depth || image_bytes[26] != 0 || image_bytes[27] != 0 || image_bytes[28] > 1 {
+        return None;
+    }
+
+    let dimensions = (
+        u32::from_be_bytes(image_bytes[16..20].try_into().ok()?),
+        u32::from_be_bytes(image_bytes[20..24].try_into().ok()?),
+    );
+    let mut cursor = 33_usize;
+    let mut saw_image_data = false;
+    while cursor < image_bytes.len() {
+        let chunk_header_end = cursor.checked_add(8)?;
+        if chunk_header_end > image_bytes.len() {
+            return None;
+        }
+        let chunk_length = usize::try_from(u32::from_be_bytes(
+            image_bytes.get(cursor..cursor + 4)?.try_into().ok()?,
+        ))
+        .ok()?;
+        let chunk_type = image_bytes.get(cursor + 4..cursor + 8)?;
+        if !chunk_type.iter().all(u8::is_ascii_alphabetic) || chunk_type == b"IHDR" {
+            return None;
+        }
+        let chunk_crc_start = chunk_header_end.checked_add(chunk_length)?;
+        let chunk_end = chunk_crc_start.checked_add(4)?;
+        if chunk_end > image_bytes.len() {
+            return None;
+        }
+        match chunk_type {
+            b"IDAT" => saw_image_data = true,
+            b"IEND" => {
+                if chunk_length != 0 || !saw_image_data || chunk_end != image_bytes.len() {
+                    return None;
+                }
+                let expected_crc = u32::from_be_bytes(
+                    image_bytes
+                        .get(chunk_crc_start..chunk_end)?
+                        .try_into()
+                        .ok()?,
+                );
+                return (png_crc32(chunk_type) == expected_crc).then_some(dimensions);
+            }
+            _ if chunk_type[0] & 0x20 == 0 && chunk_type != b"PLTE" => return None,
+            _ => {}
+        }
+        cursor = chunk_end;
+    }
+    None
+}
+
+fn png_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            let polynomial = if crc & 1 == 1 { 0xedb8_8320 } else { 0 };
+            crc = (crc >> 1) ^ polynomial;
+        }
+    }
+    !crc
+}
+
+fn jpeg_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
+    if image_bytes.len() < 4 || image_bytes[..2] != [0xff, 0xd8] {
+        return None;
+    }
+    let mut cursor = 2_usize;
+    let mut dimensions = None;
+    while cursor < image_bytes.len() {
+        if image_bytes[cursor] != 0xff {
+            return None;
+        }
+        while image_bytes.get(cursor) == Some(&0xff) {
+            cursor += 1;
+        }
+        let marker = *image_bytes.get(cursor)?;
+        cursor += 1;
+        if marker == 0x00 || marker == 0xd8 || marker == 0xd9 {
+            return None;
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+
+        let segment_length = usize::from(u16::from_be_bytes(
+            image_bytes.get(cursor..cursor + 2)?.try_into().ok()?,
+        ));
+        if segment_length < 2 {
+            return None;
+        }
+        let segment_end = cursor.checked_add(segment_length)?;
+        if segment_end > image_bytes.len() {
+            return None;
+        }
+        if matches!(
+            marker,
+            0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf
+        ) {
+            if segment_length < 8 {
+                return None;
+            }
+            let component_count = usize::from(image_bytes[cursor + 7]);
+            if component_count == 0 || segment_length != 8 + 3 * component_count {
+                return None;
+            }
+            let found_dimensions = (
+                u32::from(u16::from_be_bytes([
+                    image_bytes[cursor + 5],
+                    image_bytes[cursor + 6],
+                ])),
+                u32::from(u16::from_be_bytes([
+                    image_bytes[cursor + 3],
+                    image_bytes[cursor + 4],
+                ])),
+            );
+            if dimensions.replace(found_dimensions).is_some() {
+                return None;
+            }
+        }
+        if marker == 0xda {
+            return dimensions;
+        }
+        cursor = segment_end;
+    }
+    None
+}
+
+fn webp_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
+    if image_bytes.len() < 20 || &image_bytes[..4] != b"RIFF" || &image_bytes[8..12] != b"WEBP" {
+        return None;
+    }
+    let riff_size = usize::try_from(u32::from_le_bytes(image_bytes[4..8].try_into().ok()?)).ok()?;
+    let riff_end = riff_size.checked_add(8)?;
+    if riff_end != image_bytes.len() {
+        return None;
+    }
+
+    let mut cursor = 12_usize;
+    let mut canvas_dimensions = None;
+    let mut bitstream_dimensions = None;
+    while cursor < riff_end {
+        let chunk_header_end = cursor.checked_add(8)?;
+        if chunk_header_end > riff_end {
+            return None;
+        }
+        let chunk_type = image_bytes.get(cursor..cursor + 4)?;
+        let chunk_size = usize::try_from(u32::from_le_bytes(
+            image_bytes.get(cursor + 4..cursor + 8)?.try_into().ok()?,
+        ))
+        .ok()?;
+        let payload_start = chunk_header_end;
+        let payload_end = payload_start.checked_add(chunk_size)?;
+        let padded_end = payload_end.checked_add(chunk_size & 1)?;
+        if padded_end > riff_end {
+            return None;
+        }
+        let payload = image_bytes.get(payload_start..payload_end)?;
+
+        match chunk_type {
+            b"VP8X" => {
+                if cursor != 12 || canvas_dimensions.is_some() {
+                    return None;
+                }
+                let (dimensions, animated) = webp_vp8x_dimensions(payload)?;
+                if animated {
+                    return None;
+                }
+                if !ocr_dimensions_within_limits(dimensions.0, dimensions.1) {
+                    return Some(dimensions);
+                }
+                canvas_dimensions = Some(dimensions);
+            }
+            b"VP8L" | b"VP8 " => {
+                if bitstream_dimensions.is_some() {
+                    return None;
+                }
+                let dimensions = if chunk_type == b"VP8L" {
+                    webp_vp8l_dimensions(payload)?
+                } else {
+                    webp_vp8_dimensions(payload)?
+                };
+                if !ocr_dimensions_within_limits(dimensions.0, dimensions.1) {
+                    return Some(dimensions);
+                }
+                bitstream_dimensions = Some(dimensions);
+            }
+            b"ANIM" | b"ANMF" => return None,
+            _ => {}
+        }
+        cursor = padded_end;
+    }
+    match (canvas_dimensions, bitstream_dimensions) {
+        (None, Some(dimensions)) => Some(dimensions),
+        (Some(canvas), Some(bitstream)) if canvas == bitstream => Some(canvas),
+        _ => None,
+    }
+}
+
+fn webp_vp8x_dimensions(payload: &[u8]) -> Option<((u32, u32), bool)> {
+    if payload.len() != 10 || payload[0] & 0xc1 != 0 || payload[1..4] != [0, 0, 0] {
+        return None;
+    }
+    Some((
+        (
+            little_endian_u24(&payload[4..7])?.checked_add(1)?,
+            little_endian_u24(&payload[7..10])?.checked_add(1)?,
+        ),
+        payload[0] & 0x02 != 0,
+    ))
+}
+
+fn webp_vp8l_dimensions(payload: &[u8]) -> Option<(u32, u32)> {
+    if payload.len() < 5 || payload[0] != 0x2f {
+        return None;
+    }
+    let bits = u32::from_le_bytes(payload[1..5].try_into().ok()?);
+    if bits >> 29 != 0 {
+        return None;
+    }
+    Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+}
+
+fn webp_vp8_dimensions(payload: &[u8]) -> Option<(u32, u32)> {
+    if payload.len() < 10 || payload[0] & 1 != 0 || payload[3..6] != [0x9d, 0x01, 0x2a] {
+        return None;
+    }
+    Some((
+        u32::from(u16::from_le_bytes(payload[6..8].try_into().ok()?) & 0x3fff),
+        u32::from(u16::from_le_bytes(payload[8..10].try_into().ok()?) & 0x3fff),
+    ))
+}
+
+fn little_endian_u24(bytes: &[u8]) -> Option<u32> {
+    let bytes: [u8; 3] = bytes.try_into().ok()?;
+    Some(u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16))
 }
 
 fn find_tesseract_executable() -> Option<PathBuf> {
@@ -1955,6 +2347,103 @@ mod tests {
             )
             .expect("encode test PNG");
         encoded
+    }
+
+    fn bytes_from_hex(hex: &str) -> Vec<u8> {
+        assert_eq!(hex.len() % 2, 0);
+        hex.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let digit = |byte| match byte {
+                    b'0'..=b'9' => byte - b'0',
+                    b'a'..=b'f' => byte - b'a' + 10,
+                    b'A'..=b'F' => byte - b'A' + 10,
+                    _ => panic!("invalid fixture hex"),
+                };
+                (digit(pair[0]) << 4) | digit(pair[1])
+            })
+            .collect()
+    }
+
+    fn tiny_jpeg() -> Vec<u8> {
+        bytes_from_hex(concat!(
+            "ffd8ffe000104a46494600010100000100010000ffdb00430008060607060508",
+            "0707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e",
+            "2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b",
+            "080003000201011100ffc40014000100000000000000000000000000000000",
+            "ffc40014100100000000000000000000000000000000ffda0008010100003f",
+            "003fffd9"
+        ))
+    }
+
+    fn tiny_webp_vp8() -> Vec<u8> {
+        bytes_from_hex(concat!(
+            "524946463c000000574542505650382030000000d001009d012a020003000140",
+            "2625a00274ba01f80003b000fef2eb7ffcd815cd73eff7ffd2e0fd2e0fd2e0f",
+            "fd2900000"
+        ))
+    }
+
+    fn tiny_webp_vp8l() -> Vec<u8> {
+        bytes_from_hex("524946461c000000574542505650384c0f0000002f018000000710fd8ffe0722a2ff0100")
+    }
+
+    fn tiny_webp_vp8x() -> Vec<u8> {
+        bytes_from_hex(concat!(
+            "524946465a00000057454250565038580a000000080000000100000200005650",
+            "382030000000d001009d012a0200030001402625a00274ba01f80003b000fef2",
+            "eb7ffcd815cd73eff7ffd2e0fd2e0fd2e0ffd290000045584946040000007465",
+            "7374"
+        ))
+    }
+
+    fn set_png_dimensions(image: &mut [u8], width: u32, height: u32) {
+        image[16..20].copy_from_slice(&width.to_be_bytes());
+        image[20..24].copy_from_slice(&height.to_be_bytes());
+        let crc = png_crc32(&image[12..29]);
+        image[29..33].copy_from_slice(&crc.to_be_bytes());
+    }
+
+    fn set_jpeg_width(image: &mut [u8], width: u16) {
+        let sof = image
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0xc0])
+            .expect("baseline JPEG SOF marker");
+        image[sof + 7..sof + 9].copy_from_slice(&width.to_be_bytes());
+    }
+
+    fn set_webp_width(image: &mut [u8], width: u32) {
+        let chunk = &image[12..16];
+        match chunk {
+            b"VP8X" => {
+                let encoded = width.checked_sub(1).expect("nonzero WebP width");
+                image[24] = encoded as u8;
+                image[25] = (encoded >> 8) as u8;
+                image[26] = (encoded >> 16) as u8;
+            }
+            b"VP8L" => {
+                let old = u32::from_le_bytes(image[21..25].try_into().unwrap());
+                let encoded = (old & !0x3fff) | (width - 1);
+                image[21..25].copy_from_slice(&encoded.to_le_bytes());
+            }
+            b"VP8 " => {
+                let old = u16::from_le_bytes(image[26..28].try_into().unwrap());
+                let encoded = (old & 0xc000) | u16::try_from(width).unwrap();
+                image[26..28].copy_from_slice(&encoded.to_le_bytes());
+            }
+            _ => panic!("unsupported WebP fixture"),
+        }
+    }
+
+    fn set_webp_nested_vp8_width(image: &mut [u8], width: u32) {
+        let marker = image
+            .windows(4)
+            .position(|bytes| bytes == b"VP8 ")
+            .expect("extended WebP VP8 chunk");
+        let width_offset = marker + 8 + 6;
+        let old = u16::from_le_bytes(image[width_offset..width_offset + 2].try_into().unwrap());
+        let encoded = (old & 0xc000) | u16::try_from(width).unwrap();
+        image[width_offset..width_offset + 2].copy_from_slice(&encoded.to_le_bytes());
     }
 
     fn automatic_text_request(stream: bool) -> GenerateRequest {
@@ -2693,6 +3182,58 @@ mod tests {
     }
 
     #[test]
+    fn broad_scene_questions_with_say_or_number_do_not_request_direct_ocr() {
+        for prompt in [
+            "What can you say about this image?",
+            "Can you say what this scene depicts?",
+            "Say something about the lighting and composition.",
+            "What does the artwork say about the human condition?",
+            "What does this image say about society?",
+            "What does it say about society?",
+            "Describe the number of people in this scene.",
+            "What number of people are standing together?",
+            "What can you tell me about the numbers in this chart?",
+            "How many number tiles are visible?",
+            "What words would you use to describe this?",
+            "What word best describes the mood?",
+            "Write a caption for this image.",
+            "Where is the person heading?",
+            "What label would you give this style?",
+            "What quote would fit the mood?",
+            "Describe the person reading beside the sign.",
+        ] {
+            assert!(
+                !prompt_requests_visible_text(prompt),
+                "broad scene prompt was misrouted to direct OCR: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_reading_and_number_phrases_still_request_direct_ocr() {
+        for prompt in [
+            "Read the sign.",
+            "Transcribe everything visible.",
+            "What text is shown?",
+            "What does it say?",
+            "What does the warning sign say?",
+            "Tell me what the warning sign says.",
+            "What number is printed on the door?",
+            "Which numbers are visible?",
+            "What words are visible on the poster?",
+            "Which letters are shown?",
+            "What is the number?",
+            "What are the numbers in the label?",
+            "Tell me the number on the jersey.",
+        ] {
+            assert!(
+                prompt_requests_visible_text(prompt),
+                "explicit visible-text prompt did not route to OCR: {prompt}"
+            );
+        }
+    }
+
+    #[test]
     fn local_visual_geometry_corrects_the_configured_models_circle_blind_spot() {
         let encoded = encode_png(&simple_shape_canvas("circle"));
 
@@ -2953,6 +3494,121 @@ mod tests {
 
         assert!(bounded_png_dimensions(&header).is_none());
         assert!(analyze_simple_visual_geometry(&header).is_none());
+    }
+
+    #[test]
+    fn ocr_dimension_gate_accepts_png_jpeg_and_all_webp_dimension_headers() {
+        let png = encode_png(&image::RgbaImage::new(2, 3));
+        for (name, bytes, expected_format) in [
+            ("tiny.png", png, image::ImageFormat::Png),
+            ("tiny.jpg", tiny_jpeg(), image::ImageFormat::Jpeg),
+            ("tiny-vp8.webp", tiny_webp_vp8(), image::ImageFormat::WebP),
+            ("tiny-vp8l.webp", tiny_webp_vp8l(), image::ImageFormat::WebP),
+            ("tiny-vp8x.webp", tiny_webp_vp8x(), image::ImageFormat::WebP),
+        ] {
+            assert_eq!(
+                bounded_ocr_image_format_and_dimensions(&bytes),
+                Ok((expected_format, 2, 3)),
+                "failed supported fixture: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn ocr_dimension_gate_rejects_small_compressed_bombs_before_tesseract() {
+        let mut png = encode_png(&image::RgbaImage::new(2, 3));
+        set_png_dimensions(&mut png, MAX_LOCAL_VISUAL_DIMENSION + 1, 3);
+        let mut jpeg = tiny_jpeg();
+        set_jpeg_width(
+            &mut jpeg,
+            u16::try_from(MAX_LOCAL_VISUAL_DIMENSION + 1).unwrap(),
+        );
+        let mut vp8 = tiny_webp_vp8();
+        set_webp_width(&mut vp8, MAX_LOCAL_VISUAL_DIMENSION + 1);
+        let mut vp8l = tiny_webp_vp8l();
+        set_webp_width(&mut vp8l, MAX_LOCAL_VISUAL_DIMENSION + 1);
+        let mut vp8x = tiny_webp_vp8x();
+        set_webp_width(&mut vp8x, MAX_LOCAL_VISUAL_DIMENSION + 1);
+        let mut vp8x_nested = tiny_webp_vp8x();
+        set_webp_nested_vp8_width(&mut vp8x_nested, MAX_LOCAL_VISUAL_DIMENSION + 1);
+
+        for (name, bytes) in [
+            ("bomb.png", png),
+            ("bomb.jpg", jpeg),
+            ("bomb-vp8.webp", vp8),
+            ("bomb-vp8l.webp", vp8l),
+            ("bomb-vp8x.webp", vp8x),
+            ("bomb-vp8x-nested.webp", vp8x_nested),
+        ] {
+            assert!(
+                bytes.len() < 1_024,
+                "fixture must remain compressed and small"
+            );
+            let error = local_ocr_text_result(&bytes, name).unwrap_err();
+            assert!(
+                error.contains("decoded image dimensions")
+                    && error.contains("exceed")
+                    && error.contains(&MAX_LOCAL_VISUAL_DIMENSION.to_string()),
+                "unexpected rejection for {name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn visual_entry_rejects_dimension_bombs_before_ollama_dispatch() {
+        let mut bomb = tiny_webp_vp8x();
+        set_webp_nested_vp8_width(&mut bomb, MAX_LOCAL_VISUAL_DIMENSION + 1);
+
+        let error = test_client()
+            .try_respond_to_visual_bytes(
+                &bomb,
+                "Describe this image.",
+                VisualEvidenceSource::UserSelectedImage,
+                None,
+                "bomb.webp",
+            )
+            .unwrap_err();
+
+        assert!(error.contains("image probe rejected unsafe image data"));
+        assert!(error.contains("decoded image dimensions"));
+    }
+
+    #[test]
+    fn ocr_dimension_gate_rejects_unknown_and_malformed_headers() {
+        let png = encode_png(&image::RgbaImage::new(2, 3));
+        let jpeg = tiny_jpeg();
+        let webp = tiny_webp_vp8();
+        let mut duplicate_sof_jpeg = jpeg.clone();
+        let sof = jpeg
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0xc0])
+            .unwrap();
+        let sof_end = sof + 2 + usize::from(u16::from_be_bytes([jpeg[sof + 2], jpeg[sof + 3]]));
+        duplicate_sof_jpeg.splice(sof_end..sof_end, jpeg[sof..sof_end].iter().copied());
+        let mut animated_webp = tiny_webp_vp8x();
+        animated_webp[20] |= 0x02;
+        let malformed = [
+            ("unknown", b"not an image".to_vec()),
+            ("truncated PNG", png[..24].to_vec()),
+            ("PNG header without image data", png[..33].to_vec()),
+            ("bad PNG CRC", {
+                let mut bytes = png;
+                bytes[29] ^= 1;
+                bytes
+            }),
+            ("truncated JPEG segment", jpeg[..25].to_vec()),
+            ("duplicate JPEG SOF", duplicate_sof_jpeg),
+            ("truncated WebP RIFF", webp[..24].to_vec()),
+            ("animated WebP", animated_webp),
+            ("unsupported GIF", b"GIF89a\x01\0\x01\0".to_vec()),
+        ];
+
+        for (name, bytes) in malformed {
+            assert!(
+                bounded_ocr_image_format_and_dimensions(&bytes).is_err(),
+                "malformed fixture unexpectedly passed: {name}"
+            );
+        }
     }
 
     #[test]
