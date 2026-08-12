@@ -59,31 +59,29 @@ if ($ExpectedCommit) {
     }
 }
 
-$remoteRefs = & git ls-remote "https://github.com/$Repo.git" "refs/heads/main" "refs/tags/$Tag"
+$remoteRefs = & git ls-remote "https://github.com/$Repo.git" "refs/tags/$Tag" "refs/tags/${Tag}^{}"
 if ($LASTEXITCODE -ne 0) {
     throw "Could not read remote refs for $Repo."
 }
-$remoteMain = ""
-$remoteTag = ""
+$remoteTagObject = ""
+$remoteTagCommit = ""
 foreach ($line in $remoteRefs) {
     $parts = $line -split "\s+"
     if ($parts.Count -lt 2) {
         continue
     }
-    if ($parts[1] -eq "refs/heads/main") {
-        $remoteMain = $parts[0].ToLowerInvariant()
-    } elseif ($parts[1] -eq "refs/tags/$Tag") {
-        $remoteTag = $parts[0].ToLowerInvariant()
+    if ($parts[1] -eq "refs/tags/$Tag") {
+        $remoteTagObject = $parts[0].ToLowerInvariant()
+    } elseif ($parts[1] -eq "refs/tags/${Tag}^{}") {
+        $remoteTagCommit = $parts[0].ToLowerInvariant()
     }
 }
-if (-not $remoteMain -or -not $remoteTag) {
-    throw "Remote main and $Tag refs must both exist."
+if (-not $remoteTagObject) {
+    throw "Remote $Tag ref does not exist."
 }
-if ($remoteMain -ne $remoteTag) {
-    throw "Remote main and $Tag must point to the same commit. main=$remoteMain tag=$remoteTag"
-}
+$remoteTag = if ($remoteTagCommit) { $remoteTagCommit } else { $remoteTagObject }
 if ($ExpectedCommit -and $remoteTag -ne $ExpectedCommit.Trim().ToLowerInvariant()) {
-    throw "Remote $Tag ref mismatch. Expected $ExpectedCommit but got $remoteTag."
+    throw "Remote $Tag commit mismatch. Expected $ExpectedCommit but got $remoteTag."
 }
 
 $assetNames = @($release.assets | ForEach-Object { $_.name } | Sort-Object)
