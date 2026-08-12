@@ -346,6 +346,22 @@ function Test-OllamaReady {
     }
 }
 
+function Assert-IrisOllamaLoopbackOnly {
+    try {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 11434 -ErrorAction Stop)
+    } catch {
+        throw "Iris reached Ollama but could not verify that it is loopback-only. Quit Ollama and restart Iris. $($_.Exception.Message)"
+    }
+    if ($listeners.Count -eq 0) {
+        throw "Iris reached Ollama but found no verifiable listener on port 11434. Quit Ollama and restart Iris."
+    }
+    $broadListeners = @($listeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1", "::1", "::ffff:127.0.0.1") })
+    if ($broadListeners.Count -gt 0) {
+        $addresses = ($broadListeners.LocalAddress | Sort-Object -Unique) -join ", "
+        throw "Ollama is listening beyond this computer ($addresses). Quit the existing Ollama service and restart Iris so Iris can launch it on 127.0.0.1:11434. Iris will not use a network-exposed model service."
+    }
+}
+
 function Get-IrisModelId {
     try {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -426,6 +442,7 @@ function Test-OllamaRuntimeCompatible {
 
 function Use-IrisOllamaRuntimeSettings {
     $env:OLLAMA_CONTEXT_LENGTH = [string](Get-IrisNumCtx)
+    $env:OLLAMA_HOST = "127.0.0.1:11434"
 }
 
 function Start-OllamaForIris {
@@ -433,6 +450,7 @@ function Start-OllamaForIris {
     Use-IrisOllamaRuntimeSettings
 
     if (Test-OllamaReady) {
+        Assert-IrisOllamaLoopbackOnly
         if ($script:irisOllamaServerDefaultsInitialized) {
             Write-Host "Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts."
         } elseif ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
@@ -450,6 +468,7 @@ function Start-OllamaForIris {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
         if (Test-OllamaReady) {
+            Assert-IrisOllamaLoopbackOnly
             return
         }
     }

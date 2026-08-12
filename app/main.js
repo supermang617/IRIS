@@ -64,6 +64,7 @@ import {
   formatStagedMemories
 } from "./staging-state.js";
 import {
+  VOICE_SETUP_NEEDED_STATUS,
   classifyAsrError,
   classifyVoiceTranscript,
   createInterruptionPauseCoordinator,
@@ -74,6 +75,7 @@ import {
   interruptionSignalIsCurrent,
   nextVoiceListenMode,
   noSpeechStatusForMode,
+  runtimeWarmHudStatus,
   shouldDisarmWakeFollowupAfterMisses,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
@@ -347,10 +349,13 @@ async function warmVoice() {
     logVoice("kokoro_warm_start");
     await call("warm_kokoro_tts");
     logVoice("kokoro_warm_ready");
+    return true;
   } catch (error) {
     logVoice("kokoro_warm_error", String(error));
-    elements.voiceStatus.textContent =
-      "Voice setup needed: repair or upgrade Iris, and ensure Python 3.13 is installed";
+    if (!panicStopActive) {
+      elements.voiceStatus.textContent = VOICE_SETUP_NEEDED_STATUS;
+    }
+    return false;
   }
 }
 
@@ -359,8 +364,10 @@ async function warmModel() {
     logVoice("ollama_warm_start");
     await call("warm_ollama_model");
     logVoice("ollama_warm_ready");
+    return true;
   } catch (error) {
     logVoice("ollama_warm_error", String(error));
+    return false;
   }
 }
 
@@ -430,7 +437,9 @@ async function exportFeedbackPairs() {
 }
 
 async function warmRuntimeBeforeListening() {
-  elements.hudOutput.textContent = "Iris is starting.";
+  if (!panicStopActive) {
+    elements.hudOutput.textContent = "Iris is starting.";
+  }
   let runtimeReady = false;
   try {
     const runtime = await call("prepare_local_runtime");
@@ -442,19 +451,44 @@ async function warmRuntimeBeforeListening() {
   } catch (error) {
     logVoice("local_runtime_error", String(error));
     const message = String(error || "");
-    elements.hudOutput.textContent = message.includes("ollama pull")
-      ? message
-      : "Local model service is unavailable. Run Iris Setup Wizard or install Ollama for Windows.";
+    if (!panicStopActive) {
+      elements.hudOutput.textContent = message.includes("ollama pull")
+        ? message
+        : "Local model service is unavailable. Run Iris Setup Wizard or install Ollama for Windows.";
+    }
   }
-  if (runtimeReady) {
+  if (runtimeReady && !panicStopActive) {
     elements.hudOutput.textContent = "Iris is warming voice and model.";
   }
-  await Promise.allSettled([warmVoice(), runtimeReady ? warmModel() : Promise.resolve()]);
-  logVoice("runtime_warm_ready");
+  const [voiceWarmResult, modelWarmResult] = await Promise.allSettled([
+    warmVoice(),
+    runtimeReady ? warmModel() : Promise.resolve(false)
+  ]);
+  const voiceWarmReady =
+    voiceWarmResult.status === "fulfilled" && voiceWarmResult.value === true;
+  const modelWarmReady =
+    modelWarmResult.status === "fulfilled" && modelWarmResult.value === true;
+  logVoice(
+    "runtime_warm_complete",
+    `runtime_ready=${runtimeReady}; voice_ready=${voiceWarmReady}; model_ready=${modelWarmReady}`
+  );
   runtimePreparing = false;
   setInputsDisabled(inputBlockingWorkActive());
-  if (runtimeReady) {
-    elements.hudOutput.textContent = "Waiting for input.";
+  if (panicStopActive) {
+    elements.hudOutput.textContent = runtimeWarmHudStatus(
+      runtimeReady,
+      voiceWarmReady,
+      modelWarmReady,
+      true
+    );
+    elements.voiceStatus.textContent = panicStatusText(true);
+  } else if (runtimeReady) {
+    elements.hudOutput.textContent = runtimeWarmHudStatus(
+      runtimeReady,
+      voiceWarmReady,
+      modelWarmReady,
+      false
+    );
     restartListeningIfReady(100);
   }
 }

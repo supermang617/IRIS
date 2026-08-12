@@ -31,6 +31,25 @@ foreach ($source in @($sourceLauncher, $packageScript)) {
 
 foreach ($source in @($sourceLauncher, $packageScript)) {
     foreach ($fragment in @(
+            'function Assert-IrisOllamaLoopbackOnly',
+            'Get-NetTCPConnection -State Listen -LocalPort 11434',
+            '$env:OLLAMA_HOST = "127.0.0.1:11434"',
+            '"::ffff:127.0.0.1"',
+            'Iris will not use a network-exposed model service.',
+            'Assert-IrisOllamaLoopbackOnly'
+        )) {
+        if (-not $source.Contains($fragment)) {
+            throw "Launcher must force and verify the local-only Ollama listener; missing: $fragment"
+        }
+    }
+    if ($source.Contains('Set-IrisOllamaDefault -Name "OLLAMA_HOST"') -or
+        $source.Contains('OLLAMA_HOST" -PersistForCurrentUser')) {
+        throw "Launcher must not persist or honor a network-wide OLLAMA_HOST for Iris-owned launches."
+    }
+}
+
+foreach ($source in @($sourceLauncher, $packageScript)) {
+    foreach ($fragment in @(
             "Iris will not terminate the shared server",
             "Iris will use the shared server without terminating it"
         )) {

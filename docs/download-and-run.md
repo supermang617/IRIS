@@ -15,6 +15,8 @@ source code, not third-party model files or downloaded assets.
 - Microsoft Edge WebView2 Runtime.
 - Ollama running locally on `127.0.0.1:11434` with
   `huihui_ai/gemma-4-abliterated:e2b` available.
+  Iris refuses a network-wide Ollama listener; quit an existing broad listener
+  and let Iris restart Ollama on loopback. Iris does not change firewall rules.
 - Exact Python 3.13 is required for the pinned Hermes Agent and image-provider
   packages included in the Iris release, and for Python-backed Kokoro helper
   use. The portable ZIP includes the pinned package tree plus Kokoro model and

@@ -10,7 +10,11 @@ For v1, the best safe runtime shape is:
 
 - The Iris desktop window opens first, then starts Ollama hidden in the
   background when needed and waits for `127.0.0.1:11434` inside the UI.
-- Ollama runs as the local model service on `127.0.0.1:11434`.
+- Ollama runs as the local model service on `127.0.0.1:11434`. Iris-owned
+  launches force `OLLAMA_HOST=127.0.0.1:11434` for that child process without
+  changing the user's global setting. Iris refuses an already-running Ollama
+  listener bound to a non-loopback address and asks the user to restart it
+  through Iris; Iris never silently edits Windows Firewall rules.
 - Iris runs as the Tauri desktop shell plus Rust command bridge.
 - Safe Hermes remains a restricted Iris-owned sidecar, started by Iris for
   local RAG and staged memory-transfer work.

@@ -50,6 +50,7 @@ SCREENSHOT_MAX_TOTAL_BYTES = 48 * 1024 * 1024
 SCREENSHOT_MAX_SINGLE_BYTES = 8 * 1024 * 1024
 SCREENSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
 SCREENSHOT_MAX_DIMENSION = 16_384
+SCREENSHOT_MAX_PIXELS = 16 * 1024 * 1024
 COMMAND_STDOUT_MAX_BYTES = 256 * 1024
 COMMAND_STDERR_MAX_BYTES = 64 * 1024
 COMMAND_ARTIFACT_MAX_COUNT = 24
@@ -886,6 +887,11 @@ def _validate_screenshot_artifact(path: Path) -> None:
                     raise ValueError("invalid PNG width")
                 if not (0 < height <= SCREENSHOT_MAX_DIMENSION):
                     raise ValueError("invalid PNG height")
+                if width > SCREENSHOT_MAX_PIXELS // height:
+                    raise ValueError(
+                        f"PNG dimensions {width}x{height} exceed the bounded "
+                        f"{SCREENSHOT_MAX_PIXELS}-pixel limit"
+                    )
                 saw_header = True
             elif chunk_type == b"IDAT":
                 saw_image_data = True

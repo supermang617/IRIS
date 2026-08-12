@@ -1,3 +1,10 @@
+export const VOICE_SETUP_NEEDED_STATUS =
+  "Voice setup needed: repair or upgrade Iris, and ensure Python 3.13 is installed";
+export const MODEL_WARMUP_FAILED_STATUS =
+  "Local model warm-up failed. Restart Ollama or run Iris Setup Wizard.";
+export const MODEL_AND_VOICE_WARMUP_FAILED_STATUS =
+  "Local model and voice warm-up failed. Run Iris Setup Wizard before continuing.";
+
 export function classifyVoiceTranscript(transcript, state) {
   const normalized = normalizeTranscript(transcript);
   if (!normalized) {
@@ -94,6 +101,27 @@ export function classifyAsrError(error) {
     return { severity: "nonfatal", event: "native_asr_no_input", status: "No speech transcript captured." };
   }
   return { severity: "error", event: "native_asr_error", status: message || "Native ASR failed." };
+}
+
+export function runtimeWarmHudStatus(
+  runtimeReady,
+  voiceWarmReady,
+  modelWarmReady = true,
+  panicStopped = false
+) {
+  if (panicStopped) {
+    return "Iris is paused.";
+  }
+  if (!runtimeReady) {
+    return null;
+  }
+  if (!modelWarmReady && !voiceWarmReady) {
+    return MODEL_AND_VOICE_WARMUP_FAILED_STATUS;
+  }
+  if (!modelWarmReady) {
+    return MODEL_WARMUP_FAILED_STATUS;
+  }
+  return voiceWarmReady ? "Waiting for input." : VOICE_SETUP_NEEDED_STATUS;
 }
 
 export function wakeRestartDelayMs(mode, transcript, action, consecutiveMisses = 0) {

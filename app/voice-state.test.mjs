@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  MODEL_AND_VOICE_WARMUP_FAILED_STATUS,
+  MODEL_WARMUP_FAILED_STATUS,
+  VOICE_SETUP_NEEDED_STATUS,
   classifyAsrError,
   classifyVoiceTranscript,
   createInterruptionPauseCoordinator,
@@ -11,6 +14,7 @@ import {
   interruptionSignalIsCurrent,
   nextVoiceListenMode,
   noSpeechStatusForMode,
+  runtimeWarmHudStatus,
   shouldDisarmWakeFollowupAfterMisses,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
@@ -18,6 +22,15 @@ import {
   voiceTranscriptStateForMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
+
+test("runtime warm status preserves actionable voice setup failures", () => {
+  assert.equal(runtimeWarmHudStatus(true, true, true), "Waiting for input.");
+  assert.equal(runtimeWarmHudStatus(true, false, true), VOICE_SETUP_NEEDED_STATUS);
+  assert.equal(runtimeWarmHudStatus(true, true, false), MODEL_WARMUP_FAILED_STATUS);
+  assert.equal(runtimeWarmHudStatus(true, false, false), MODEL_AND_VOICE_WARMUP_FAILED_STATUS);
+  assert.equal(runtimeWarmHudStatus(true, true, true, true), "Iris is paused.");
+  assert.equal(runtimeWarmHudStatus(false, false, false), null);
+});
 
 test("push-to-talk submits the full transcript", () => {
   assert.deepEqual(

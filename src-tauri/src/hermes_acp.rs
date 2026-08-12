@@ -189,6 +189,7 @@ struct HermesAcpBridge {
     pending: SharedPendingRequests,
     pending_approval: SharedPendingApproval,
     event_sink: SharedAcpEventSink,
+    initialized: std::sync::atomic::AtomicBool,
     next_request_id: AtomicU64,
     session: Arc<Mutex<Option<AcpSession>>>,
     browser_command_output_dir: PathBuf,
@@ -338,18 +339,22 @@ pub fn runtime_status(resource_root: &Path, state_root: &Path) -> HermesAcpRunti
         .join(".iris-runtime/browser/node_modules/agent-browser/bin/agent-browser-win32-x64.exe");
     let browser_tools_enabled =
         browser_exe.is_file() && browser_executable(resource_root).is_some();
-    let running = ACP_BRIDGE
+    let bridge = ACP_BRIDGE
         .get()
         .and_then(|state| state.lock().ok())
-        .and_then(|guard| guard.as_ref().cloned())
-        .is_some_and(|bridge| bridge.is_running());
+        .and_then(|guard| guard.as_ref().cloned());
+    let running = bridge.as_ref().is_some_and(|bridge| bridge.is_running());
+    let initialized = running
+        && bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.is_initialized());
     HermesAcpRuntimeStatus {
         installed: python.is_some()
             && paths.site_packages.is_dir()
             && paths.launcher.is_file()
             && browser_tools_enabled,
         running,
-        initialized: running,
+        initialized,
         version: HERMES_AGENT_VERSION,
         wheel_sha256: HERMES_WHEEL_SHA256,
         launcher_path: paths.launcher.to_string_lossy().to_string(),
@@ -412,18 +417,37 @@ fn select_browser_executable(
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
-pub fn submit_task(
+#[cfg(test)]
+fn submit_task(
     resource_root: &Path,
     state_root: &Path,
     workspace_path: &str,
     model: &str,
     text: &str,
 ) -> Result<HermesAcpTaskResult, String> {
+    submit_task_with_start_guard(
+        resource_root,
+        state_root,
+        workspace_path,
+        model,
+        text,
+        || Ok(()),
+    )
+}
+
+pub fn submit_task_with_start_guard(
+    resource_root: &Path,
+    state_root: &Path,
+    workspace_path: &str,
+    model: &str,
+    text: &str,
+    validate_before_bridge: impl Fn() -> Result<(), String>,
+) -> Result<HermesAcpTaskResult, String> {
     let clean = text.trim();
     if clean.is_empty() {
         return Err("Agentic Hermes task cannot be empty".to_string());
     }
-    let bridge = ensure_bridge(resource_root, state_root, model)?;
+    let bridge = ensure_bridge_guarded(resource_root, state_root, model, validate_before_bridge)?;
     let session_id = bridge.ensure_session(workspace_path)?;
     let event_sink = Arc::new(Mutex::new(BoundedAcpEvents::with_action_audit(
         state_root,
@@ -693,21 +717,100 @@ pub fn respond_to_approval(request_id: &str, approved: bool) -> Result<(), Strin
     )
 }
 
-fn ensure_bridge(
+fn ensure_bridge_guarded(
     resource_root: &Path,
     state_root: &Path,
     model: &str,
+    validate_before_bridge: impl Fn() -> Result<(), String>,
 ) -> Result<Arc<HermesAcpBridge>, String> {
     let state = ACP_BRIDGE.get_or_init(|| Mutex::new(None));
-    let mut guard = state
-        .lock()
-        .map_err(|_| "Hermes ACP bridge state is unavailable".to_string())?;
-    if let Some(bridge) = guard.as_ref().filter(|bridge| bridge.is_running()) {
-        return Ok(bridge.clone());
+    let stale_bridge = {
+        let mut guard = state
+            .lock()
+            .map_err(|_| "Hermes ACP bridge state is unavailable".to_string())?;
+        validate_before_bridge()?;
+        if let Some(bridge) = guard.as_ref().filter(|bridge| bridge.is_running()) {
+            return bridge
+                .is_initialized()
+                .then(|| bridge.clone())
+                .ok_or_else(|| {
+                    "Hermes ACP is still initializing; retry after startup completes".to_string()
+                });
+        }
+        guard.take()
+    };
+    if let Some(stale_bridge) = stale_bridge {
+        stale_bridge.terminate();
     }
+
     let bridge = Arc::new(HermesAcpBridge::start(resource_root, state_root, model)?);
-    bridge.initialize()?;
-    *guard = Some(bridge.clone());
+    let replaced_bridge = {
+        let mut guard = match state.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                bridge.terminate();
+                return Err("Hermes ACP bridge state is unavailable".to_string());
+            }
+        };
+        if let Err(error) = validate_before_bridge() {
+            drop(guard);
+            bridge.terminate();
+            return Err(error);
+        }
+        if let Some(existing) = guard.as_ref().filter(|existing| existing.is_running()) {
+            let result = existing
+                .is_initialized()
+                .then(|| existing.clone())
+                .ok_or_else(|| {
+                    "Hermes ACP is still initializing; retry after startup completes".to_string()
+                });
+            drop(guard);
+            bridge.terminate();
+            return result;
+        }
+        guard.replace(bridge.clone())
+    };
+    if let Some(replaced_bridge) = replaced_bridge {
+        replaced_bridge.terminate();
+    }
+
+    let initialize_result = bridge.initialize();
+    let mut guard = match state.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            bridge.terminate();
+            return Err("Hermes ACP bridge state is unavailable".to_string());
+        }
+    };
+    let still_registered = guard
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, &bridge));
+    if let Err(error) = initialize_result {
+        if still_registered {
+            guard.take();
+        }
+        drop(guard);
+        bridge.terminate();
+        return Err(error);
+    }
+    if !still_registered {
+        drop(guard);
+        bridge.terminate();
+        return Err("Hermes ACP startup was cancelled by Panic Stop".to_string());
+    }
+    if let Err(error) = validate_before_bridge() {
+        guard.take();
+        drop(guard);
+        bridge.terminate();
+        return Err(error);
+    }
+    if !bridge.is_running() {
+        guard.take();
+        drop(guard);
+        bridge.terminate();
+        return Err("Hermes ACP exited during initialization".to_string());
+    }
+    bridge.initialized.store(true, Ordering::Release);
     Ok(bridge)
 }
 
@@ -800,6 +903,7 @@ impl HermesAcpBridge {
             pending,
             pending_approval,
             event_sink,
+            initialized: std::sync::atomic::AtomicBool::new(false),
             next_request_id: AtomicU64::new(1),
             session,
             browser_command_output_dir: paths.browser_command_output,
@@ -905,6 +1009,10 @@ impl HermesAcpBridge {
             .lock()
             .ok()
             .is_some_and(|mut child| matches!(child.try_wait(), Ok(None)))
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::Acquire)
     }
 
     fn terminate(&self) {
@@ -1971,6 +2079,21 @@ mod tests {
             ),
             Some(current_exe),
         );
+    }
+
+    #[test]
+    fn guarded_submit_rejects_before_starting_or_reusing_acp() {
+        let error = submit_task_with_start_guard(
+            Path::new("C:/definitely-missing-iris-resource-root"),
+            Path::new("C:/definitely-missing-iris-state-root"),
+            "C:/IrisTest",
+            "test-model",
+            "queued task",
+            || Err("Panic Stop is active; Agentic work is cancelled".to_string()),
+        )
+        .expect_err("guard must reject before ACP startup");
+
+        assert!(error.contains("Panic Stop"));
     }
 
     struct BridgeCleanup;

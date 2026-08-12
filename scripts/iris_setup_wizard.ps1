@@ -268,6 +268,7 @@ function Invoke-Repair {
             if (-not (Test-CommandAvailable -Name "ollama")) {
                 throw "ollama is not available on PATH."
             }
+            $env:OLLAMA_HOST = "127.0.0.1:11434"
             Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
             Start-Sleep -Seconds 3
         }

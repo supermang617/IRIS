@@ -979,11 +979,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if preflight_script.contains("& ollama list") {
         return Err("preflight script must not call `ollama list` without a timeout".to_string());
     }
-    if !setup_script
-        .contains("Open Iris after installation; the launcher self-check will verify the configured local model")
+    if !setup_script.contains(
+        "Open Iris after installation; the launcher self-check will verify the configured local model",
+    ) || !setup_script.contains("$env:OLLAMA_HOST = \"127.0.0.1:11434\"")
     {
         return Err(
-            "setup wizard must use beginner-safe noninteractive model-check wording".to_string(),
+            "setup wizard must use beginner-safe model wording and a loopback-only Ollama launch"
+                .to_string(),
         );
     }
     if !windows_installer.contains("iris-windows.zip")
@@ -1011,6 +1013,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if !runtime_orchestration
         .contains("The Iris desktop window opens first, then starts Ollama hidden")
         || !runtime_orchestration.contains("Ollama runs as the local model service")
+        || !runtime_orchestration.contains("Iris refuses an already-running Ollama")
+        || !runtime_orchestration.contains("never silently edits Windows Firewall rules")
         || !runtime_orchestration.contains("Safe Hermes remains a restricted Iris-owned sidecar")
         || !runtime_orchestration.contains("pinned Hermes Agent 0.18.0")
         || !runtime_orchestration
@@ -1063,9 +1067,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     ] {
         for required in [
             "function Start-OllamaForIris",
+            "function Assert-IrisOllamaLoopbackOnly",
             "function Test-OllamaRuntimeCompatible",
             "{ \"library\" }",
             "$env:OLLAMA_CONTEXT_LENGTH",
+            "$env:OLLAMA_HOST = \"127.0.0.1:11434\"",
+            "Get-NetTCPConnection -State Listen -LocalPort 11434",
+            "Iris will not use a network-exposed model service.",
             "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/tags\"",
             "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/ps\"",
             "Start-Process -FilePath \"ollama\" -ArgumentList \"serve\" -WindowStyle Hidden",

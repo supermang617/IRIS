@@ -134,6 +134,7 @@ const OLLAMA_SERVER_DEFAULTS: [(&str, &str); 4] = [
     ("OLLAMA_NUM_PARALLEL", "1"),
     ("OLLAMA_MAX_LOADED_MODELS", "1"),
 ];
+const OLLAMA_LOOPBACK_HOST: &str = "127.0.0.1:11434";
 const OLLAMA_PERSISTED_DEFAULT_COUNT: usize = 2;
 type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
 type IrisAppHandle = tauri::AppHandle<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
@@ -1240,6 +1241,27 @@ fn hermes_respond_agentic_approval(request_id: String, approved: bool) -> Result
     hermes_acp::respond_to_approval(request_id.trim(), approved)
 }
 
+fn require_active_agentic_session(
+    policy: hermes_policy::HermesPolicySnapshot,
+    expected_session_id: Option<&str>,
+) -> Result<hermes_policy::AgenticSession, String> {
+    if policy.panic_stop_active {
+        return Err("Panic Stop is active; Agentic work is cancelled".to_string());
+    }
+    if policy.mode != hermes_policy::HermesMode::Agentic {
+        return Err("Hermes is not in Agentic mode".to_string());
+    }
+    let session = policy
+        .agentic_session
+        .ok_or_else(|| "Agentic Hermes session is unavailable".to_string())?;
+    if expected_session_id.is_some_and(|expected| expected != session.session_id) {
+        return Err(
+            "Agentic Hermes session ended or changed while waiting for local inference".to_string(),
+        );
+    }
+    Ok(session)
+}
+
 #[tauri::command]
 async fn hermes_submit_agentic_task(
     text: String,
@@ -1249,23 +1271,26 @@ async fn hermes_submit_agentic_task(
         let _task_guard = task_lock
             .lock()
             .map_err(|_| "Hermes task state is unavailable".to_string())?;
-        let policy = hermes_policy::snapshot(timestamp_ms()?)?;
-        if policy.mode != hermes_policy::HermesMode::Agentic {
-            return Err("Hermes is not in Agentic mode".to_string());
-        }
-        let session = policy
-            .agentic_session
-            .ok_or_else(|| "Agentic Hermes session is unavailable".to_string())?;
+        let session =
+            require_active_agentic_session(hermes_policy::snapshot(timestamp_ms()?)?, None)?;
         let resources = resource_root()?;
         let state = state_root_for(&resources)?;
         let manifest = iris_config::load_manifest_from_workspace(&resources)?;
         let _inference_permit = iris_ollama::acquire_inference_permit()?;
-        let result = hermes_acp::submit_task(
+        let expected_session_id = session.session_id.clone();
+        let result = hermes_acp::submit_task_with_start_guard(
             &resources,
             &state,
             &session.workspace_path,
             &manifest.model_policy.model_id,
             &text,
+            || {
+                require_active_agentic_session(
+                    hermes_policy::snapshot(timestamp_ms()?)?,
+                    Some(&expected_session_id),
+                )?;
+                Ok(())
+            },
         )?;
         hermes_policy::record_agentic_activity(timestamp_ms()?)?;
         observe_dynamic_context_nonfatal(&text, timestamp_ms_u64().unwrap_or(0));
@@ -1808,13 +1833,18 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
     let started = Instant::now();
     let root = resource_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&root)?;
-    if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
-        return Ok(LocalRuntimePreparation {
-            ready: true,
-            started_ollama: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            message: "Local model service is ready.".to_string(),
-        });
+    if ollama_loopback_ready() {
+        require_loopback_only_ollama_listener()?;
+        let model_ready = configured_ollama_model_ready(&manifest);
+        require_loopback_only_ollama_listener()?;
+        if model_ready {
+            return Ok(LocalRuntimePreparation {
+                ready: true,
+                started_ollama: false,
+                elapsed_ms: started.elapsed().as_millis(),
+                message: "Local model service is ready.".to_string(),
+            });
+        }
     }
     let models_root =
         find_ollama_models_root(&manifest.model_policy.model_id).ok_or_else(|| {
@@ -1824,6 +1854,7 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             )
         })?;
     if ollama_loopback_ready() {
+        require_loopback_only_ollama_listener()?;
         return Err(format!(
             "Ollama is already running on 127.0.0.1:11434, but Iris could not use {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` and restart Ollama, then try again.",
             manifest.model_policy.model_id, manifest.model_policy.model_id
@@ -1842,6 +1873,7 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             manifest.model_policy.num_ctx_ceiling.to_string(),
         );
     apply_ollama_server_defaults(&mut command);
+    command.env("OLLAMA_HOST", OLLAMA_LOOPBACK_HOST);
     command.env("OLLAMA_MODELS", models_root);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -1851,13 +1883,18 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
 
     for _ in 0..40 {
         thread::sleep(std::time::Duration::from_millis(250));
-        if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
-            return Ok(LocalRuntimePreparation {
-                ready: true,
-                started_ollama: true,
-                elapsed_ms: started.elapsed().as_millis(),
-                message: "Local model service started.".to_string(),
-            });
+        if ollama_loopback_ready() {
+            require_loopback_only_ollama_listener()?;
+            let model_ready = configured_ollama_model_ready(&manifest);
+            require_loopback_only_ollama_listener()?;
+            if model_ready {
+                return Ok(LocalRuntimePreparation {
+                    ready: true,
+                    started_ollama: true,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    message: "Local model service started.".to_string(),
+                });
+            }
         }
     }
     Err("Ollama did not become ready within 10 seconds".to_string())
@@ -1889,6 +1926,72 @@ fn apply_ollama_server_defaults(command: &mut Command) {
     for (name, default_value) in OLLAMA_SERVER_DEFAULTS {
         command.env(name, ollama_server_setting(name, default_value));
     }
+}
+
+#[cfg(windows)]
+fn require_loopback_only_ollama_listener() -> Result<(), String> {
+    let output = Command::new("netstat.exe")
+        .args(["-ano", "-n", "-p", "tcp"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to inspect the Ollama listener: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to inspect the Ollama listener: netstat exited with {}",
+            output.status
+        ));
+    }
+    let output = String::from_utf8_lossy(&output.stdout);
+    match ollama_listener_is_loopback_only(&output) {
+        Some(true) => Ok(()),
+        Some(false) => Err(
+            "Ollama is listening beyond this computer. Quit the existing Ollama service and restart Iris so Iris can launch it on 127.0.0.1:11434. Iris will not use a network-exposed model service."
+                .to_string(),
+        ),
+        None => Err(
+            "Iris reached Ollama on 127.0.0.1:11434 but could not verify its listener boundary. Quit Ollama and restart Iris."
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn require_loopback_only_ollama_listener() -> Result<(), String> {
+    Ok(())
+}
+
+fn ollama_listener_is_loopback_only(netstat_output: &str) -> Option<bool> {
+    let mut found = false;
+    let mut loopback_only = true;
+    for fields in netstat_output
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .filter(|fields| fields.len() >= 3 && fields[0].eq_ignore_ascii_case("TCP"))
+    {
+        let Some(local_host) = endpoint_host_for_port(fields[1], 11_434) else {
+            continue;
+        };
+        let remote_is_listener = endpoint_host_for_port(fields[2], 0).is_some();
+        if !remote_is_listener {
+            continue;
+        }
+        found = true;
+        loopback_only &= matches!(
+            local_host.to_ascii_lowercase().as_str(),
+            "127.0.0.1" | "::1" | "::ffff:127.0.0.1"
+        );
+    }
+    found.then_some(loopback_only)
+}
+
+fn endpoint_host_for_port(endpoint: &str, expected_port: u16) -> Option<&str> {
+    let (host, port) = if let Some(rest) = endpoint.strip_prefix('[') {
+        let (host, port) = rest.rsplit_once("]:")?;
+        (host, port)
+    } else {
+        endpoint.rsplit_once(':')?
+    };
+    (port.parse::<u16>().ok()? == expected_port).then_some(host)
 }
 
 #[cfg(windows)]
@@ -3631,19 +3734,27 @@ fn enqueue_hermes_broker_connection(
         Ok(()) => Ok(()),
         Err(mpsc::TrySendError::Full(mut stream)) => {
             let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-            let body = "{\"ok\":false,\"error\":\"Iris memory broker is busy\"}";
-            let response = format!(
-                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .map_err(|error| format!("failed to reject busy broker connection: {error}"))
+            write_busy_hermes_broker_response(&mut stream);
+            Ok(())
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
             Err("Hermes memory broker worker queue is unavailable".to_string())
         }
+    }
+}
+
+fn write_busy_hermes_broker_response(writer: &mut impl Write) {
+    let body = "{\"ok\":false,\"error\":\"Iris memory broker is busy\"}";
+    let response = format!(
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    if let Err(error) = writer.write_all(response.as_bytes()) {
+        // A saturated client may disconnect before it can receive the 503.
+        // That is a per-connection failure and must not terminate the broker's
+        // long-lived accept loop.
+        eprintln!("failed to notify busy Hermes broker client: {error}");
     }
 }
 
@@ -7977,6 +8088,70 @@ mod tests {
     }
 
     #[test]
+    fn busy_broker_response_write_failure_is_connection_local() {
+        struct DisconnectedWriter;
+
+        impl Write for DisconnectedWriter {
+            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "test client disconnected",
+                ))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        write_busy_hermes_broker_response(&mut DisconnectedWriter);
+    }
+
+    #[test]
+    fn agentic_session_guard_rejects_panic_stop_and_session_replacement() {
+        let session = hermes_policy::AgenticSession {
+            session_id: "session-1".to_string(),
+            workspace_path: r"C:\IrisTest".to_string(),
+            created_ms: 1,
+            last_activity_ms: 1,
+            expires_at_ms: 2,
+            inactivity_timeout_ms: 1,
+            workspace_boundary: "advisory_unrestricted_powershell".to_string(),
+        };
+        let active = hermes_policy::HermesPolicySnapshot {
+            mode: hermes_policy::HermesMode::Agentic,
+            startup_default: hermes_policy::HermesMode::Safe,
+            panic_stop_active: false,
+            agentic_runtime_available: true,
+            agentic_session: Some(session.clone()),
+        };
+
+        assert_eq!(
+            require_active_agentic_session(active.clone(), Some("session-1"))
+                .expect("same active session"),
+            session
+        );
+
+        let mut stopped = active.clone();
+        stopped.mode = hermes_policy::HermesMode::Off;
+        stopped.panic_stop_active = true;
+        stopped.agentic_session = None;
+        assert!(
+            require_active_agentic_session(stopped, Some("session-1"))
+                .expect_err("Panic Stop must reject queued Agentic work")
+                .contains("Panic Stop")
+        );
+
+        let mut replaced = active;
+        replaced.agentic_session.as_mut().unwrap().session_id = "session-2".to_string();
+        assert!(
+            require_active_agentic_session(replaced, Some("session-1"))
+                .expect_err("replacement session must reject queued Agentic work")
+                .contains("ended or changed")
+        );
+    }
+
+    #[test]
     fn hermes_sidecar_reader_is_line_bounded_and_rejects_truncation() {
         let valid = start_hermes_sidecar_stdout_reader(std::io::Cursor::new(b"{\"ok\":true}\n"));
         assert_eq!(
@@ -9047,7 +9222,37 @@ mod tests {
             "q8_0"
         );
         assert_eq!(select_ollama_server_setting(None, "1"), "1");
+        assert_eq!(OLLAMA_LOOPBACK_HOST, "127.0.0.1:11434");
         assert_eq!(OLLAMA_PERSISTED_DEFAULT_COUNT, 2);
+    }
+
+    #[test]
+    fn ollama_listener_scope_accepts_only_loopback_bindings() {
+        let loopback = concat!(
+            "  TCP    127.0.0.1:11434      0.0.0.0:0       LISTENING       100\n",
+            "  TCP    [::1]:11434          [::]:0          LISTENING       100\n",
+            "  TCP    127.0.0.1:11434      127.0.0.1:55000 ESTABLISHED     100\n",
+        );
+        assert_eq!(ollama_listener_is_loopback_only(loopback), Some(true));
+
+        for broad in [
+            "TCP 0.0.0.0:11434 0.0.0.0:0 LISTENING 200",
+            "TCP [::]:11434 [::]:0 LISTENING 200",
+        ] {
+            assert_eq!(
+                ollama_listener_is_loopback_only(broad),
+                Some(false),
+                "broad listener was accepted: {broad}"
+            );
+        }
+        assert_eq!(
+            ollama_listener_is_loopback_only("TCP 127.0.0.1:11434 127.0.0.1:55000 ESTABLISHED 100"),
+            None
+        );
+        assert_eq!(
+            ollama_listener_is_loopback_only("TCP 0.0.0.0:9999 0.0.0.0:0 LISTENING 200"),
+            None
+        );
     }
 
     fn observe_level(

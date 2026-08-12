@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -644,6 +645,30 @@ class IrisBrowserToolTests(unittest.TestCase):
             with patch.object(iris_browser_tools, "SCREENSHOT_MAX_SINGLE_BYTES", 4):
                 with self.assertRaisesRegex(RuntimeError, "bounded"):
                     iris_browser_tools._validate_screenshot_artifact(path)
+            self.assertFalse(path.exists())
+
+    def test_highly_compressible_screenshot_pixel_bomb_is_rejected_from_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "browser-pixel-bomb.png"
+            png = bytearray(
+                base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+                    "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                )
+            )
+            dimension = iris_browser_tools.SCREENSHOT_MAX_DIMENSION
+            png[16:20] = dimension.to_bytes(4, "big")
+            png[20:24] = dimension.to_bytes(4, "big")
+            png[29:33] = (zlib.crc32(png[12:29]) & 0xFFFFFFFF).to_bytes(4, "big")
+            path.write_bytes(png)
+
+            self.assertLess(
+                path.stat().st_size,
+                iris_browser_tools.SCREENSHOT_MAX_SINGLE_BYTES,
+            )
+            with self.assertRaisesRegex(RuntimeError, "pixel limit"):
+                iris_browser_tools._validate_screenshot_artifact(path)
+
             self.assertFalse(path.exists())
 
     def test_missing_empty_and_invalid_screenshots_are_rejected(self):
