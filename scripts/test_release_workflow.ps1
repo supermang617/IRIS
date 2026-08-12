@@ -70,6 +70,7 @@ $allWorkflowPaths = @(
 )
 $templatePath = Join-Path $repoRoot ".github\release-notes-template.md"
 $verifierPath = Join-Path $repoRoot "scripts\test_github_versioned_release.ps1"
+$historicalVerifierPath = Join-Path $repoRoot "scripts\test_github_v1_release.ps1"
 $publisherPath = Join-Path $repoRoot "scripts\publish_github_versioned_release.ps1"
 $tagProtectionPath = Join-Path $repoRoot "scripts\test_github_semantic_tag_protection.ps1"
 $versionScriptPath = Join-Path $repoRoot "scripts\test_release_version.ps1"
@@ -84,6 +85,7 @@ foreach ($path in @(
         $ciWorkflowPath,
         $templatePath,
         $verifierPath,
+        $historicalVerifierPath,
         $publisherPath,
         $tagProtectionPath,
         $versionScriptPath,
@@ -102,6 +104,7 @@ $workflow = Get-Content -LiteralPath $releaseWorkflowPath -Raw
 $ci = Get-Content -LiteralPath $ciWorkflowPath -Raw
 $template = Get-Content -LiteralPath $templatePath -Raw
 $verifier = Get-Content -LiteralPath $verifierPath -Raw
+$historicalVerifier = Get-Content -LiteralPath $historicalVerifierPath -Raw
 $publisher = Get-Content -LiteralPath $publisherPath -Raw
 $privacy = Get-Content -LiteralPath $privacyPath -Raw
 $githubSettings = Get-Content -LiteralPath $githubSettingsPath -Raw
@@ -109,6 +112,28 @@ $wingetRelease = Get-Content -LiteralPath $wingetReleasePath -Raw
 $allWorkflows = ($allWorkflowPaths | ForEach-Object {
         Get-Content -LiteralPath $_ -Raw
     }) -join "`n"
+
+foreach ($fragment in @(
+        'refs/tags/$Tag',
+        'refs/tags/${Tag}^{}',
+        '$remoteTagCommit',
+        '$remoteTagObject',
+        'Remote $Tag commit mismatch',
+        '$ExpectedCommit'
+    )) {
+    if (-not $historicalVerifier.Contains($fragment)) {
+        throw "Historical v1 release verifier is missing immutable-tag behavior: $fragment"
+    }
+}
+foreach ($obsoleteFragment in @(
+        'refs/heads/main',
+        'Remote main',
+        'must point to the same commit'
+    )) {
+    if ($historicalVerifier.Contains($obsoleteFragment)) {
+        throw "Historical v1 release verification must not depend on the moving main branch: $obsoleteFragment"
+    }
+}
 
 foreach ($entry in @(
         [pscustomobject]@{ Name = "release workflow"; Text = $workflow },
