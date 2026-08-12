@@ -24,6 +24,7 @@ This repository is a Windows-only v1 local-first release.
   semantic or psychological classifier. It adapts presentation, not identity,
   intent, factual content, permissions, or safety decisions.
 - Document-image/OCR probing is handled by local Tesseract OCR when installed. OCR text is confidence-filtered and treated as untrusted evidence; the configured Ollama model is not relied on for document OCR.
+- Image probes accept PNG, JPEG, and static WebP files. Animated WebP is rejected explicitly; export a still frame as PNG, JPEG, or static WebP.
 - Native Whisper ASR and Kokoro TTS are present.
 - Local memory exists, but active-memory promotion is intentionally bounded.
 - Safe Hermes is enabled by default for restricted local reasoning, RAG, staged memory proposals, and explicit web research. It is not an acting plugin system.

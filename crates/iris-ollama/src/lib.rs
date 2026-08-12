@@ -1229,14 +1229,171 @@ fn prompt_requests_visible_text(prompt: &str) -> bool {
         .collect::<Vec<_>>();
     let contains_phrase =
         |phrase: &[&str]| words.windows(phrase.len()).any(|window| window == phrase);
+    let readable_text_subject = |word: &str| {
+        matches!(
+            word,
+            "sign"
+                | "label"
+                | "caption"
+                | "heading"
+                | "text"
+                | "word"
+                | "words"
+                | "letter"
+                | "letters"
+                | "number"
+                | "numbers"
+                | "button"
+                | "screen"
+                | "poster"
+                | "banner"
+                | "placard"
+        )
+    };
+    let has_readable_text_subject = words.iter().any(|word| readable_text_subject(word));
+    let leading_word_index = usize::from(words.first() == Some(&"please"));
+    let leading_word = words.get(leading_word_index).copied();
+    let short_deictic_read = leading_word == Some("read")
+        && words
+            .get(leading_word_index + 1)
+            .is_some_and(|word| matches!(*word, "this" | "it"))
+        && words.len() <= leading_word_index + 2;
+    let starts_direct_reading = matches!(leading_word, Some("transcribe" | "ocr"))
+        || (leading_word == Some("read") && (has_readable_text_subject || short_deictic_read));
+    let write_down_text_request = leading_word == Some("write")
+        && words.get(leading_word_index + 1) == Some(&"down")
+        && has_readable_text_subject;
+    let suppressed_phrases: &[&[&str]] = &[
+        &["ignore", "visible", "text"],
+        &["ignore", "the", "visible", "text"],
+        &["ignore", "any", "text"],
+        &["ignore", "the", "text"],
+        &["do", "not", "read"],
+        &["don", "t", "read"],
+        &["dont", "read"],
+        &["do", "not", "transcribe"],
+        &["do", "not", "use", "ocr"],
+        &["without", "reading"],
+        &["without", "using", "ocr"],
+    ];
+    let leading_suppression = matches!(leading_word, Some("ignore" | "skip" | "disregard"))
+        && (has_readable_text_subject
+            || words
+                .iter()
+                .any(|word| matches!(*word, "read" | "say" | "says" | "transcribe" | "ocr")));
+    if leading_suppression
+        || suppressed_phrases
+            .iter()
+            .any(|phrase| contains_phrase(phrase))
+    {
+        return false;
+    }
+
+    let first_readable_text_subject = words.iter().position(|word| readable_text_subject(word));
+    let first_text_property = words.iter().position(|word| {
+        matches!(
+            *word,
+            "color"
+                | "colour"
+                | "font"
+                | "typeface"
+                | "size"
+                | "style"
+                | "placement"
+                | "position"
+                | "location"
+                | "alignment"
+                | "aligned"
+                | "centered"
+                | "centred"
+                | "orientation"
+                | "opacity"
+        )
+    });
+    let has_text_content_marker = write_down_text_request
+        || words.iter().any(|word| {
+            matches!(
+                *word,
+                "read"
+                    | "reads"
+                    | "transcribe"
+                    | "ocr"
+                    | "say"
+                    | "says"
+                    | "written"
+                    | "printed"
+                    | "visible"
+                    | "shown"
+            )
+        });
+    let property_precedes_text_subject = first_text_property
+        .zip(first_readable_text_subject)
+        .is_some_and(|(property, subject)| property < subject);
+    let asks_text_property = has_readable_text_subject
+        && first_text_property.is_some()
+        && (!has_text_content_marker || property_precedes_text_subject);
+    if asks_text_property {
+        return false;
+    }
+
+    let creative_request = matches!(
+        leading_word,
+        Some("generate" | "create" | "draft" | "compose" | "suggest" | "invent")
+    ) || (leading_word == Some("write") && !write_down_text_request)
+        || contains_phrase(&["quote", "a", "caption"])
+        || contains_phrase(&["quote", "an", "caption"]);
+    if creative_request {
+        return false;
+    }
+
+    let has_figurative_subject = words.iter().any(|word| {
+        matches!(
+            *word,
+            "emotion"
+                | "emotions"
+                | "emotional"
+                | "emotionally"
+                | "mood"
+                | "feeling"
+                | "feelings"
+                | "symbolism"
+                | "symbolic"
+                | "symbolically"
+                | "theme"
+                | "meaning"
+                | "society"
+                | "metaphor"
+                | "metaphorical"
+                | "figuratively"
+        )
+    });
+    let has_non_ocr_read_context = contains_phrase(&["body", "language"])
+        || contains_phrase(&["read", "the", "room"])
+        || (words
+            .iter()
+            .any(|word| matches!(*word, "chart" | "graph" | "plot" | "diagram"))
+            && words.iter().any(|word| {
+                matches!(
+                    *word,
+                    "analyze"
+                        | "analyse"
+                        | "explain"
+                        | "interpret"
+                        | "compare"
+                        | "summarize"
+                        | "summarise"
+                        | "trend"
+                        | "trends"
+                        | "pattern"
+                        | "patterns"
+                )
+            }));
+    if has_figurative_subject || has_non_ocr_read_context {
+        return false;
+    }
+
     let explicit_phrases = [
-        &["can", "you", "read"][..],
-        &["could", "you", "read"],
-        &["would", "you", "read"],
-        &["will", "you", "read"],
-        &["help", "me", "read"],
-        &["you", "to", "read"],
-        &["can", "you", "transcribe"],
+        &["can", "you", "transcribe"][..],
         &["could", "you", "transcribe"],
         &["please", "transcribe"],
         &["use", "ocr"],
@@ -1286,32 +1443,55 @@ fn prompt_requests_visible_text(prompt: &str) -> bool {
         &["tell", "me", "the", "number"],
         &["tell", "me", "the", "numbers"],
     ];
-    let direct_request = words
-        .first()
-        .is_some_and(|word| matches!(*word, "read" | "transcribe" | "ocr" | "quote"))
-        || words.get(..2).is_some_and(|prefix| {
-            prefix[0] == "please" && matches!(prefix[1], "read" | "transcribe" | "ocr" | "quote")
-        });
-    let readable_text_subject = |word: &str| {
-        matches!(
-            word,
-            "sign"
-                | "label"
-                | "caption"
-                | "heading"
-                | "text"
-                | "word"
-                | "words"
-                | "letter"
-                | "letters"
-                | "number"
-                | "numbers"
-                | "button"
-                | "screen"
-        )
-    };
+    let polite_read_phrases = [
+        &["can", "you", "read"][..],
+        &["could", "you", "read"],
+        &["would", "you", "read"],
+        &["will", "you", "read"],
+        &["help", "me", "read"],
+        &["you", "to", "read"],
+    ];
+    let polite_read_phrase_present = polite_read_phrases
+        .iter()
+        .any(|phrase| contains_phrase(phrase));
+    let polite_deictic_read =
+        words
+            .iter()
+            .position(|word| *word == "read")
+            .is_some_and(|read_index| {
+                words
+                    .get(read_index + 1)
+                    .is_some_and(|word| matches!(*word, "this" | "it"))
+                    && words[read_index + 2..]
+                        .iter()
+                        .all(|word| matches!(*word, "for" | "me" | "please"))
+            });
+    let polite_read_request =
+        polite_read_phrase_present && (has_readable_text_subject || polite_deictic_read);
+    let quote_request = leading_word == Some("quote")
+        && has_readable_text_subject
+        && !words
+            .get(leading_word_index + 1)
+            .is_some_and(|word| matches!(*word, "a" | "an"));
+    let asks_what_is_on_text_surface = words.iter().enumerate().any(|(index, word)| {
+        *word == "what"
+            && words
+                .get(index + 1)
+                .is_some_and(|word| matches!(*word, "s" | "is"))
+            && words.get(index + 2) == Some(&"on")
+            && words[index + 3..].iter().take(4).any(|word| {
+                matches!(
+                    *word,
+                    "sign" | "label" | "caption" | "heading" | "button" | "placard"
+                )
+            })
+    });
 
-    direct_request
+    starts_direct_reading
+        || write_down_text_request
+        || polite_read_request
+        || quote_request
+        || asks_what_is_on_text_surface
         || explicit_phrases
             .iter()
             .any(|phrase| contains_phrase(phrase))
@@ -1323,14 +1503,37 @@ fn prompt_requests_visible_text(prompt: &str) -> bool {
                 && words[index + 2..]
                     .iter()
                     .take(5)
-                    .position(|word| matches!(*word, "say" | "says"))
-                    .is_some_and(|say_offset| {
-                        let subject = &words[index + 2..index + 2 + say_offset];
-                        let following_word = words.get(index + 3 + say_offset);
+                    .position(|word| matches!(*word, "say" | "says" | "read" | "reads"))
+                    .is_some_and(|verb_offset| {
+                        let subject = &words[index + 2..index + 2 + verb_offset];
+                        let following_word = words.get(index + 3 + verb_offset);
+                        let figurative_following_word = following_word.is_some_and(|word| {
+                            matches!(
+                                *word,
+                                "about"
+                                    | "regarding"
+                                    | "like"
+                                    | "as"
+                                    | "emotionally"
+                                    | "symbolically"
+                                    | "figuratively"
+                            )
+                        });
+                        !figurative_following_word
+                            && (subject.iter().any(|word| readable_text_subject(word))
+                                || matches!(subject, ["it"] | ["this"]))
+                    })
+        })
+        || words.windows(2).enumerate().any(|(index, prefix)| {
+            prefix == ["what", "s"]
+                && words[index + 2..]
+                    .iter()
+                    .take(5)
+                    .position(|word| matches!(*word, "say" | "says" | "read" | "reads"))
+                    .is_some_and(|verb_offset| {
+                        let subject = &words[index + 2..index + 2 + verb_offset];
                         subject.iter().any(|word| readable_text_subject(word))
-                            || (matches!(subject, ["it"] | ["this"])
-                                && !following_word
-                                    .is_some_and(|word| matches!(*word, "about" | "regarding")))
+                            || matches!(subject, ["it"] | ["this"])
                     })
         })
         || words.windows(3).enumerate().any(|(index, prefix)| {
@@ -1338,11 +1541,11 @@ fn prompt_requests_visible_text(prompt: &str) -> bool {
                 && words[index + 3..]
                     .iter()
                     .take(7)
-                    .position(|word| *word == "says")
-                    .is_some_and(|say_offset| {
-                        words[index + 3..index + 3 + say_offset]
-                            .iter()
-                            .any(|word| readable_text_subject(word))
+                    .position(|word| matches!(*word, "says" | "reads"))
+                    .is_some_and(|verb_offset| {
+                        let subject = &words[index + 3..index + 3 + verb_offset];
+                        subject.iter().any(|word| readable_text_subject(word))
+                            || matches!(subject, ["it"] | ["this"])
                     })
         })
 }
@@ -1496,7 +1699,16 @@ fn bounded_ocr_image_format_and_dimensions(
     let dimensions = match format {
         image::ImageFormat::Png => png_header_dimensions(image_bytes),
         image::ImageFormat::Jpeg => jpeg_header_dimensions(image_bytes),
-        image::ImageFormat::WebP => webp_header_dimensions(image_bytes),
+        image::ImageFormat::WebP => match webp_header(image_bytes) {
+            Some(WebpHeader::StaticDimensions(dimensions)) => Some(dimensions),
+            Some(WebpHeader::Animated) => {
+                return Err(
+                    "animated WebP images are not supported; use a static PNG, JPEG, or WebP image"
+                        .to_string(),
+                );
+            }
+            None => None,
+        },
         _ => return Err("image is not a supported PNG, JPEG, or WebP file".to_string()),
     }
     .ok_or_else(|| "image has a malformed or truncated dimension header".to_string())?;
@@ -1671,7 +1883,13 @@ fn jpeg_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-fn webp_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebpHeader {
+    StaticDimensions((u32, u32)),
+    Animated,
+}
+
+fn webp_header(image_bytes: &[u8]) -> Option<WebpHeader> {
     if image_bytes.len() < 20 || &image_bytes[..4] != b"RIFF" || &image_bytes[8..12] != b"WEBP" {
         return None;
     }
@@ -1709,10 +1927,10 @@ fn webp_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
                 }
                 let (dimensions, animated) = webp_vp8x_dimensions(payload)?;
                 if animated {
-                    return None;
+                    return Some(WebpHeader::Animated);
                 }
                 if !ocr_dimensions_within_limits(dimensions.0, dimensions.1) {
-                    return Some(dimensions);
+                    return Some(WebpHeader::StaticDimensions(dimensions));
                 }
                 canvas_dimensions = Some(dimensions);
             }
@@ -1726,18 +1944,20 @@ fn webp_header_dimensions(image_bytes: &[u8]) -> Option<(u32, u32)> {
                     webp_vp8_dimensions(payload)?
                 };
                 if !ocr_dimensions_within_limits(dimensions.0, dimensions.1) {
-                    return Some(dimensions);
+                    return Some(WebpHeader::StaticDimensions(dimensions));
                 }
                 bitstream_dimensions = Some(dimensions);
             }
-            b"ANIM" | b"ANMF" => return None,
+            b"ANIM" | b"ANMF" => return Some(WebpHeader::Animated),
             _ => {}
         }
         cursor = padded_end;
     }
     match (canvas_dimensions, bitstream_dimensions) {
-        (None, Some(dimensions)) => Some(dimensions),
-        (Some(canvas), Some(bitstream)) if canvas == bitstream => Some(canvas),
+        (None, Some(dimensions)) => Some(WebpHeader::StaticDimensions(dimensions)),
+        (Some(canvas), Some(bitstream)) if canvas == bitstream => {
+            Some(WebpHeader::StaticDimensions(canvas))
+        }
         _ => None,
     }
 }
@@ -2394,6 +2614,18 @@ mod tests {
             "382030000000d001009d012a0200030001402625a00274ba01f80003b000fef2",
             "eb7ffcd815cd73eff7ffd2e0fd2e0fd2e0ffd290000045584946040000007465",
             "7374"
+        ))
+    }
+
+    fn tiny_animated_webp() -> Vec<u8> {
+        // A valid 2x3, two-frame, lossless WebP generated by Pillow and verified
+        // independently before being embedded as a deterministic fixture.
+        bytes_from_hex(concat!(
+            "524946468400000057454250565038580a00000002000000010000020000414e",
+            "494d06000000000000000000414e4d4628000000000000000000010000020000",
+            "640000025650384c0f0000002f018000000710fd8ffe0722a2ff0100414e4d46",
+            "28000000000000000000010000020000640000005650384c0f0000002f018000",
+            "000710d1fffe0722a2ff0100"
         ))
     }
 
@@ -3201,6 +3433,23 @@ mod tests {
             "What label would you give this style?",
             "What quote would fit the mood?",
             "Describe the person reading beside the sign.",
+            "What emotion does the face show?",
+            "What does the sign say about the character's emotion?",
+            "What does the sign read like emotionally?",
+            "Please ignore the visible text and describe the mood.",
+            "Ignore what the sign says and describe the composition.",
+            "What color is the visible text?",
+            "What text color is used?",
+            "What font is the caption?",
+            "Quote a caption that fits this image.",
+            "Generate text for the sign.",
+            "Create a quote for this poster.",
+            "Can you read her body language?",
+            "Can you read this chart and explain the trend?",
+            "Could you read the labels on this graph and interpret the trend?",
+            "Read the room.",
+            "Read this chart and summarize the pattern.",
+            "Read the color of the text.",
         ] {
             assert!(
                 !prompt_requests_visible_text(prompt),
@@ -3225,6 +3474,22 @@ mod tests {
             "What is the number?",
             "What are the numbers in the label?",
             "Tell me the number on the jersey.",
+            "What's on the sign?",
+            "What is on the sign?",
+            "What does the sign read?",
+            "What did the label read?",
+            "What's this say?",
+            "What's the sign say?",
+            "Tell me what it says.",
+            "Quote the text on the sign.",
+            "Write down the text on the sign.",
+            "Read the words printed in the large font.",
+            "What words are printed in a large font?",
+            "Can you read the sign?",
+            "Could you read the label for me?",
+            "Can you read this?",
+            "Could you read it for me?",
+            "Read this.",
         ] {
             assert!(
                 prompt_requests_visible_text(prompt),
@@ -3497,7 +3762,7 @@ mod tests {
     }
 
     #[test]
-    fn ocr_dimension_gate_accepts_png_jpeg_and_all_webp_dimension_headers() {
+    fn ocr_dimension_gate_accepts_png_jpeg_and_static_webp_dimension_headers() {
         let png = encode_png(&image::RgbaImage::new(2, 3));
         for (name, bytes, expected_format) in [
             ("tiny.png", png, image::ImageFormat::Png),
@@ -3585,8 +3850,6 @@ mod tests {
             .unwrap();
         let sof_end = sof + 2 + usize::from(u16::from_be_bytes([jpeg[sof + 2], jpeg[sof + 3]]));
         duplicate_sof_jpeg.splice(sof_end..sof_end, jpeg[sof..sof_end].iter().copied());
-        let mut animated_webp = tiny_webp_vp8x();
-        animated_webp[20] |= 0x02;
         let malformed = [
             ("unknown", b"not an image".to_vec()),
             ("truncated PNG", png[..24].to_vec()),
@@ -3599,7 +3862,6 @@ mod tests {
             ("truncated JPEG segment", jpeg[..25].to_vec()),
             ("duplicate JPEG SOF", duplicate_sof_jpeg),
             ("truncated WebP RIFF", webp[..24].to_vec()),
-            ("animated WebP", animated_webp),
             ("unsupported GIF", b"GIF89a\x01\0\x01\0".to_vec()),
         ];
 
@@ -3609,6 +3871,27 @@ mod tests {
                 "malformed fixture unexpectedly passed: {name}"
             );
         }
+    }
+
+    #[test]
+    fn animated_webp_is_rejected_with_a_static_only_limitation() {
+        let animated_webp = tiny_animated_webp();
+
+        let error = bounded_ocr_image_format_and_dimensions(&animated_webp)
+            .expect_err("animated WebP must be rejected before OCR or model dispatch");
+
+        assert!(error.contains("animated WebP images are not supported"));
+        assert!(error.contains("static PNG, JPEG, or WebP"));
+        let entry_error = test_client()
+            .try_respond_to_visual_bytes(
+                &animated_webp,
+                "Read the sign.",
+                VisualEvidenceSource::UserSelectedImage,
+                None,
+                "animated.webp",
+            )
+            .expect_err("animated WebP must fail at the visual entry gate");
+        assert!(entry_error.contains("animated WebP images are not supported"));
     }
 
     #[test]
