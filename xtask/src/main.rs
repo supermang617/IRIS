@@ -1,5 +1,8 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
 fn main() {
     match run_audit() {
@@ -17,6 +20,7 @@ fn run_audit() -> Result<(), String> {
     let root = workspace_root()?;
     assert_required_files(&root)?;
     assert_manifest_policy(&root)?;
+    assert_capability_ledger(&root)?;
     assert_public_docs(&root)?;
     assert_local_diagnostics_are_parseable(&root)?;
     assert_cognition_boundaries(&root)?;
@@ -30,6 +34,334 @@ fn run_audit() -> Result<(), String> {
     assert_release_hardening(&root)?;
     assert_forbidden_api_absence(&root)?;
     Ok(())
+}
+
+#[derive(Debug, Default)]
+struct LedgerEntry {
+    allowed: BTreeSet<String>,
+    forbidden: BTreeSet<String>,
+    allowed_roots: BTreeSet<String>,
+    may_depend_on: BTreeSet<String>,
+    forbidden_dependencies: BTreeSet<String>,
+    may_receive: BTreeSet<String>,
+    may_not_receive: BTreeSet<String>,
+    may_access_raw_screen: Option<bool>,
+    may_access_raw_audio: Option<bool>,
+    may_access_persistent_memory: Option<bool>,
+    may_write_logs: Option<bool>,
+    may_call_model_inference: Option<bool>,
+    seen_keys: BTreeSet<String>,
+}
+
+fn assert_capability_ledger(root: &Path) -> Result<(), String> {
+    let ledger_path = root.join("capabilities/v0_1_capability_ledger.toml");
+    let ledger = parse_capability_ledger(&read(&ledger_path)?)?;
+    validate_capability_claims(&ledger)?;
+    let manifests = workspace_runtime_manifests(root)?;
+    let mut dependency_graph = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for manifest_path in &manifests {
+        let manifest = read(manifest_path)?;
+        let crate_name = package_name(&manifest).ok_or_else(|| {
+            format!(
+                "workspace manifest has no package name: {}",
+                manifest_path.display()
+            )
+        })?;
+        let entry = ledger.get(&crate_name).ok_or_else(|| {
+            format!("capability ledger is missing workspace crate `{crate_name}`")
+        })?;
+        let dependencies = internal_dependencies(&manifest);
+        for dependency in &dependencies {
+            if !entry.may_depend_on.contains(dependency) {
+                return Err(format!(
+                    "capability ledger does not allow `{crate_name}` to depend on `{dependency}`"
+                ));
+            }
+            if entry.forbidden_dependencies.contains(dependency) {
+                return Err(format!(
+                    "capability ledger directly forbids `{crate_name}` dependency `{dependency}`"
+                ));
+            }
+        }
+        dependency_graph.insert(crate_name, dependencies);
+    }
+
+    for crate_name in ledger.keys() {
+        if !dependency_graph.contains_key(crate_name) {
+            return Err(format!(
+                "capability ledger declares unknown or retired crate `{crate_name}`"
+            ));
+        }
+    }
+    for (crate_name, entry) in &ledger {
+        let reachable = transitive_dependencies(crate_name, &dependency_graph);
+        if let Some(forbidden) = entry
+            .forbidden_dependencies
+            .iter()
+            .find(|dependency| reachable.contains(*dependency))
+        {
+            return Err(format!(
+                "capability ledger transitively forbids `{crate_name}` dependency `{forbidden}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_capability_ledger(content: &str) -> Result<BTreeMap<String, LedgerEntry>, String> {
+    let mut entries = BTreeMap::<String, LedgerEntry>::new();
+    let mut current = None::<String>;
+    for raw_line in content.lines() {
+        let line = raw_line.split('#').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("[crate.") && line.ends_with(']') {
+            let name = line
+                .trim_start_matches("[crate.")
+                .trim_end_matches(']')
+                .trim();
+            if name.is_empty() || entries.contains_key(name) {
+                return Err(format!(
+                    "invalid or duplicate capability ledger section `{line}`"
+                ));
+            }
+            entries.insert(name.to_string(), LedgerEntry::default());
+            current = Some(name.to_string());
+            continue;
+        }
+        if line.starts_with('[') {
+            return Err(format!("invalid capability ledger section `{line}`"));
+        }
+        let Some(name) = current.as_ref() else {
+            return Err(format!(
+                "capability ledger value appears outside a crate section: `{line}`"
+            ));
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("capability ledger line is malformed: `{line}`"));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        let entry = entries.get_mut(name).expect("ledger entry");
+        if !entry.seen_keys.insert(key.to_string()) {
+            return Err(format!(
+                "capability ledger section `{name}` repeats key `{key}`"
+            ));
+        }
+        match key {
+            "allowed" => entry.allowed = parse_quoted_string_array(value)?,
+            "forbidden" => entry.forbidden = parse_quoted_string_array(value)?,
+            "allowed_roots" => entry.allowed_roots = parse_quoted_string_array(value)?,
+            "may_depend_on" => entry.may_depend_on = parse_quoted_string_array(value)?,
+            "forbidden_dependencies" => {
+                entry.forbidden_dependencies = parse_quoted_string_array(value)?
+            }
+            "may_receive" => entry.may_receive = parse_quoted_string_array(value)?,
+            "may_not_receive" => entry.may_not_receive = parse_quoted_string_array(value)?,
+            "may_access_raw_screen" => {
+                entry.may_access_raw_screen = Some(parse_ledger_bool(value)?)
+            }
+            "may_access_raw_audio" => entry.may_access_raw_audio = Some(parse_ledger_bool(value)?),
+            "may_access_persistent_memory" => {
+                entry.may_access_persistent_memory = Some(parse_ledger_bool(value)?)
+            }
+            "may_write_logs" => entry.may_write_logs = Some(parse_ledger_bool(value)?),
+            "may_call_model_inference" => {
+                entry.may_call_model_inference = Some(parse_ledger_bool(value)?)
+            }
+            _ => {
+                return Err(format!(
+                    "capability ledger section `{name}` has unknown key `{key}`"
+                ));
+            }
+        }
+    }
+    if entries.is_empty() {
+        return Err("capability ledger has no crate declarations".to_string());
+    }
+    Ok(entries)
+}
+
+fn parse_ledger_bool(value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("capability ledger boolean is malformed: {value}")),
+    }
+}
+
+fn validate_capability_claims(ledger: &BTreeMap<String, LedgerEntry>) -> Result<(), String> {
+    const REQUIRED_KEYS: [&str; 10] = [
+        "allowed",
+        "forbidden",
+        "allowed_roots",
+        "may_depend_on",
+        "forbidden_dependencies",
+        "may_access_raw_screen",
+        "may_access_raw_audio",
+        "may_access_persistent_memory",
+        "may_write_logs",
+        "may_call_model_inference",
+    ];
+    let expected_raw_screen = BTreeSet::from(["iris-tauri"]);
+    let expected_raw_audio = BTreeSet::from(["iris-tauri"]);
+    let expected_persistent_memory = BTreeSet::from(["iris-tauri"]);
+    let expected_log_writers = BTreeSet::from(["iris-tauri"]);
+    let expected_model_callers = BTreeSet::from(["iris-ollama", "iris-runtime", "iris-tauri"]);
+
+    for (name, entry) in ledger {
+        for required in REQUIRED_KEYS {
+            if !entry.seen_keys.contains(required) {
+                return Err(format!(
+                    "capability ledger section `{name}` is missing key `{required}`"
+                ));
+            }
+        }
+        if let Some(capability) = entry.allowed.intersection(&entry.forbidden).next() {
+            return Err(format!(
+                "capability ledger section `{name}` both allows and forbids `{capability}`"
+            ));
+        }
+        validate_capability_bool(
+            name,
+            "may_access_raw_screen",
+            entry.may_access_raw_screen,
+            expected_raw_screen.contains(name.as_str()),
+        )?;
+        validate_capability_bool(
+            name,
+            "may_access_raw_audio",
+            entry.may_access_raw_audio,
+            expected_raw_audio.contains(name.as_str()),
+        )?;
+        validate_capability_bool(
+            name,
+            "may_access_persistent_memory",
+            entry.may_access_persistent_memory,
+            expected_persistent_memory.contains(name.as_str()),
+        )?;
+        validate_capability_bool(
+            name,
+            "may_write_logs",
+            entry.may_write_logs,
+            expected_log_writers.contains(name.as_str()),
+        )?;
+        let expected_inference = expected_model_callers.contains(name.as_str());
+        validate_capability_bool(
+            name,
+            "may_call_model_inference",
+            entry.may_call_model_inference,
+            expected_inference,
+        )?;
+        let declares_inference = entry
+            .allowed
+            .iter()
+            .any(|capability| capability.contains("model_inference"));
+        if declares_inference != expected_inference {
+            return Err(format!(
+                "capability ledger section `{name}` model-inference capability does not match its audited runtime role"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_capability_bool(
+    crate_name: &str,
+    key: &str,
+    actual: Option<bool>,
+    expected: bool,
+) -> Result<(), String> {
+    if actual != Some(expected) {
+        return Err(format!(
+            "capability ledger section `{crate_name}` must set `{key}` to `{expected}`"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_quoted_string_array(value: &str) -> Result<BTreeSet<String>, String> {
+    if !value.starts_with('[') || !value.ends_with(']') {
+        return Err(format!("capability ledger array is malformed: {value}"));
+    }
+    let inner = value[1..value.len() - 1].trim();
+    if inner.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    inner
+        .split(',')
+        .map(|item| {
+            let item = item.trim();
+            if item.len() < 2 || !item.starts_with('"') || !item.ends_with('"') {
+                return Err(format!("capability ledger string is malformed: {item}"));
+            }
+            Ok(item[1..item.len() - 1].to_string())
+        })
+        .collect()
+}
+
+fn workspace_runtime_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut manifests = std::fs::read_dir(root.join("crates"))
+        .map_err(|err| format!("failed to list workspace crates: {err}"))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("Cargo.toml"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    manifests.push(root.join("src-tauri/Cargo.toml"));
+    manifests.sort();
+    Ok(manifests)
+}
+
+fn package_name(manifest: &str) -> Option<String> {
+    manifest.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "name").then(|| value.trim().trim_matches('"').to_string())
+    })
+}
+
+fn internal_dependencies(manifest: &str) -> BTreeSet<String> {
+    let mut in_dependencies = false;
+    let mut dependencies = BTreeSet::new();
+    for raw_line in manifest.lines() {
+        let line = raw_line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_dependencies = line.contains("dependencies");
+            continue;
+        }
+        if !in_dependencies {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once('=') {
+            let name = name.trim();
+            if name.starts_with("iris-") {
+                dependencies.insert(name.to_string());
+            }
+        }
+    }
+    dependencies
+}
+
+fn transitive_dependencies(
+    crate_name: &str,
+    graph: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut pending = graph
+        .get(crate_name)
+        .into_iter()
+        .flat_map(|dependencies| dependencies.iter().cloned())
+        .collect::<Vec<_>>();
+    while let Some(dependency) = pending.pop() {
+        if !found.insert(dependency.clone()) {
+            continue;
+        }
+        if let Some(children) = graph.get(&dependency) {
+            pending.extend(children.iter().cloned());
+        }
+    }
+    found
 }
 
 fn workspace_root() -> Result<PathBuf, String> {
@@ -79,7 +411,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/installer-preflight.md",
         "docs/iris-architecture.md",
         "docs/manual-test-checklist-v0.1.1.md",
-        "docs/manual-end-user-test-v0.1.0.md",
+        "docs/manual-end-user-test.md",
         "docs/manual-test.md",
         "docs/signed-installer-decision.md",
         "docs/runtime-orchestration.md",
@@ -91,8 +423,10 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/iris_document_ocr.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
+        "scripts/diagnose_raw_ollama_vision.ps1",
         "scripts/package_windows_release.ps1",
         "scripts/package_windows_msix.ps1",
+        "scripts/iris_release_workspace.ps1",
         "scripts/provision_hermes_acp.ps1",
         "scripts/provision_iris_browser.ps1",
         "scripts/provision_iris_voice_runtime.ps1",
@@ -105,6 +439,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "scripts/test_github_semantic_tag_protection.ps1",
         "scripts/publish_github_versioned_release.ps1",
         "scripts/test_release_workflow.ps1",
+        "scripts/test_release_workspace_cleanup.ps1",
         "scripts/summarize_voice_interruption.ps1",
         "scripts/test_voice_interruption_diagnostics.ps1",
         "scripts/test_windows_msix_signature.ps1",
@@ -229,14 +564,17 @@ fn assert_conversational_voice_guards(root: &Path) -> Result<(), String> {
             "normalizeSpeechText",
         ),
         (
-            "Kokoro leading silence",
+            "Kokoro unpadded output",
             kokoro.as_str(),
-            "LEAD_SILENCE_SECONDS = 0.75",
+            "sf.write(str(output_path), samples, sample_rate)",
         ),
     ] {
         if !content.contains(required) {
             return Err(format!("{name} missing `{required}`"));
         }
+    }
+    if kokoro.contains("pad_silence") || kokoro.contains("LEAD_SILENCE_SECONDS") {
+        return Err("Kokoro chunks must not include synthetic leading or trailing silence".into());
     }
     if ollama.contains("evaluate_output(") {
         return Err(
@@ -405,7 +743,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let dependabot = read(root.join(".github/dependabot.yml"))?;
     let github_settings = read(root.join("docs/github-settings.md"))?;
     let manual_checklist = read(root.join("docs/manual-test-checklist-v0.1.1.md"))?;
-    let manual_end_user_test = read(root.join("docs/manual-end-user-test-v0.1.0.md"))?;
+    let manual_test = read(root.join("docs/manual-test.md"))?;
+    let manual_end_user_test = read(root.join("docs/manual-end-user-test.md"))?;
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
     let preflight_script = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
@@ -459,6 +798,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             ));
         }
     }
+    if !readme.contains("Current v1 manual end-user test guide: `docs/manual-end-user-test.md`.")
+        || readme.contains("manual-end-user-test-v0.1.0.md")
+    {
+        return Err(
+            "README.md must link the current version-neutral manual end-user guide".to_string(),
+        );
+    }
     for (name, content) in [
         ("known-limitations.md", limitations.as_str()),
         ("docs/download-and-run.md", download.as_str()),
@@ -497,6 +843,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "npm run test:python",
         "cargo run --locked -p xtask",
         "git diff --check",
+        "scripts\\test_release_workspace_cleanup.ps1",
+        "scripts\\diagnose_raw_ollama_vision.ps1 -SelfTest",
     ] {
         if !ci.contains(required) {
             return Err(format!("CI GitHub Actions workflow missing `{required}`"));
@@ -515,6 +863,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
         "scripts\\package_windows_release.ps1",
         "scripts\\test_windows_release_download.ps1",
         "scripts\\test_windows_beginner_installer.ps1",
+        "scripts\\test_release_workspace_cleanup.ps1",
         "release/dist/iris-windows-installer.zip",
         "release/dist/iris-windows-installer.zip.sha256",
         "release/dist/iris-windows.zip",
@@ -561,6 +910,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !download.contains("git clone https://github.com/supermang617/IRIS.git")
         || !download.contains("docs/manual-test.md")
+        || !download.contains("docs/manual-end-user-test.md")
         || !download.contains("Bug fixes")
     {
         return Err(
@@ -629,11 +979,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if preflight_script.contains("& ollama list") {
         return Err("preflight script must not call `ollama list` without a timeout".to_string());
     }
-    if !setup_script
-        .contains("Open Iris after installation; the launcher self-check will verify the configured local model")
+    if !setup_script.contains(
+        "Open Iris after installation; the launcher self-check will verify the configured local model",
+    ) || !setup_script.contains("$env:OLLAMA_HOST = \"127.0.0.1:11434\"")
     {
         return Err(
-            "setup wizard must use beginner-safe noninteractive model-check wording".to_string(),
+            "setup wizard must use beginner-safe model wording and a loopback-only Ollama launch"
+                .to_string(),
         );
     }
     if !windows_installer.contains("iris-windows.zip")
@@ -661,6 +1013,8 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     if !runtime_orchestration
         .contains("The Iris desktop window opens first, then starts Ollama hidden")
         || !runtime_orchestration.contains("Ollama runs as the local model service")
+        || !runtime_orchestration.contains("Iris refuses an already-running Ollama")
+        || !runtime_orchestration.contains("never silently edits Windows Firewall rules")
         || !runtime_orchestration.contains("Safe Hermes remains a restricted Iris-owned sidecar")
         || !runtime_orchestration.contains("pinned Hermes Agent 0.18.0")
         || !runtime_orchestration
@@ -713,9 +1067,13 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     ] {
         for required in [
             "function Start-OllamaForIris",
+            "function Assert-IrisOllamaLoopbackOnly",
             "function Test-OllamaRuntimeCompatible",
             "{ \"library\" }",
             "$env:OLLAMA_CONTEXT_LENGTH",
+            "$env:OLLAMA_HOST = \"127.0.0.1:11434\"",
+            "Get-NetTCPConnection -State Listen -LocalPort 11434",
+            "Iris will not use a network-exposed model service.",
             "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/tags\"",
             "Invoke-WebRequest -Uri \"http://127.0.0.1:11434/api/ps\"",
             "Start-Process -FilePath \"ollama\" -ArgumentList \"serve\" -WindowStyle Hidden",
@@ -754,16 +1112,48 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             return Err(format!("manual test checklist missing `{required}`"));
         }
     }
-    if !manual_end_user_test
-        .contains("Ollama `/api/show` reports the configured model has `vision`")
-        || !manual_end_user_test.contains("Hermes should not be opened separately")
-        || !manual_end_user_test.contains("install-iris-windows.ps1")
-        || !manual_end_user_test.contains("Tesseract document OCR")
-    {
-        return Err(
-            "manual end-user test report must capture installer, Hermes, and image-probe status"
-                .to_string(),
-        );
+    for required in [
+        "This guide defines the Windows end-user acceptance checks",
+        "Ollama `/api/show` reports the configured model has `vision`",
+        "Hermes should not be opened separately",
+        "Safe is the startup default",
+        "Agentic Session is a separate, explicit, approval-gated mode",
+        "file, PowerShell, process, and isolated browser tools",
+        "require separate confirmation",
+        "Tesseract document OCR",
+        "`BLOCKED` is the truthful current result",
+        "do not certify acoustic interruption behavior",
+    ] {
+        if !manual_end_user_test.contains(required) {
+            return Err(format!(
+                "manual end-user test guide missing current acceptance guidance `{required}`"
+            ));
+        }
+    }
+    for stale in [
+        "v0.1.0",
+        "latest Windows end-user test",
+        "should expose no acting tools",
+        "Hermes cannot run commands, edit files, control browsers/windows",
+        "- No system control should occur.",
+    ] {
+        if manual_end_user_test.contains(stale) || manual_test.contains(stale) {
+            return Err(format!(
+                "manual test guidance contains stale release or Hermes guidance `{stale}`"
+            ));
+        }
+    }
+    for required in [
+        "Safe is the startup default",
+        "Agentic Session can use the reviewed file, PowerShell, process,",
+        "Scope-expanding and high-risk",
+        "outside an explicitly approved",
+    ] {
+        if !manual_test.contains(required) {
+            return Err(format!(
+                "manual desktop test guide missing current Safe/Agentic guidance `{required}`"
+            ));
+        }
     }
     Ok(())
 }
@@ -817,8 +1207,16 @@ fn assert_cognition_boundaries(root: &Path) -> Result<(), String> {
 fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
     let provider = read(root.join("plugins/memory/iris_broker/provider.py"))?;
     let sidecar = read(root.join("plugins/hermes_sidecar/sidecar.py"))?;
+    let tauri = read(root.join("src-tauri/src/lib.rs"))?;
     for required in [
-        "DEFAULT_BROKER_URL = \"http://127.0.0.1:48731\"",
+        "IRIS_HERMES_BROKER_URL",
+        "IRIS_HERMES_BROKER_TOKEN",
+        "Authorization",
+        "def broker_token()",
+        "def _consume_broker_access_from_environment()",
+        "os.environ.pop(\"IRIS_HERMES_BROKER_TOKEN\"",
+        "parsed.hostname != \"127.0.0.1\"",
+        "status.get(\"authenticated\")",
         "IRIS_OLLAMA_GENERATE_URL = \"http://127.0.0.1:11434/api/generate\"",
         "STATUS_ENDPOINT = \"/memory/status\"",
         "SEARCH_ENDPOINT = \"/memory/search\"",
@@ -842,6 +1240,33 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         if !provider.contains(required) {
             return Err(format!("Hermes iris_broker provider missing `{required}`"));
         }
+    }
+    for required in [
+        "HERMES_MEMORY_BROKER_BIND_ADDR: &str = \"127.0.0.1:0\"",
+        "getrandom::fill(&mut random)",
+        "Authorization: Bearer",
+        "constant_time_bytes_equal",
+        "Iris memory broker authentication failed",
+        ".env(\"IRIS_HERMES_BROKER_URL\", &broker_access.url)",
+        "IRIS_HERMES_BROKER_TOKEN",
+        "HERMES_SIDECAR_STATUS_TIMEOUT: Duration = Duration::from_secs(10)",
+        "HERMES_SIDECAR_TASK_TIMEOUT: Duration = Duration::from_secs(90)",
+        "MAX_HERMES_SIDECAR_LINE_BYTES: usize = 64 * 1024",
+        "response_rx: Arc<Mutex<mpsc::Receiver<Result<String, String>>>>",
+        "mpsc::sync_channel(1)",
+        ".recv_timeout(timeout)",
+        "audit_passed: false",
+        "failed to stop rejected sidecar",
+    ] {
+        if !tauri.contains(required) {
+            return Err(format!(
+                "Iris authenticated memory broker missing `{required}`"
+            ));
+        }
+    }
+    let retired_fixed_broker = ["127.0.0.1:", "48731"].concat();
+    if tauri.contains(&retired_fixed_broker) {
+        return Err("Iris memory broker must not use the retired fixed port".to_string());
     }
     for forbidden in [
         "subprocess",
@@ -935,7 +1360,10 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "\"model_optimization\": false",
         "\"parallel_hermes_tasks\": false",
         "\"provider\": \"iris_broker\"",
-        "\"broker_url\": \"http://127.0.0.1:48731\"",
+        "\"broker_endpoint_source\": \"iris_process_environment\"",
+        "\"authentication\": \"per_launch_bearer_from_iris_process_environment\"",
+        "\"fixed_port\": false",
+        "\"credential_persistence\": false",
         "\"startup_status_check\": true",
         "\"fail_closed\": true",
         "\"direct_database_access\": false",
@@ -958,6 +1386,9 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "\"transport\": \"stdin_stdout_json\"",
         "\"max_task_chars\": 2000",
         "\"max_response_chars\": 4000",
+        "\"status_timeout_seconds\": 10",
+        "\"task_timeout_seconds\": 90",
+        "\"max_stdout_line_bytes\": 65536",
         "\"runtime_tool_audit\": true",
         "\"startup_fails_on_acting_tools\": true",
         "\"prompt_injection_guard\": true",
@@ -1153,26 +1584,28 @@ fn assert_hermes_browser_runtime(root: &Path) -> Result<(), String> {
     let safe_provider = read(root.join("plugins/memory/iris_broker/provider.py"))?;
     for required in [
         "\"provider\": \"agent-browser\"",
-        "\"version\": \"0.27.2\"",
+        "\"version\": \"0.33.2\"",
         "\"system_browser\"",
         "\"bundled\": false",
         "\"preferred\": \"Google Chrome\"",
         "\"winget_package\": \"Google.Chrome\"",
         "\"executable_override\": \"IRIS_BROWSER_EXECUTABLE_PATH\"",
-        "\"isolated_profile\": true",
+        "\"isolated_session\": true",
+        "\"persistent_profile\": false",
         "\"headless_default\": true",
         "\"manual_auth_headed_allowed\": true",
+        "\"manual_auth_persists_after_close\": false",
         "\"private_network_navigation\": false",
         "\"normal_browser_profile_reuse\": false",
-        "\"dedicated_profile\": \".iris-data/hermes-browser/profile\"",
     ] {
         if !profile.contains(required) {
             return Err(format!("Iris browser profile missing `{required}`"));
         }
     }
     for required in [
-        "agent-browser@0.27.2",
-        "RZNxZFvnspSxSmpjkZjM0Lv69ArwYr8t",
+        "agent-browser@0.33.2",
+        "--ignore-scripts",
+        "e+TZ0G04uw2rs+lVB8gn0IWTT7ErfiAl3jQ4zNNwyqDhgXWJKhqxYKkyibjuBGXLzx/APlzU3IWAsOVdRwh0DA==",
         "1553389900824037aec828effab3051337df57a571e2f8800ee71cf8ed6fa76d",
         "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56",
     ] {
@@ -1181,7 +1614,7 @@ fn assert_hermes_browser_runtime(root: &Path) -> Result<(), String> {
         }
     }
     for required in [
-        "AGENT_BROWSER_PROFILE",
+        "AGENT_BROWSER_SESSION",
         "AGENT_BROWSER_CONTENT_BOUNDARIES",
         "IRIS_BROWSER_PREVIEW:",
         "Browser navigation to private or local network addresses is blocked.",
@@ -1226,6 +1659,8 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "system_browser = [ordered]@{",
         "winget_package = \"Google.Chrome\"",
         "volatile_data_packaged = $false",
+        "docs\\manual-test.md\") -Destination (Join-Path $packageRoot \"docs\\manual-test.md",
+        "docs\\manual-end-user-test.md\") -Destination (Join-Path $packageRoot \"docs\\manual-end-user-test.md",
     ] {
         if !package.contains(required) {
             return Err(format!("release package script missing `{required}`"));
@@ -1292,6 +1727,7 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "Invoke-SmokeCommand",
         "Stop-ProcessTree",
         "fresh installer smoke",
+        "transaction rollback installer smoke",
         "upgrade installer smoke",
         "-SkipSelfCheck",
         "installed Hermes package probe",
@@ -1310,8 +1746,14 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
         "Installed Iris self-check timed out",
         "timed out after $TimeoutSeconds seconds",
         "Stop-ProcessTree",
+        "BoundedCaptureStream",
+        "CopyToAsync",
+        "Complete-BoundedProcessCapture",
+        "[process output truncated by Iris]",
         "installer-self-check.log",
-        "Failed to remove existing install directory before upgrade",
+        "Iris managed-file replacement failed and rollback was incomplete",
+        ".iris-staging-",
+        ".iris-backup-",
         "Get-ChildItem -LiteralPath $source -Force",
     ] {
         if !installer.contains(required) {
@@ -1323,6 +1765,15 @@ fn assert_release_hardening(root: &Path) -> Result<(), String> {
     for required in [
         "CI release launcher self-check unexpectedly succeeded without runner prerequisites",
         "Test-ExpectedCiPrerequisiteFailure",
+        "README_RELEASE.md must link to the packaged $requiredManualLink guide.",
+        "docs/[A-Za-z0-9._/-]+\\.md",
+        "docs\\manual-test.md",
+        "docs\\manual-end-user-test.md",
+        "Safe is the startup default",
+        "Agentic Session",
+        "should expose no acting tools",
+        "Hermes cannot run commands, edit files, control browsers/windows",
+        "- No system control should occur.",
     ] {
         if !release_smoke.contains(required) {
             return Err(format!("release ZIP smoke test missing `{required}`"));
@@ -1441,10 +1892,10 @@ fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
         "\"pyjwt\": \"2.13.0\"",
         "\"python\": \"3.13\"",
         "\"dependency_lock\": \"profiles/hermes_agent_python_3_13.lock.txt\"",
-        "\"dependency_lock_sha256\": \"faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47\"",
+        "\"dependency_lock_sha256\": \"0e2e636b49109143e4ddf6787f94bf24722cdbd491001436298515934f47be5f\"",
         "\"dependency_count\": 65",
         "\"profile\": \"profiles/hermes_agent_security_overrides.txt\"",
-        "\"cryptography\": \"48.0.1\"",
+        "\"cryptography\": \"50.0.0\"",
         "\"pillow\": \"12.3.0\"",
         "\"runtime_root\": \".iris-runtime/hermes\"",
     ] {
@@ -1457,12 +1908,12 @@ fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
     for required in [
         "hermes_agent-0.18.0-py3-none-any.whl",
         "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37",
-        "faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47",
+        "0e2e636b49109143e4ddf6787f94bf24722cdbd491001436298515934f47be5f",
         "pip install --python $Python --require-hashes --no-deps --only-binary :all: --requirement $DependencyLock",
         "expected[\"hermes-agent\"] = \"0.18.0\"",
         "\"agent-client-protocol\": \"0.9.0\"",
         "\"pyjwt\": \"2.13.0\"",
-        "\"cryptography\": \"48.0.1\"",
+        "\"cryptography\": \"50.0.0\"",
         "\"pillow\": \"12.3.0\"",
         "Hermes ACP exact dependency-set audit failed.",
     ] {
@@ -1650,11 +2101,14 @@ fn is_approved_local_ocr_process_probe(
         "fn find_tesseract_executable",
         "IRIS_TESSERACT_EXE",
         "OCR_TIMEOUT",
+        "MAX_OCR_TSV_BYTES",
         "CREATE_NO_WINDOW",
-        ".arg(\"stdout\")",
+        ".arg(&output_base)",
         ".arg(\"--psm\")",
-        ".stdout(Stdio::piped())",
-        ".stderr(Stdio::piped())",
+        ".stdout(Stdio::null())",
+        ".stderr(Stdio::null())",
+        "metadata.len() <= MAX_OCR_TSV_BYTES",
+        "parse_tesseract_tsv",
     ] {
         if !content.contains(required) {
             return Err(format!(
@@ -1665,7 +2119,15 @@ fn is_approved_local_ocr_process_probe(
     if content.matches("Command::new(").count() != 1 {
         return Err("local OCR may launch only one audited Tesseract process".to_string());
     }
-    for forbidden in ["cmd.exe", "powershell", "shell", "/C", "-Command"] {
+    for forbidden in [
+        "cmd.exe",
+        "powershell",
+        "shell",
+        "/C",
+        "-Command",
+        ".stdout(Stdio::piped())",
+        ".stderr(Stdio::piped())",
+    ] {
         if content.contains(forbidden) {
             return Err(format!(
                 "local OCR process helper contains forbidden shell marker `{forbidden}`"
@@ -1775,6 +2237,46 @@ mod tests {
         ] {
             assert!(!is_release_semver(rejected), "{rejected}");
         }
+    }
+
+    #[test]
+    fn capability_ledger_schema_and_runtime_claims_are_audited() {
+        let content = read(test_root().join("capabilities/v0_1_capability_ledger.toml")).unwrap();
+        let mut ledger = parse_capability_ledger(&content).unwrap();
+        validate_capability_claims(&ledger).unwrap();
+
+        ledger
+            .get_mut("iris-tauri")
+            .expect("tauri ledger entry")
+            .may_call_model_inference = Some(false);
+        let error =
+            validate_capability_claims(&ledger).expect_err("false model-inference claim must fail");
+        assert!(error.contains("may_call_model_inference"));
+    }
+
+    #[test]
+    fn capability_ledger_rejects_unknown_and_duplicate_keys() {
+        let unknown = r#"
+[crate.example]
+allowed = []
+surprise = true
+"#;
+        assert!(
+            parse_capability_ledger(unknown)
+                .expect_err("unknown key must fail")
+                .contains("unknown key")
+        );
+
+        let duplicate = r#"
+[crate.example]
+allowed = []
+allowed = []
+"#;
+        assert!(
+            parse_capability_ledger(duplicate)
+                .expect_err("duplicate key must fail")
+                .contains("repeats key")
+        );
     }
 
     #[test]

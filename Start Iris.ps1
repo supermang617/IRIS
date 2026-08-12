@@ -74,6 +74,22 @@ function Test-OllamaReady {
     }
 }
 
+function Assert-IrisOllamaLoopbackOnly {
+    try {
+        $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 11434 -ErrorAction Stop)
+    } catch {
+        throw "Iris reached Ollama but could not verify that it is loopback-only. Quit Ollama and restart Iris. $($_.Exception.Message)"
+    }
+    if ($listeners.Count -eq 0) {
+        throw "Iris reached Ollama but found no verifiable listener on port 11434. Quit Ollama and restart Iris."
+    }
+    $broadListeners = @($listeners | Where-Object { $_.LocalAddress -notin @("127.0.0.1", "::1", "::ffff:127.0.0.1") })
+    if ($broadListeners.Count -gt 0) {
+        $addresses = ($broadListeners.LocalAddress | Sort-Object -Unique) -join ", "
+        throw "Ollama is listening beyond this computer ($addresses). Quit the existing Ollama service and restart Iris so Iris can launch it on 127.0.0.1:11434. Iris will not use a network-exposed model service."
+    }
+}
+
 function Get-IrisModelId {
     $manifestPath = Join-Path $repoRoot "manifest.json"
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
@@ -163,7 +179,9 @@ function Use-IrisOllamaRuntimeSettings {
     param([Parameter(Mandatory = $true)][string]$LogPath)
     $requiredContext = Get-IrisNumCtx
     $env:OLLAMA_CONTEXT_LENGTH = [string]$requiredContext
+    $env:OLLAMA_HOST = "127.0.0.1:11434"
     "[$(Get-Date -Format o)] Ollama context length set to $requiredContext from manifest.json." | Out-File -FilePath $LogPath -Encoding utf8 -Append
+    "[$(Get-Date -Format o)] Ollama host forced to loopback at 127.0.0.1:11434 for this Iris-owned launch." | Out-File -FilePath $LogPath -Encoding utf8 -Append
 }
 
 function Start-OllamaForIris {
@@ -173,6 +191,7 @@ function Start-OllamaForIris {
     Use-IrisOllamaRuntimeSettings -LogPath $LogPath
 
     if (Test-OllamaReady) {
+        Assert-IrisOllamaLoopbackOnly
         if ($script:irisOllamaServerDefaultsInitialized) {
             "[$(Get-Date -Format o)] Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts." |
                 Out-File -FilePath $LogPath -Encoding utf8 -Append
@@ -195,6 +214,7 @@ function Start-OllamaForIris {
     for ($attempt = 1; $attempt -le 20; $attempt++) {
         Start-Sleep -Milliseconds 500
         if (Test-OllamaReady) {
+            Assert-IrisOllamaLoopbackOnly
             "[$(Get-Date -Format o)] Ollama is ready after $attempt checks." | Out-File -FilePath $LogPath -Encoding utf8 -Append
             return
         }

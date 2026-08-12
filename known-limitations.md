@@ -18,12 +18,13 @@ This repository is a Windows-only v1 local-first release.
   implement true acoustic echo cancellation (AEC). Near-field energy gating
   reduces self-triggering but cannot guarantee it on every speaker, room, and
   microphone arrangement; headset use is the most reliable current path.
-- Ollama `/api/tags` may omit capability metadata for `huihui_ai/gemma-4-abliterated:e2b`; use `ollama show` or `/api/show` for the authoritative local capability check. The current manual-test machine verifies `completion`, `vision`, `audio`, `tools`, and `thinking` through `/api/show`. Voice capture remains handled by Iris ASR.
-- The configured Ollama model can inspect images, but open-ended geometric shape naming is not fully reliable. Manual release tests use a constrained known-fixture prompt for red-circle validation.
+- Ollama `/api/tags` may omit capability metadata for `huihui_ai/gemma-4-abliterated:e2b`; use `ollama show` or `/api/show` for the authoritative local capability check. The current manual-test machine verifies `completion`, `vision`, `audio`, `tools`, and `thinking` through `/api/show`, but capability metadata alone does not prove correct image embeddings. Voice capture remains handled by Iris ASR.
+- The current Windows Ollama Gemma 4 E2B/E4B inline projector path has a known upstream defect. Iris uses confidence-filtered local OCR and a narrow user-selected PNG color/shape classifier for facts it can verify; it refuses unverified general image, camera, and screen scene descriptions instead of guessing. Run `scripts\diagnose_raw_ollama_vision.ps1` after Ollama updates and remove this restriction only after the direct raw-model canary and the wider visual matrix pass.
 - Dynamic system context uses deterministic lexical metrics rather than a
   semantic or psychological classifier. It adapts presentation, not identity,
   intent, factual content, permissions, or safety decisions.
-- Document-image/OCR probing is handled by local Tesseract OCR when installed. The current configured Ollama model is not reliable for OCR by itself; direct Ollama calls and Iris image probes failed simple known text fixtures such as `ALPHA 742`, even with deterministic settings and short output caps.
+- Document-image/OCR probing is handled by local Tesseract OCR when installed. OCR text is confidence-filtered and treated as untrusted evidence; the configured Ollama model is not relied on for document OCR.
+- Image probes accept PNG, JPEG, and static WebP files. Animated WebP is rejected explicitly; export a still frame as PNG, JPEG, or static WebP.
 - Native Whisper ASR and Kokoro TTS are present.
 - Local memory exists, but active-memory promotion is intentionally bounded.
 - Safe Hermes is enabled by default for restricted local reasoning, RAG, staged memory proposals, and explicit web research. It is not an acting plugin system.

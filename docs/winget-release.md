@@ -212,7 +212,7 @@ already occurred.
 - Iris release: Iris executables, Kokoro, Whisper, Hermes and voice pinned
   Python packages, the Windows Agent Browser controller, and their pinned
   integration code. The Chrome engine updates through its Google package and
-  always runs with a separate Iris-owned profile.
+  always runs in a separate Iris-owned, nonpersistent, domain-contained session.
 - Ollama: its bundled llama inference runtime.
 - Setup wizard: the selected Ollama model blob.
 - Rust: source-build tooling only; end users do not need it.

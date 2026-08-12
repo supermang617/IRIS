@@ -13,10 +13,14 @@ process work.
 ## What Iris Can Do Today
 
 - Run from a portable Windows ZIP.
-- Use local Ollama loopback for text and vision.
+- Use local Ollama loopback for text and verified visual inference.
 - Use the configured model `huihui_ai/gemma-4-abliterated:e2b`.
 - Inspect user-selected images, camera snapshots, and explicit screen-area
   evidence as untrusted evidence.
+- On affected Windows Gemma 4 E2B/E4B projector builds, answer only
+  confidence-filtered OCR and bounded simple-diagram facts; unverified general
+  scene descriptions fail closed until Ollama's projector fix passes Iris's raw
+  image canary.
 - Use native local Whisper ASR and Kokoro ONNX TTS when the local prerequisites
   are present.
 - Keep Iris-owned local memories that the user can edit or delete.

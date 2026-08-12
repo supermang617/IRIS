@@ -10,13 +10,27 @@ For v1, the best safe runtime shape is:
 
 - The Iris desktop window opens first, then starts Ollama hidden in the
   background when needed and waits for `127.0.0.1:11434` inside the UI.
-- Ollama runs as the local model service on `127.0.0.1:11434`.
+- Ollama runs as the local model service on `127.0.0.1:11434`. Iris-owned
+  launches force `OLLAMA_HOST=127.0.0.1:11434` for that child process without
+  changing the user's global setting. Iris refuses an already-running Ollama
+  listener bound to a non-loopback address and asks the user to restart it
+  through Iris; Iris never silently edits Windows Firewall rules.
 - Iris runs as the Tauri desktop shell plus Rust command bridge.
 - Safe Hermes remains a restricted Iris-owned sidecar, started by Iris for
   local RAG and staged memory-transfer work.
 - Agentic Hermes uses provenance-pinned Hermes Agent 0.18.0 through a hidden Iris-owned ACP
   child process supervised by a Windows Job Object.
-- The Iris memory broker is loopback-only on `127.0.0.1:48731`.
+- Iris synchronously reserves a fresh ephemeral `127.0.0.1` memory-broker
+  endpoint on every launch. It generates a per-launch bearer credential and
+  injects both values only into Iris-owned Hermes child processes. The endpoint
+  and credential are not written to profiles, logs, diagnostics, or user data;
+  every broker route fails closed before policy or storage access when the
+  credential is absent or invalid.
+- Safe Hermes is not marked ready until its runtime tool/profile audit passes.
+  A failed audit terminates and removes the child. Status replies are bounded
+  to 10 seconds, task replies to 90 seconds, and stdout records to 64 KiB; the
+  lifecycle mutex is released while waiting so Panic Stop can terminate a
+  silent or wedged sidecar immediately.
 - Dynamic system context runs inline inside Iris with no background process or
   additional model call. It stores only aggregate communication metrics.
 
@@ -126,7 +140,9 @@ When all pieces are healthy:
   the image-probe milestone is ready.
 - Iris preflight reports Ollama/model PASS.
 - Iris text ask returns a short local response.
-- Iris image probe describes the known local test image.
+- Iris image probe identifies the bounded red-circle fixture. When the direct
+  Ollama raw-image canary is blocked, arbitrary scene descriptions must fail
+  closed rather than treating the local correction as model-vision proof.
 - Safe Hermes status reports `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Agentic Hermes status reports the Iris memory tools and the six reviewed
   action tools.

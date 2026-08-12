@@ -208,7 +208,8 @@ runtime instead of pretending the build-machine interpreter is portable.
 
 The release ships the pinned Windows agent-browser controller but not a
 duplicate browser engine. WinGet installs and updates Google Chrome; Iris
-launches it with a separate Iris-owned profile and never reuses the user's
-normal browser profile. This removes roughly 415 MiB uncompressed (about
+launches it in a separate, domain-contained, nonpersistent session and never
+reuses the user's normal browser profile. Headed manual sign-ins last only for
+the current session. This removes roughly 415 MiB uncompressed (about
 188 MiB from the ZIP in the measured v1 staging build) while retaining the
 same browser capability and improving browser security-update cadence.

@@ -1,3 +1,12 @@
+export const VOICE_SETUP_NEEDED_STATUS =
+  "Voice setup needed: repair or upgrade Iris, and ensure Python 3.13 is installed";
+export const MODEL_WARMUP_FAILED_STATUS =
+  "Local model warm-up failed. Restart Ollama or run Iris Setup Wizard.";
+export const MODEL_AND_VOICE_WARMUP_FAILED_STATUS =
+  "Local model and voice warm-up failed. Run Iris Setup Wizard before continuing.";
+export const RUNTIME_PREPARING_STATUS =
+  "Iris is still preparing the local model and voice runtime.";
+
 export function classifyVoiceTranscript(transcript, state) {
   const normalized = normalizeTranscript(transcript);
   if (!normalized) {
@@ -80,14 +89,63 @@ export function voiceTranscriptStateForMode(mode, state) {
 export function classifyAsrError(error) {
   const message = String(error || "").trim();
   const normalized = message.toLowerCase();
+  if (normalized.includes("no default microphone input device found")) {
+    return {
+      severity: "error",
+      event: "native_asr_error",
+      status: "No microphone is available. Connect one and choose it as the Windows default input device."
+    };
+  }
   if (
     normalized.includes("microphone produced no audio samples") ||
-    normalized.includes("no default microphone input device found") ||
     normalized === "no-speech"
   ) {
     return { severity: "nonfatal", event: "native_asr_no_input", status: "No speech transcript captured." };
   }
   return { severity: "error", event: "native_asr_error", status: message || "Native ASR failed." };
+}
+
+export function runtimeWarmHudStatus(
+  runtimeReady,
+  voiceWarmReady,
+  modelWarmReady = true,
+  panicStopped = false
+) {
+  if (panicStopped) {
+    return "Iris is paused.";
+  }
+  if (!runtimeReady) {
+    return null;
+  }
+  if (!modelWarmReady && !voiceWarmReady) {
+    return MODEL_AND_VOICE_WARMUP_FAILED_STATUS;
+  }
+  if (!modelWarmReady) {
+    return MODEL_WARMUP_FAILED_STATUS;
+  }
+  return voiceWarmReady ? "Waiting for input." : VOICE_SETUP_NEEDED_STATUS;
+}
+
+export function voiceCaptureCanStart({
+  runtimePreparing = false,
+  panicStopped = false,
+  enabled = true,
+  thinking = false,
+  speaking = false,
+  listening = false,
+  interruptionListening = false,
+  stopRequested = false
+} = {}) {
+  return !(
+    runtimePreparing ||
+    panicStopped ||
+    !enabled ||
+    thinking ||
+    speaking ||
+    listening ||
+    interruptionListening ||
+    stopRequested
+  );
 }
 
 export function wakeRestartDelayMs(mode, transcript, action, consecutiveMisses = 0) {
@@ -174,6 +232,91 @@ export function interruptionRetryDelayMs(completedAttempts, rejectedPauses) {
   const attempts = Math.max(0, Number(completedAttempts) || 0);
   const rejected = Math.max(0, Number(rejectedPauses) || 0);
   return Math.min(600, 100 + attempts * 50 + rejected * 100);
+}
+
+export function createInterruptionPauseCoordinator() {
+  let active = null;
+  const resolvedRequests = new Set();
+  const maximumResolvedRequests = 128;
+
+  const requestKey = (runId, requestId) => `${runId}:${requestId}`;
+  const rememberResolved = (runId, requestId) => {
+    const key = requestKey(runId, requestId);
+    resolvedRequests.delete(key);
+    resolvedRequests.add(key);
+    while (resolvedRequests.size > maximumResolvedRequests) {
+      resolvedRequests.delete(resolvedRequests.values().next().value);
+    }
+  };
+
+  return {
+    begin({ runId, requestId, method = "unknown", pause, resume }) {
+      if (!Number.isSafeInteger(runId) || runId <= 0) {
+        throw new TypeError("interruption pause run ID must be a positive integer");
+      }
+      if (!Number.isSafeInteger(requestId) || requestId <= 0) {
+        throw new TypeError("interruption pause request ID must be a positive integer");
+      }
+      if (typeof pause !== "function" || typeof resume !== "function") {
+        throw new TypeError("interruption pause controls must be functions");
+      }
+
+      const key = requestKey(runId, requestId);
+      if (resolvedRequests.has(key)) {
+        return Promise.resolve(false);
+      }
+      if (active?.runId === runId && active?.requestId === requestId) {
+        return active.pausePromise;
+      }
+      if (active) {
+        return Promise.resolve(false);
+      }
+
+      const attempt = {
+        method: String(method || "unknown"),
+        requestId,
+        runId,
+        resume
+      };
+      attempt.pausePromise = Promise.resolve().then(pause).then(Boolean);
+      active = attempt;
+      return attempt.pausePromise;
+    },
+    async resume(runId, requestId) {
+      rememberResolved(runId, requestId);
+      const attempt = active;
+      if (attempt?.runId !== runId || attempt?.requestId !== requestId) {
+        return {
+          matched: false,
+          method: "none",
+          paused: false,
+          resumed: false
+        };
+      }
+
+      active = null;
+      const paused = await attempt.pausePromise;
+      const resumed = paused ? Boolean(await attempt.resume()) : false;
+      return {
+        matched: true,
+        method: attempt.method,
+        paused,
+        resumed
+      };
+    },
+    clear() {
+      active = null;
+      resolvedRequests.clear();
+    }
+  };
+}
+
+export function interruptionResumeRequiresCancellation(outcome) {
+  return (
+    outcome?.matched === true &&
+    outcome?.paused === true &&
+    outcome?.resumed !== true
+  );
 }
 
 function isInterruption(text) {

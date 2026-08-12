@@ -89,7 +89,7 @@ function Get-RepairPlan {
         "^System browser executable$" {
             return [pscustomobject]@{
                 Title = "Install Google Chrome"
-                Description = "Iris uses an installed Google Chrome executable for approval-gated browser tools. Browser data remains in Iris' isolated profile."
+                Description = "Iris uses an installed Google Chrome executable in an isolated, domain-contained browser session. Manual sign-ins do not persist after that session closes."
                 Link = "https://www.google.com/chrome/"
                 Commands = @(
                     "winget install --id Google.Chrome -e --accept-source-agreements --accept-package-agreements"
@@ -100,7 +100,7 @@ function Get-RepairPlan {
         "^Ollama executable$" {
             return [pscustomobject]@{
                 Title = "Install Ollama for Windows"
-                Description = "Iris uses local Ollama for text and vision. This does not add a cloud API."
+                Description = "Iris uses local Ollama for text and bounded image assistance. Clear OCR and simple diagram facts stay local; unverified Windows Gemma 4 scene descriptions fail closed while the upstream projector fix is pending. This does not add a cloud API."
                 Link = "https://ollama.com/download/windows"
                 Commands = @(
                     "winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements"
@@ -268,6 +268,7 @@ function Invoke-Repair {
             if (-not (Test-CommandAvailable -Name "ollama")) {
                 throw "ollama is not available on PATH."
             }
+            $env:OLLAMA_HOST = "127.0.0.1:11434"
             Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
             Start-Sleep -Seconds 3
         }

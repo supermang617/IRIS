@@ -15,6 +15,8 @@ source code, not third-party model files or downloaded assets.
 - Microsoft Edge WebView2 Runtime.
 - Ollama running locally on `127.0.0.1:11434` with
   `huihui_ai/gemma-4-abliterated:e2b` available.
+  Iris refuses a network-wide Ollama listener; quit an existing broad listener
+  and let Iris restart Ollama on loopback. Iris does not change firewall rules.
 - Exact Python 3.13 is required for the pinned Hermes Agent and image-provider
   packages included in the Iris release, and for Python-backed Kokoro helper
   use. The portable ZIP includes the pinned package tree plus Kokoro model and
@@ -26,7 +28,7 @@ source code, not third-party model files or downloaded assets.
 Model traffic remains local to Ollama loopback. Safe mode does not act.
 An explicitly approved Agentic Session can use the packaged Hermes file,
 PowerShell, process, and isolated browser tools. High-risk actions require
-separate confirmation, the browser uses a dedicated Iris profile, and clipboard,
+separate confirmation, the browser uses an isolated, nonpersistent Iris session, and clipboard,
 mouse, keyboard, general window control, arbitrary plugins, and cloud model APIs
 remain unavailable.
 
@@ -188,8 +190,8 @@ are missing.
 - `profiles\iris_agentic.json`
 - `.iris-runtime\hermes` pinned Hermes Agent environment
 - `.iris-runtime\browser` pinned Windows agent-browser runtime; the browser
-  engine is system Google Chrome installed/updated by WinGet, always with
-  a separate Iris profile
+  engine is system Google Chrome installed/updated by WinGet, always in
+  a separate domain-contained session; manual sign-ins do not persist after close
 - `capabilities\v0_1_capability_ledger.toml`
 - user-facing docs, license, notice, security notes, known limitations, assets
 
@@ -259,7 +261,8 @@ Manual Windows launcher from the repository root:
 .\Start Iris.vbs
 ```
 
-Then follow `docs/manual-test.md`.
+Then follow `docs/manual-test.md`. For the bounded end-user release acceptance
+path, also use `docs/manual-end-user-test.md`.
 
 For release testing, use `docs/finish-checklist.md` and the GitHub manual tester
 issue template.

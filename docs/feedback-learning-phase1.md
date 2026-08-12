@@ -14,7 +14,10 @@ preference datasets. It does not fine-tune model weights.
 
 ## Privacy Boundary
 
-Feedback events are append-only JSONL at `.iris-data/feedback-events.jsonl`.
+Feedback events use bounded JSONL at `.iris-data/feedback-events.jsonl`. Iris
+keeps the current 512 KB journal plus one rotated journal and loads at most the
+400 most recent valid events. A truncated final record from an interrupted
+append is ignored; corruption earlier in a journal remains an explicit error.
 They store:
 
 - turn id, source, model/provider, tool labels, and latency;

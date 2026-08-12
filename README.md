@@ -2,7 +2,7 @@
 
 ![Iris local-first Windows AI companion](site/assets/iris-social-preview.jpg)
 
-Iris is a private, local-first Windows companion with natural voice, vision,
+Iris is a private, local-first Windows companion with natural voice, bounded image and OCR assistance,
 user-controlled memory, Ollama inference, and approval-gated Hermes agent
 tools. Iris sees, listens, thinks, speaks, and remembers only with permission.
 
@@ -19,7 +19,7 @@ This repository is public and source-first so people can inspect, test, and subm
 
 - Platform: Windows.
 - UI shell: Tauri.
-- Text and vision model provider: local Ollama loopback.
+- Text model and verified visual-evidence provider: local Ollama loopback.
 - Configured model: `huihui_ai/gemma-4-abliterated:e2b`.
 - TTS: Kokoro ONNX through the local Python helper, voice `af_heart`.
 - ASR: local Whisper model at `models/whisper/ggml-tiny.en.bin`.
@@ -88,16 +88,18 @@ Object. It exposes Iris-owned memory query/proposal plus reviewed `read_file`,
 `write_file`, `patch`, `search_files`, `terminal`, `process`, and reviewed
 isolated browser tools. Ordinary lookup, read, page-open, and page-snapshot work
 uses the active session approval and does not ask again when the user already
-requested research. General web lookup opens Brave Search through the dedicated
-Iris browser profile; direct public URLs or obvious primary sources are opened
+requested research. General web lookup opens Brave Search through an isolated
+Iris browser session; direct public URLs or obvious primary sources are opened
 directly. Destructive, sensitive, credential, install/admin, payment,
 submission, executable-download, and scope-expanding actions require separate
 confirmation. Tool results carry source and provenance back to Iris, browser
 content is treated as untrusted evidence with no instruction authority, and
 memory proposals remain staged until the user accepts them.
-Pinned executable environments live under `.iris-runtime`; persistent Hermes
-browser profile/download state and Hermes home state live under `.iris-data` so
-installer upgrades replace binaries without erasing user state.
+Pinned executable environments live under `.iris-runtime`; approved browser
+downloads and Hermes home state live under `.iris-data` so installer upgrades
+replace binaries without erasing user state. Browser sessions are isolated and
+domain-contained but intentionally nonpersistent; a headed manual sign-in must
+be repeated after the session closes.
 ## Validate
 
 Run from `C:\Projects\IRIS`:
@@ -157,7 +159,7 @@ exact signed MSIX and WACK report hashes. In-place upgrade testing begins with
 the first genuine higher semantic release.
 Runtime orchestration: `docs/runtime-orchestration.md`.
 Privacy policy: `PRIVACY.md`.
-Historical manual end-user test report: `docs/manual-end-user-test-v0.1.0.md`.
+Current v1 manual end-user test guide: `docs/manual-end-user-test.md`.
 The recommended beginner download is `iris-windows-installer.zip`: extract it
 and double-click `Install Iris.bat`. The portable release remains available for
 advanced/manual use and includes `Iris Setup Wizard.bat` plus read-only

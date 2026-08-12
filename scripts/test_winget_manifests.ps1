@@ -208,6 +208,10 @@ try {
             throw "Generated locale manifest is missing: $fragment"
         }
     }
+    if (-not $locale.Contains("bounded image and OCR assistance") -or
+        $locale.Contains("with voice, vision")) {
+        throw "Generated WinGet metadata must describe the current image path as bounded image and OCR assistance."
+    }
     if ($locale -match "(?m)^Icons:") {
         throw "Initial WinGet submission must omit verified-publisher-only Icons metadata."
     }
@@ -230,7 +234,7 @@ try {
         "privacy",
         "speech-to-text",
         "text-to-speech",
-        "vision",
+        "ocr",
         "voice-assistant",
         "windows",
         "windows-ai"

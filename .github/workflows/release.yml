@@ -186,6 +186,8 @@ jobs:
           .\scripts\test_windows_installer_path_safety.ps1
           .\scripts\test_windows_launcher_defaults.ps1
           .\scripts\test_windows_browser_payload.ps1
+          .\scripts\diagnose_raw_ollama_vision.ps1 -SelfTest
+          .\scripts\test_release_workspace_cleanup.ps1
           .\scripts\test_release_workflow.ps1
           .\scripts\test_voice_interruption_diagnostics.ps1
           .\scripts\test_winget_manifests.ps1
@@ -296,6 +298,10 @@ jobs:
           }
           foreach ($name in $portableWhisperFlags.Keys) {
             Set-Item -Path "Env:$name" -Value $portableWhisperFlags[$name]
+          }
+          $worktreeChanges = @(git status --porcelain=v1 --untracked-files=all)
+          if ($LASTEXITCODE -ne 0 -or $worktreeChanges.Count -ne 0) {
+            throw "Source worktree changed during release provisioning or validation: $($worktreeChanges -join '; ')"
           }
           cargo build --workspace --release --locked
           if ($LASTEXITCODE -ne 0) {

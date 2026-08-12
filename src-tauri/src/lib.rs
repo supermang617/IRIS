@@ -20,17 +20,58 @@ use std::{
 use tauri::{Emitter, Manager, PhysicalPosition};
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::{
+    ffi::OsStr,
+    os::windows::{
+        ffi::OsStrExt,
+        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        process::CommandExt,
+    },
+};
+
+#[cfg(windows)]
+use windows::{
+    Win32::{
+        Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_OBJECT_0},
+        System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject,
+            },
+            Threading::{CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForSingleObject},
+        },
+    },
+    core::PCWSTR,
+};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+#[cfg(windows)]
+#[link(name = "Kernel32")]
+unsafe extern "system" {
+    #[link_name = "MoveFileExW"]
+    fn move_file_ex_w(existing_file_name: *const u16, new_file_name: *const u16, flags: u32)
+    -> i32;
+}
+
 static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
-static HERMES_BROKER_STARTED: OnceLock<()> = OnceLock::new();
+static OLLAMA_CLIENT: OnceLock<iris_ollama::OllamaClient> = OnceLock::new();
+static IMAGE_PROVIDER_CHILD: OnceLock<Mutex<Option<Arc<ImageProviderProcess>>>> = OnceLock::new();
+static IMAGE_PROVIDER_RUN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static HERMES_BROKER_ACCESS: OnceLock<Result<HermesBrokerAccess, String>> = OnceLock::new();
 static HERMES_SIDECAR: OnceLock<Mutex<Option<HermesSidecar>>> = OnceLock::new();
 static HERMES_TASK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static HERMES_SIDECAR_IO_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static MEMORY_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static DIAGNOSTIC_SESSION: OnceLock<Mutex<Option<DiagnosticSessionSummary>>> = OnceLock::new();
-static INSTANCE_LOCK: OnceLock<TcpListener> = OnceLock::new();
+static DIAGNOSTIC_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static WHISPER_CONTEXT: OnceLock<Mutex<Option<whisper_rs::WhisperContext>>> = OnceLock::new();
 static MODEL_GENERATION: OnceLock<Mutex<ModelGenerationRegistry>> = OnceLock::new();
 static ASR_CAPTURE_EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -41,6 +82,7 @@ static KOKORO_WORKER_PID: AtomicU32 = AtomicU32::new(0);
 static TTS_PLAYBACK_PAUSED: AtomicBool = AtomicBool::new(false);
 static TTS_PAUSE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 static TTS_LAST_PAUSE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static MEMORY_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_STAGING_ITEMS: usize = 80;
 const MAX_HERMES_MEMORY_QUERY_CHARS: usize = 120;
@@ -51,13 +93,28 @@ const MAX_HERMES_HTTP_REQUEST_BYTES: usize = 16 * 1024;
 const MAX_IMAGE_PROBE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_IMAGE_GENERATION_PROMPT_CHARS: usize = 2_000;
 const MAX_GENERATED_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_AUDIO_DEVICE_LABEL_CHARS: usize = 160;
+const MAX_IMAGE_PROVIDER_STDOUT_BYTES: usize =
+    MAX_GENERATED_IMAGE_BYTES.div_ceil(3) * 4 + 256 * 1024;
+const MAX_IMAGE_PROVIDER_STDERR_BYTES: usize = 64 * 1024;
+const IMAGE_PROVIDER_TIMEOUT: Duration = Duration::from_secs(195);
+const IMAGE_PROVIDER_EXIT_GRACE: Duration = Duration::from_secs(5);
 const MAX_SCREEN_CAPTURE_WIDTH: u32 = 1280;
 const MAX_SCREEN_CAPTURE_HEIGHT: u32 = 720;
 const SCREEN_CAPTURE_HIDE_SETTLE_MS: u64 = 350;
-const HERMES_MEMORY_BROKER_ADDR: &str = "127.0.0.1:48731";
+const HERMES_MEMORY_BROKER_BIND_ADDR: &str = "127.0.0.1:0";
+const HERMES_MEMORY_BROKER_PUBLIC_DESCRIPTION: &str = "ephemeral_loopback_per_launch";
+const HERMES_MEMORY_BROKER_SECRET_BYTES: usize = 32;
+const HERMES_MEMORY_BROKER_WORKERS: usize = 4;
+const HERMES_MEMORY_BROKER_QUEUE_CAPACITY: usize = 8;
+const MAX_HERMES_SIDECAR_LINE_BYTES: usize = 64 * 1024;
+const HERMES_SIDECAR_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const HERMES_SIDECAR_TASK_TIMEOUT: Duration = Duration::from_secs(90);
 const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
-const TTS_NATIVE_PREROLL_MS: u64 = 80;
-const TTS_NATIVE_TAIL_MS: u64 = 120;
+const MAX_VOICE_EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_VOICE_LATENCY_LOG_BYTES: u64 = 1024 * 1024;
+const TTS_NATIVE_FIRST_CHUNK_PREROLL_MS: u64 = 80;
+const TTS_NATIVE_CHUNK_TAIL_MS: u64 = 20;
 const TTS_NATIVE_PAUSE_ALLOWANCE_MS: u64 = 5_000;
 const INTERRUPTION_CAPTURE_MAX_MS: u64 = 1_200;
 const INTERRUPTION_CAPTURE_START_TIMEOUT_MS: u64 = 600;
@@ -67,12 +124,17 @@ const INTERRUPTION_TRANSCRIPTION_BUDGET_MS: u64 = 1_500;
 const INTERRUPTION_EVENT_NAME: &str = "iris://voice/interruption-onset";
 const TTS_PLAYBACK_ONSET_EVENT_NAME: &str = "iris://voice/playback-onset";
 const MODEL_CHUNK_EVENT_NAME: &str = "iris://model/chunk";
+#[cfg(windows)]
+const INSTANCE_MUTEX_NAME: &str = r"Local\io.github.supermang617.iris.instance";
+#[cfg(windows)]
+const INSTANCE_FOCUS_EVENT_NAME: &str = r"Local\io.github.supermang617.iris.focus";
 const OLLAMA_SERVER_DEFAULTS: [(&str, &str); 4] = [
     ("OLLAMA_FLASH_ATTENTION", "1"),
     ("OLLAMA_KV_CACHE_TYPE", "q8_0"),
     ("OLLAMA_NUM_PARALLEL", "1"),
     ("OLLAMA_MAX_LOADED_MODELS", "1"),
 ];
+const OLLAMA_LOOPBACK_HOST: &str = "127.0.0.1:11434";
 const OLLAMA_PERSISTED_DEFAULT_COUNT: usize = 2;
 type IrisWindow = tauri::Window<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
 type IrisAppHandle = tauri::AppHandle<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>;
@@ -317,6 +379,117 @@ struct ImageProviderOutput {
     revised_prompt: Option<String>,
 }
 
+#[derive(Debug)]
+struct BoundedProcessOutput {
+    bytes: Vec<u8>,
+    truncated: bool,
+    total_bytes: usize,
+}
+
+struct ImageProviderProcess {
+    child: Mutex<Child>,
+    cancelled: AtomicBool,
+    #[cfg(windows)]
+    job: ImageProviderJob,
+}
+
+#[cfg(windows)]
+struct ImageProviderJob {
+    handle: OwnedHandle,
+}
+
+#[cfg(windows)]
+impl ImageProviderJob {
+    fn create_and_assign(child: &Child) -> Result<Self, String> {
+        // SAFETY: default security and an unnamed job object are requested.
+        let raw_handle = unsafe { CreateJobObjectW(None, None) }
+            .map_err(|error| format!("failed to create the image provider job: {error}"))?;
+        let handle = owned_windows_handle(raw_handle);
+        let job_handle = raw_windows_handle(&handle);
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: both handles remain valid for the calls and `limits` has the exact structure
+        // required by JobObjectExtendedLimitInformation.
+        unsafe {
+            SetInformationJobObject(
+                job_handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(limits).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+            .map_err(|error| format!("failed to configure the image provider job: {error}"))?;
+            AssignProcessToJobObject(job_handle, HANDLE(child.as_raw_handle())).map_err(
+                |error| format!("failed to assign the image provider process tree: {error}"),
+            )?;
+        }
+        Ok(Self { handle })
+    }
+
+    fn terminate(&self) {
+        // SAFETY: `handle` owns a live job-object handle for this call.
+        let _ = unsafe { TerminateJobObject(raw_windows_handle(&self.handle), 1) };
+    }
+}
+
+impl ImageProviderProcess {
+    fn new(mut child: Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        let job = match ImageProviderJob::create_and_assign(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            child: Mutex::new(child),
+            cancelled: AtomicBool::new(false),
+            #[cfg(windows)]
+            job,
+        })
+    }
+
+    fn try_wait(&self) -> Result<Option<std::process::ExitStatus>, String> {
+        self.child
+            .lock()
+            .map_err(|_| "Iris image provider process state is unavailable".to_string())?
+            .try_wait()
+            .map_err(|error| format!("failed to inspect Iris image provider: {error}"))
+    }
+
+    fn terminate(&self, cancelled: bool) {
+        if cancelled {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+        #[cfg(windows)]
+        self.job.terminate();
+        if let Ok(mut child) = self.child.lock()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            let _ = child.kill();
+        }
+    }
+}
+
+struct ImageProviderRegistration {
+    process: Arc<ImageProviderProcess>,
+}
+
+impl Drop for ImageProviderRegistration {
+    fn drop(&mut self) {
+        self.process.terminate(false);
+        if let Some(slot) = IMAGE_PROVIDER_CHILD.get()
+            && let Ok(mut current) = slot.lock()
+            && current
+                .as_ref()
+                .is_some_and(|process| Arc::ptr_eq(process, &self.process))
+        {
+            current.take();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ConversationRole {
@@ -349,6 +522,8 @@ struct StagedMemoryProposal {
     evidence: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provenance: Option<MemoryProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accepted_memory_id: Option<u64>,
     status: StagingStatus,
     verdict: ProposalVerdict,
     created_ms: u128,
@@ -437,11 +612,6 @@ struct FeedbackStatusResponse {
     instruction_active: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct StagingDecisionRequest {
-    id: u64,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HermesStatusResponse {
@@ -461,6 +631,12 @@ struct HermesStatusResponse {
     cloud_sync_enabled: bool,
     sequential_tasks_only: bool,
     runtime_tool_audit_passed: bool,
+}
+
+#[derive(Clone)]
+struct HermesBrokerAccess {
+    url: String,
+    bearer_token: Arc<str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -486,6 +662,7 @@ struct HermesSafetyAuditResponse {
     max_response_chars: usize,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MemoryArchivePolicyResponse {
@@ -498,19 +675,6 @@ struct MemoryArchivePolicyResponse {
     live_sqlite_on_cloud_sync_allowed: bool,
     export_available: bool,
     allowed_archive_extension: &'static str,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MemoryArchiveDestinationRequest {
-    path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MemoryArchiveDestinationResponse {
-    ok: bool,
-    reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -564,7 +728,8 @@ struct HermesRuntimeStatus {
 struct HermesSidecar {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    response_rx: Arc<Mutex<mpsc::Receiver<Result<String, String>>>>,
+    audit_passed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -573,6 +738,7 @@ struct AsrCommandResponse {
     elapsed_ms: u128,
     capture_elapsed_ms: Option<u128>,
     stt_elapsed_ms: Option<u128>,
+    input_device: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,6 +798,7 @@ struct InterruptionOnsetEvent {
 struct TtsPlaybackOnsetEvent {
     playback_id: u64,
     preroll_ms: u64,
+    output_device: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -756,24 +923,6 @@ fn current_dashboard_snapshot() -> Result<iris_status::DashboardSnapshot, String
         .parent()
         .ok_or_else(|| "manifest path has no parent".to_string())?;
     Ok(iris_status::build_dashboard_snapshot(&manifest, &hardware))
-}
-
-#[tauri::command]
-async fn submit_typed_hud(
-    text: String,
-    history: Option<Vec<ConversationTurn>>,
-    style_text: Option<String>,
-) -> HudCommandResponse {
-    tauri::async_runtime::spawn_blocking(move || {
-        submit_typed_hud_blocking(text, history, style_text)
-    })
-    .await
-    .unwrap_or_else(|err| HudCommandResponse {
-        text: String::new(),
-        cancelled: false,
-        error: Some(format!("Local model unavailable: {err}")),
-        model_elapsed_ms: 0,
-    })
 }
 
 fn model_generation_registry() -> &'static Mutex<ModelGenerationRegistry> {
@@ -909,7 +1058,7 @@ fn hermes_status() -> HermesStatusResponse {
         agentic_runtime_available: false,
         agentic_session: None,
         profile: "unavailable".to_string(),
-        broker_url: "http://127.0.0.1:48731",
+        broker_url: HERMES_MEMORY_BROKER_PUBLIC_DESCRIPTION,
         tools: Vec::new(),
         acting_tools: Vec::new(),
         search_enabled: false,
@@ -917,12 +1066,6 @@ fn hermes_status() -> HermesStatusResponse {
         sequential_tasks_only: true,
         runtime_tool_audit_passed: false,
     })
-}
-
-#[tauri::command]
-fn hermes_start_sidecar() -> Result<HermesStatusResponse, String> {
-    start_hermes_sidecar()?;
-    hermes_status_snapshot()
 }
 
 #[tauri::command]
@@ -984,13 +1127,9 @@ fn hermes_end_agentic_session() -> Result<hermes_policy::HermesPolicySnapshot, S
 }
 
 #[tauri::command]
-fn hermes_record_agentic_activity() -> Result<hermes_policy::HermesPolicySnapshot, String> {
-    hermes_policy::record_agentic_activity(timestamp_ms()?)
-}
-
-#[tauri::command]
 fn hermes_panic_stop() -> Result<hermes_policy::HermesPolicySnapshot, String> {
     let snapshot = hermes_policy::activate_panic_stop(timestamp_ms()?)?;
+    stop_image_provider();
     let _ = stop_hermes_sidecar();
     hermes_acp::stop();
     Ok(snapshot)
@@ -1001,15 +1140,6 @@ fn hermes_clear_panic_stop() -> Result<hermes_policy::HermesPolicySnapshot, Stri
     stop_hermes_sidecar()?;
     hermes_acp::stop();
     hermes_policy::clear_panic_stop(timestamp_ms()?)
-}
-
-#[tauri::command]
-fn hermes_agentic_runtime_status() -> Result<hermes_acp::HermesAcpRuntimeStatus, String> {
-    let resources = resource_root()?;
-    let state = state_root_for(&resources)?;
-    let status = hermes_acp::runtime_status(&resources, &state);
-    hermes_policy::set_agentic_runtime_available(status.installed);
-    Ok(status)
 }
 
 #[tauri::command]
@@ -1111,27 +1241,56 @@ fn hermes_respond_agentic_approval(request_id: String, approved: bool) -> Result
     hermes_acp::respond_to_approval(request_id.trim(), approved)
 }
 
+fn require_active_agentic_session(
+    policy: hermes_policy::HermesPolicySnapshot,
+    expected_session_id: Option<&str>,
+) -> Result<hermes_policy::AgenticSession, String> {
+    if policy.panic_stop_active {
+        return Err("Panic Stop is active; Agentic work is cancelled".to_string());
+    }
+    if policy.mode != hermes_policy::HermesMode::Agentic {
+        return Err("Hermes is not in Agentic mode".to_string());
+    }
+    let session = policy
+        .agentic_session
+        .ok_or_else(|| "Agentic Hermes session is unavailable".to_string())?;
+    if expected_session_id.is_some_and(|expected| expected != session.session_id) {
+        return Err(
+            "Agentic Hermes session ended or changed while waiting for local inference".to_string(),
+        );
+    }
+    Ok(session)
+}
+
 #[tauri::command]
 async fn hermes_submit_agentic_task(
     text: String,
 ) -> Result<hermes_acp::HermesAcpTaskResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let policy = hermes_policy::snapshot(timestamp_ms()?)?;
-        if policy.mode != hermes_policy::HermesMode::Agentic {
-            return Err("Hermes is not in Agentic mode".to_string());
-        }
-        let session = policy
-            .agentic_session
-            .ok_or_else(|| "Agentic Hermes session is unavailable".to_string())?;
+        let task_lock = HERMES_TASK_LOCK.get_or_init(|| Mutex::new(()));
+        let _task_guard = task_lock
+            .lock()
+            .map_err(|_| "Hermes task state is unavailable".to_string())?;
+        let session =
+            require_active_agentic_session(hermes_policy::snapshot(timestamp_ms()?)?, None)?;
         let resources = resource_root()?;
         let state = state_root_for(&resources)?;
         let manifest = iris_config::load_manifest_from_workspace(&resources)?;
-        let result = hermes_acp::submit_task(
+        let _inference_permit = iris_ollama::acquire_inference_permit()?;
+        let expected_session_id = session.session_id.clone();
+        let result = hermes_acp::submit_task_with_start_guard(
             &resources,
             &state,
             &session.workspace_path,
             &manifest.model_policy.model_id,
             &text,
+            || {
+                require_active_agentic_session(
+                    hermes_policy::snapshot(timestamp_ms()?)?,
+                    Some(&expected_session_id),
+                )?;
+                Ok(())
+            },
         )?;
         hermes_policy::record_agentic_activity(timestamp_ms()?)?;
         observe_dynamic_context_nonfatal(&text, timestamp_ms_u64().unwrap_or(0));
@@ -1139,11 +1298,6 @@ async fn hermes_submit_agentic_task(
     })
     .await
     .map_err(|err| err.to_string())?
-}
-
-#[tauri::command]
-fn hermes_cancel_agentic_task() {
-    hermes_acp::stop();
 }
 
 #[tauri::command]
@@ -1167,24 +1321,6 @@ fn hermes_safety_audit() -> Result<HermesSafetyAuditResponse, String> {
 }
 
 #[tauri::command]
-fn memory_archive_policy() -> MemoryArchivePolicyResponse {
-    memory_archive_policy_snapshot()
-}
-
-#[tauri::command]
-fn validate_memory_archive_destination(
-    request: MemoryArchiveDestinationRequest,
-) -> MemoryArchiveDestinationResponse {
-    match validate_cold_archive_destination(&request.path) {
-        Ok(()) => MemoryArchiveDestinationResponse {
-            ok: true,
-            reason: "archive destination is an encrypted local Iris archive path".to_string(),
-        },
-        Err(reason) => MemoryArchiveDestinationResponse { ok: false, reason },
-    }
-}
-
-#[tauri::command]
 async fn hermes_submit_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, String> {
     tauri::async_runtime::spawn_blocking(move || submit_hermes_task(request))
         .await
@@ -1194,9 +1330,10 @@ async fn hermes_submit_task(request: HermesTaskRequest) -> Result<HermesTaskResp
 #[tauri::command]
 fn add_memory(text: String) -> Result<Vec<MemoryItem>, String> {
     let text = normalize_memory_text(&text)?;
+    let _memory_guard = lock_memory_state()?;
     let mut memories = load_memories()?;
     let now = timestamp_ms()?;
-    let id = memories.iter().map(|memory| memory.id).max().unwrap_or(0) + 1;
+    let id = next_memory_id(&memories)?;
     memories.push(MemoryItem {
         id,
         text,
@@ -1211,6 +1348,7 @@ fn add_memory(text: String) -> Result<Vec<MemoryItem>, String> {
 #[tauri::command]
 fn edit_memory(id: u64, text: String) -> Result<Vec<MemoryItem>, String> {
     let text = normalize_memory_text(&text)?;
+    let _memory_guard = lock_memory_state()?;
     let mut memories = load_memories()?;
     let now = timestamp_ms()?;
     let memory = memories
@@ -1225,6 +1363,7 @@ fn edit_memory(id: u64, text: String) -> Result<Vec<MemoryItem>, String> {
 
 #[tauri::command]
 fn delete_memory(id: u64) -> Result<Vec<MemoryItem>, String> {
+    let _memory_guard = lock_memory_state()?;
     let mut memories = load_memories()?;
     let original_len = memories.len();
     memories.retain(|memory| memory.id != id);
@@ -1233,31 +1372,6 @@ fn delete_memory(id: u64) -> Result<Vec<MemoryItem>, String> {
     }
     save_memories(&memories)?;
     Ok(memories)
-}
-
-fn submit_typed_hud_blocking(
-    text: String,
-    history: Option<Vec<ConversationTurn>>,
-    style_text: Option<String>,
-) -> HudCommandResponse {
-    let started = Instant::now();
-    let history = history.unwrap_or_default();
-    let style_text = style_text.unwrap_or_else(|| text.clone());
-    let now = timestamp_ms_u64().unwrap_or(0);
-    let dynamic_context = dynamic_context_instruction(now);
-    let response = match model_response(&text, &history, dynamic_context.as_deref()) {
-        Ok(response) => response,
-        Err(error) => iris_core_types::AssistantResponse::text_only(format!(
-            "Local model unavailable: {error}"
-        )),
-    };
-    observe_dynamic_context_nonfatal(&style_text, now);
-    HudCommandResponse {
-        text: response.text,
-        cancelled: response.cancelled,
-        error: None,
-        model_elapsed_ms: started.elapsed().as_millis(),
-    }
 }
 
 fn submit_typed_hud_stream_blocking(
@@ -1524,6 +1638,7 @@ fn native_asr_listen_for(
             elapsed_ms: started.elapsed().as_millis(),
             capture_elapsed_ms: Some(capture_elapsed_ms),
             stt_elapsed_ms: Some(0),
+            input_device: audio.input_device.clone(),
         });
     }
     if skip_low_confidence_wake && !wake_audio_should_transcribe(&audio) {
@@ -1532,6 +1647,7 @@ fn native_asr_listen_for(
             elapsed_ms: started.elapsed().as_millis(),
             capture_elapsed_ms: Some(capture_elapsed_ms),
             stt_elapsed_ms: Some(0),
+            input_device: audio.input_device.clone(),
         });
     }
     let stt_started = Instant::now();
@@ -1559,6 +1675,7 @@ fn native_asr_listen_for(
         elapsed_ms: started.elapsed().as_millis(),
         capture_elapsed_ms: Some(capture_elapsed_ms),
         stt_elapsed_ms: Some(stt_elapsed_ms),
+        input_device: audio.input_device,
     })
 }
 
@@ -1586,19 +1703,23 @@ async fn play_tts_wav(
     window: IrisWindow,
     wav_bytes: Vec<u8>,
     playback_id: u64,
+    first_chunk: Option<bool>,
 ) -> Result<(), String> {
+    let first_chunk = first_chunk.unwrap_or(true);
+    let padding = tts_playback_padding(first_chunk);
     let playback_epoch = TTS_PLAYBACK_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
     TTS_ACTIVE_PLAYBACK_ID.store(playback_id, Ordering::SeqCst);
     TTS_PLAYBACK_PAUSED.store(false, Ordering::SeqCst);
     TTS_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
     TTS_LAST_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
     let result = tauri::async_runtime::spawn_blocking(move || {
-        play_tts_wav_blocking_with_onset(&wav_bytes, playback_epoch, || {
+        play_tts_wav_blocking_with_onset(&wav_bytes, playback_epoch, first_chunk, |output_device| {
             let _ = window.emit(
                 TTS_PLAYBACK_ONSET_EVENT_NAME,
                 TtsPlaybackOnsetEvent {
                     playback_id,
-                    preroll_ms: TTS_NATIVE_PREROLL_MS,
+                    preroll_ms: padding.preroll_ms,
+                    output_device: output_device.to_string(),
                 },
             );
         })
@@ -1689,10 +1810,7 @@ async fn warm_kokoro_tts() -> Result<(), String> {
 #[tauri::command]
 async fn warm_ollama_model() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let resource_root = resource_root()?;
-        let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
-        let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
-        let client = iris_ollama::OllamaClient::new(settings)?;
+        let client = configured_ollama_client()?;
         let gated_context = iris_ui::gate_typed_text("warm up");
         let response = client.respond_with_history_and_memories(&gated_context, &[], &[]);
         if is_local_model_unavailable_response(&response.text) {
@@ -1715,13 +1833,18 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
     let started = Instant::now();
     let root = resource_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&root)?;
-    if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
-        return Ok(LocalRuntimePreparation {
-            ready: true,
-            started_ollama: false,
-            elapsed_ms: started.elapsed().as_millis(),
-            message: "Local model service is ready.".to_string(),
-        });
+    if ollama_loopback_ready() {
+        require_loopback_only_ollama_listener()?;
+        let model_ready = configured_ollama_model_ready(&manifest);
+        require_loopback_only_ollama_listener()?;
+        if model_ready {
+            return Ok(LocalRuntimePreparation {
+                ready: true,
+                started_ollama: false,
+                elapsed_ms: started.elapsed().as_millis(),
+                message: "Local model service is ready.".to_string(),
+            });
+        }
     }
     let models_root =
         find_ollama_models_root(&manifest.model_policy.model_id).ok_or_else(|| {
@@ -1731,6 +1854,7 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             )
         })?;
     if ollama_loopback_ready() {
+        require_loopback_only_ollama_listener()?;
         return Err(format!(
             "Ollama is already running on 127.0.0.1:11434, but Iris could not use {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` and restart Ollama, then try again.",
             manifest.model_policy.model_id, manifest.model_policy.model_id
@@ -1749,6 +1873,7 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             manifest.model_policy.num_ctx_ceiling.to_string(),
         );
     apply_ollama_server_defaults(&mut command);
+    command.env("OLLAMA_HOST", OLLAMA_LOOPBACK_HOST);
     command.env("OLLAMA_MODELS", models_root);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -1758,13 +1883,18 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
 
     for _ in 0..40 {
         thread::sleep(std::time::Duration::from_millis(250));
-        if ollama_loopback_ready() && configured_ollama_model_ready(&manifest) {
-            return Ok(LocalRuntimePreparation {
-                ready: true,
-                started_ollama: true,
-                elapsed_ms: started.elapsed().as_millis(),
-                message: "Local model service started.".to_string(),
-            });
+        if ollama_loopback_ready() {
+            require_loopback_only_ollama_listener()?;
+            let model_ready = configured_ollama_model_ready(&manifest);
+            require_loopback_only_ollama_listener()?;
+            if model_ready {
+                return Ok(LocalRuntimePreparation {
+                    ready: true,
+                    started_ollama: true,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    message: "Local model service started.".to_string(),
+                });
+            }
         }
     }
     Err("Ollama did not become ready within 10 seconds".to_string())
@@ -1796,6 +1926,72 @@ fn apply_ollama_server_defaults(command: &mut Command) {
     for (name, default_value) in OLLAMA_SERVER_DEFAULTS {
         command.env(name, ollama_server_setting(name, default_value));
     }
+}
+
+#[cfg(windows)]
+fn require_loopback_only_ollama_listener() -> Result<(), String> {
+    let output = Command::new("netstat.exe")
+        .args(["-ano", "-n", "-p", "tcp"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to inspect the Ollama listener: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to inspect the Ollama listener: netstat exited with {}",
+            output.status
+        ));
+    }
+    let output = String::from_utf8_lossy(&output.stdout);
+    match ollama_listener_is_loopback_only(&output) {
+        Some(true) => Ok(()),
+        Some(false) => Err(
+            "Ollama is listening beyond this computer. Quit the existing Ollama service and restart Iris so Iris can launch it on 127.0.0.1:11434. Iris will not use a network-exposed model service."
+                .to_string(),
+        ),
+        None => Err(
+            "Iris reached Ollama on 127.0.0.1:11434 but could not verify its listener boundary. Quit Ollama and restart Iris."
+                .to_string(),
+        ),
+    }
+}
+
+#[cfg(not(windows))]
+fn require_loopback_only_ollama_listener() -> Result<(), String> {
+    Ok(())
+}
+
+fn ollama_listener_is_loopback_only(netstat_output: &str) -> Option<bool> {
+    let mut found = false;
+    let mut loopback_only = true;
+    for fields in netstat_output
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .filter(|fields| fields.len() >= 3 && fields[0].eq_ignore_ascii_case("TCP"))
+    {
+        let Some(local_host) = endpoint_host_for_port(fields[1], 11_434) else {
+            continue;
+        };
+        let remote_is_listener = endpoint_host_for_port(fields[2], 0).is_some();
+        if !remote_is_listener {
+            continue;
+        }
+        found = true;
+        loopback_only &= matches!(
+            local_host.to_ascii_lowercase().as_str(),
+            "127.0.0.1" | "::1" | "::ffff:127.0.0.1"
+        );
+    }
+    found.then_some(loopback_only)
+}
+
+fn endpoint_host_for_port(endpoint: &str, expected_port: u16) -> Option<&str> {
+    let (host, port) = if let Some(rest) = endpoint.strip_prefix('[') {
+        let (host, port) = rest.rsplit_once("]:")?;
+        (host, port)
+    } else {
+        endpoint.rsplit_once(':')?
+    };
+    (port.parse::<u16>().ok()? == expected_port).then_some(host)
 }
 
 #[cfg(windows)]
@@ -2230,19 +2426,17 @@ fn _old_signature_anchor() {
 
 #[tauri::command]
 fn log_voice_diagnostic(event: VoiceDiagnosticEvent) -> Result<(), String> {
+    let log_state = DIAGNOSTIC_LOG_LOCK.get_or_init(|| Mutex::new(()));
+    let _log_guard = log_state
+        .lock()
+        .map_err(|_| "voice diagnostic log lock is unavailable".to_string())?;
     let state_root = state_root()?;
     let diagnostics_dir = state_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
     let session_id = record_diagnostic_activity(&diagnostics_dir, Some(&event.event), false)?;
     let log_path = diagnostics_dir.join("voice-events.jsonl");
     let line = voice_diagnostic_jsonl(&session_id, timestamp_ms()?, event)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|err| err.to_string())?;
-    file.write_all(line.as_bytes())
-        .map_err(|err| err.to_string())
+    append_bounded_diagnostic_record(&log_path, line.as_bytes(), MAX_VOICE_EVENT_LOG_BYTES)
 }
 
 fn voice_diagnostic_jsonl(
@@ -2271,21 +2465,46 @@ fn voice_diagnostic_jsonl(
 
 #[tauri::command]
 fn log_voice_latency_report(trace: VoiceLatencyTrace) -> Result<String, String> {
+    let log_state = DIAGNOSTIC_LOG_LOCK.get_or_init(|| Mutex::new(()));
+    let _log_guard = log_state
+        .lock()
+        .map_err(|_| "voice diagnostic log lock is unavailable".to_string())?;
     let state_root = state_root()?;
     let diagnostics_dir = state_root.join("diagnostics");
     fs::create_dir_all(&diagnostics_dir).map_err(|err| err.to_string())?;
     let session_id = record_diagnostic_activity(&diagnostics_dir, None, true)?;
     let report = format_voice_latency_report(&session_id, &trace);
     let log_path = diagnostics_dir.join("voice-latency.txt");
+    let record = format!("{report}\n\n");
+    append_bounded_diagnostic_record(&log_path, record.as_bytes(), MAX_VOICE_LATENCY_LOG_BYTES)?;
+    Ok(report)
+}
+
+fn append_bounded_diagnostic_record(
+    path: &Path,
+    record: &[u8],
+    maximum_bytes: u64,
+) -> Result<(), String> {
+    if record.is_empty() || record.len() as u64 > maximum_bytes {
+        return Err(format!(
+            "diagnostic record must be non-empty and no larger than {maximum_bytes} bytes"
+        ));
+    }
+    let current_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    if current_bytes.saturating_add(record.len() as u64) > maximum_bytes {
+        rotate_diagnostic_file(path)?;
+    }
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_path)
-        .map_err(|err| err.to_string())?;
-    file.write_all(report.as_bytes())
-        .and_then(|_| file.write_all(b"\n\n"))
-        .map_err(|err| err.to_string())?;
-    Ok(report)
+        .open(path)
+        .map_err(|error| format!("failed to open diagnostic log {}: {error}", path.display()))?;
+    file.write_all(record).map_err(|error| {
+        format!(
+            "failed to append diagnostic log {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn format_voice_latency_report(session_id: &str, trace: &VoiceLatencyTrace) -> String {
@@ -2588,34 +2807,30 @@ fn observe_dynamic_context_nonfatal(text: &str, now_ms: u64) {
 
 fn load_memories() -> Result<Vec<MemoryItem>, String> {
     let path = memory_file_path()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let bytes = fs::read(&path)
-        .map_err(|err| format!("failed to read memories {}: {err}", path.display()))?;
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut memories = serde_json::from_slice::<Vec<MemoryItem>>(&bytes)
-        .map_err(|err| format!("failed to parse memories {}: {err}", path.display()))?;
+    load_memories_from_path(&path)
+}
+
+fn load_memories_from_path(path: &Path) -> Result<Vec<MemoryItem>, String> {
+    let mut memories = load_memory_json_with_previous(path, "memories")?;
     trim_memory_cap(&mut memories);
     Ok(memories)
 }
 
 fn save_memories(memories: &[MemoryItem]) -> Result<(), String> {
     let path = memory_file_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
+    save_memories_to_path(&path, memories)
+}
+
+fn save_memories_to_path(path: &Path, memories: &[MemoryItem]) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(memories).map_err(|err| err.to_string())?;
-    fs::write(&path, json)
-        .map_err(|err| format!("failed to write memories {}: {err}", path.display()))
+    atomic_write_memory_file(path, &json, "memories", MemoryFileKind::Active)
 }
 
 fn staging_memory_file_path() -> Result<std::path::PathBuf, String> {
     Ok(state_root()?.join(".iris-data/hermes_staging.json"))
 }
 
+#[cfg(test)]
 fn memory_archive_policy_snapshot() -> MemoryArchivePolicyResponse {
     MemoryArchivePolicyResponse {
         cloud_sync_enabled: false,
@@ -2630,6 +2845,7 @@ fn memory_archive_policy_snapshot() -> MemoryArchivePolicyResponse {
     }
 }
 
+#[cfg(test)]
 fn validate_cold_archive_destination(path: &str) -> Result<(), String> {
     let clean = path.trim();
     if clean.is_empty() {
@@ -2665,6 +2881,7 @@ fn validate_cold_archive_destination(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn is_cloud_sync_path(lower_path: &str) -> bool {
     [
         "google drive",
@@ -2681,26 +2898,309 @@ fn is_cloud_sync_path(lower_path: &str) -> bool {
 
 fn load_staged_memory_proposals() -> Result<Vec<StagedMemoryProposal>, String> {
     let path = staging_memory_file_path()?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let bytes = fs::read(&path)
-        .map_err(|err| format!("failed to read staging memory {}: {err}", path.display()))?;
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_slice::<Vec<StagedMemoryProposal>>(&bytes)
-        .map_err(|err| format!("failed to parse staging memory {}: {err}", path.display()))
+    load_staged_memory_proposals_from_path(&path)
+}
+
+fn load_staged_memory_proposals_from_path(
+    path: &Path,
+) -> Result<Vec<StagedMemoryProposal>, String> {
+    load_memory_json_with_previous(path, "staging memory")
 }
 
 fn save_staged_memory_proposals(staged: &[StagedMemoryProposal]) -> Result<(), String> {
     let path = staging_memory_file_path()?;
+    save_staged_memory_proposals_to_path(&path, staged)
+}
+
+fn save_staged_memory_proposals_to_path(
+    path: &Path,
+    staged: &[StagedMemoryProposal],
+) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(staged).map_err(|err| err.to_string())?;
+    atomic_write_memory_file(path, &json, "staging memory", MemoryFileKind::Staged)
+}
+
+fn lock_memory_state() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    MEMORY_STATE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "Iris memory state lock is unavailable".to_string())
+}
+
+#[derive(Clone, Copy)]
+enum MemoryFileKind {
+    Active,
+    Staged,
+}
+
+const MAX_MEMORY_STATE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+fn memory_previous_file_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("iris-memory");
+    path.with_file_name(format!("{file_name}.previous"))
+}
+
+fn memory_corrupt_file_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("iris-memory");
+    path.with_file_name(format!("{file_name}.corrupt"))
+}
+
+fn validate_memory_json(bytes: &[u8], kind: MemoryFileKind) -> Result<(), String> {
+    match kind {
+        MemoryFileKind::Active => serde_json::from_slice::<Vec<MemoryItem>>(bytes)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+        MemoryFileKind::Staged => serde_json::from_slice::<Vec<StagedMemoryProposal>>(bytes)
+            .map(|_| ())
+            .map_err(|error| error.to_string()),
+    }
+}
+
+fn read_bounded_memory_file(path: &Path, label: &str) -> Result<Vec<u8>, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("failed to inspect {label} {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("{label} path is not a file: {}", path.display()));
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_MEMORY_STATE_FILE_BYTES {
+        return Err(format!(
+            "{label} {} must be non-empty and no larger than {MAX_MEMORY_STATE_FILE_BYTES} bytes",
+            path.display()
+        ));
+    }
+    fs::read(path).map_err(|error| format!("failed to read {label} {}: {error}", path.display()))
+}
+
+fn parse_memory_json_file<T>(path: &Path, label: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let bytes = read_bounded_memory_file(path, label)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("failed to parse {label} {}: {error}", path.display()))
+}
+
+fn load_memory_json_with_previous<T>(path: &Path, label: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    let previous = memory_previous_file_path(path);
+    if !path.exists() {
+        return if previous.exists() {
+            parse_memory_json_file(&previous, &format!("previous {label}"))
+        } else {
+            Ok(T::default())
+        };
+    }
+    match parse_memory_json_file(path, label) {
+        Ok(value) => Ok(value),
+        Err(active_error) => {
+            if let Ok(bytes) = read_bounded_memory_file(path, label) {
+                let _ = atomic_replace_file_bytes(
+                    &memory_corrupt_file_path(path),
+                    &bytes,
+                    &format!("corrupt {label} evidence"),
+                );
+            }
+            if !previous.exists() {
+                return Err(active_error);
+            }
+            parse_memory_json_file(&previous, &format!("previous {label}")).map_err(
+                |previous_error| {
+                    format!(
+                        "{active_error}; last-known-good {label} recovery also failed: {previous_error}"
+                    )
+                },
+            )
+        }
+    }
+}
+
+fn atomic_write_memory_file(
+    path: &Path,
+    bytes: &[u8],
+    label: &str,
+    kind: MemoryFileKind,
+) -> Result<(), String> {
+    validate_memory_json(bytes, kind)
+        .map_err(|error| format!("refusing to write invalid {label}: {error}"))?;
+    if path.exists() {
+        match read_bounded_memory_file(path, label) {
+            Ok(existing) if validate_memory_json(&existing, kind).is_ok() => {
+                atomic_replace_file_bytes(
+                    &memory_previous_file_path(path),
+                    &existing,
+                    &format!("previous {label}"),
+                )?;
+            }
+            Ok(existing) => {
+                atomic_replace_file_bytes(
+                    &memory_corrupt_file_path(path),
+                    &existing,
+                    &format!("corrupt {label} evidence"),
+                )?;
+            }
+            Err(error) => {
+                let corrupt = memory_corrupt_file_path(path);
+                if corrupt.exists() {
+                    fs::remove_file(&corrupt).map_err(|remove_error| {
+                        format!(
+                            "failed to replace corrupt {label} evidence {} after {error}: {remove_error}",
+                            corrupt.display()
+                        )
+                    })?;
+                }
+                fs::rename(path, &corrupt).map_err(|rename_error| {
+                    format!(
+                        "failed to preserve unreadable {label} evidence {} after {error}: {rename_error}",
+                        corrupt.display()
+                    )
+                })?;
+            }
+        }
+    }
+    atomic_replace_file_bytes(path, bytes, label)
+}
+
+fn cleanup_stale_atomic_temps(path: &Path) {
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("iris-memory");
+    let prefix = format!(".{file_name}.tmp-");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.filter_map(Result::ok).take(64) {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= Duration::from_secs(60 * 60));
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fn wide_path(path: &Path) -> std::io::Result<Vec<u16>> {
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if wide.contains(&0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Windows file path contains NUL",
+            ));
+        }
+        wide.push(0);
+        Ok(wide)
+    }
+
+    let source = wide_path(source)?;
+    let destination = wide_path(destination)?;
+    // SAFETY: both buffers are NUL-terminated and remain alive for the call.
+    // The temporary source and destination share a parent, so MoveFileExW is
+    // an atomic same-volume replacement; WRITE_THROUGH preserves the existing
+    // durable-temp-write contract before success is reported.
+    let replaced = unsafe {
+        move_file_ex_w(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+fn atomic_replace_file_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    let json = serde_json::to_vec_pretty(staged).map_err(|err| err.to_string())?;
-    fs::write(&path, json)
-        .map_err(|err| format!("failed to write staging memory {}: {err}", path.display()))
+    cleanup_stale_atomic_temps(path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("iris-memory");
+    let mut temporary_path = None;
+    let mut temporary_file = None;
+    for _ in 0..32 {
+        let sequence = MEMORY_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = path.with_file_name(format!(
+            ".{file_name}.tmp-{}-{sequence}",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                temporary_path = Some(candidate);
+                temporary_file = Some(file);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create temporary {label} file {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    let temporary_path = temporary_path.ok_or_else(|| {
+        format!(
+            "failed to reserve a temporary {label} file beside {}",
+            path.display()
+        )
+    })?;
+    let mut temporary_file =
+        temporary_file.ok_or_else(|| format!("temporary {label} file handle is unavailable"))?;
+    if let Err(error) = temporary_file
+        .write_all(bytes)
+        .and_then(|_| temporary_file.sync_all())
+    {
+        drop(temporary_file);
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!(
+            "failed to write temporary {label} file {}: {error}",
+            temporary_path.display()
+        ));
+    }
+    drop(temporary_file);
+    if let Err(error) = replace_file_atomically(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!(
+            "failed to atomically replace {label} {}: {error}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn staging_status_counts(staged: &[StagedMemoryProposal]) -> (usize, usize) {
@@ -2905,6 +3405,7 @@ fn propose_hermes_memory(
             });
         }
     };
+    let _memory_guard = lock_memory_state()?;
 
     let duplicate_score = load_memories()?
         .iter()
@@ -2938,7 +3439,13 @@ fn propose_hermes_memory(
     }
 
     let now = timestamp_ms()?;
-    let id = staged.iter().map(|proposal| proposal.id).max().unwrap_or(0) + 1;
+    let id = staged
+        .iter()
+        .map(|proposal| proposal.id)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| "staging memory id space is exhausted".to_string())?;
     staged.push(StagedMemoryProposal {
         id,
         text: clean,
@@ -2968,6 +3475,7 @@ fn propose_hermes_memory(
                 .filter(|value| !value.is_empty())
                 .map(|value| value.chars().take(500).collect()),
         }),
+        accepted_memory_id: None,
         status: StagingStatus::Pending,
         verdict,
         created_ms: now,
@@ -2987,33 +3495,73 @@ fn propose_hermes_memory(
 }
 
 fn accept_staged_memory(id: u64) -> Result<Vec<StagedMemoryProposal>, String> {
-    let mut staged = load_staged_memory_proposals()?;
+    let _memory_guard = lock_memory_state()?;
+    let memories_path = memory_file_path()?;
+    let staging_path = staging_memory_file_path()?;
     let now = timestamp_ms()?;
-    let proposal = staged
-        .iter_mut()
-        .find(|proposal| proposal.id == id)
+    accept_staged_memory_at_paths(&memories_path, &staging_path, id, now)
+}
+
+fn accept_staged_memory_at_paths(
+    memories_path: &Path,
+    staging_path: &Path,
+    id: u64,
+    now: u128,
+) -> Result<Vec<StagedMemoryProposal>, String> {
+    let mut staged = load_staged_memory_proposals_from_path(staging_path)?;
+    let proposal_index = staged
+        .iter()
+        .position(|proposal| proposal.id == id)
         .ok_or_else(|| format!("staging proposal {id} does not exist"))?;
-    if proposal.status != StagingStatus::Pending {
-        return Err(format!("staging proposal {id} is already decided"));
+    if staged[proposal_index].status == StagingStatus::Rejected {
+        return Err(format!("staging proposal {id} is already rejected"));
     }
-    proposal.status = StagingStatus::Accepted;
-    proposal.updated_ms = now;
-    let text = proposal.text.clone();
-    let mut memories = load_memories()?;
-    let memory_id = memories.iter().map(|memory| memory.id).max().unwrap_or(0) + 1;
-    memories.push(MemoryItem {
-        id: memory_id,
-        text,
-        created_ms: now,
-        updated_ms: now,
-    });
-    trim_memory_cap(&mut memories);
-    save_memories(&memories)?;
-    save_staged_memory_proposals(&staged)?;
+    if staged[proposal_index].status == StagingStatus::Accepted {
+        return Ok(staged);
+    }
+
+    let text = staged[proposal_index].text.clone();
+    let linked_memory_id = staged[proposal_index].accepted_memory_id;
+    let mut memories = load_memories_from_path(memories_path)?;
+    let existing_memory_id = memories
+        .iter()
+        .find(|memory| memory.text == text)
+        .map(|memory| memory.id);
+    let (memory_id, memories_changed) = if let Some(memory_id) = existing_memory_id {
+        (memory_id, false)
+    } else {
+        let memory_id = linked_memory_id
+            .filter(|candidate| {
+                *candidate > 0 && !memories.iter().any(|memory| memory.id == *candidate)
+            })
+            .map_or_else(|| next_memory_id(&memories), Ok)?;
+        memories.push(MemoryItem {
+            id: memory_id,
+            text,
+            created_ms: now,
+            updated_ms: now,
+        });
+        trim_memory_cap(&mut memories);
+        (memory_id, true)
+    };
+
+    if memories_changed {
+        save_memories_to_path(memories_path, &memories)?;
+    }
+    let proposal = &mut staged[proposal_index];
+    let staging_changed = proposal.status != StagingStatus::Accepted
+        || proposal.accepted_memory_id != Some(memory_id);
+    if staging_changed {
+        proposal.status = StagingStatus::Accepted;
+        proposal.accepted_memory_id = Some(memory_id);
+        proposal.updated_ms = now;
+        save_staged_memory_proposals_to_path(staging_path, &staged)?;
+    }
     Ok(staged)
 }
 
 fn reject_staged_memory(id: u64) -> Result<Vec<StagedMemoryProposal>, String> {
+    let _memory_guard = lock_memory_state()?;
     let mut staged = load_staged_memory_proposals()?;
     let now = timestamp_ms()?;
     let proposal = staged
@@ -3027,6 +3575,16 @@ fn reject_staged_memory(id: u64) -> Result<Vec<StagedMemoryProposal>, String> {
     proposal.updated_ms = now;
     save_staged_memory_proposals(&staged)?;
     Ok(staged)
+}
+
+fn next_memory_id(memories: &[MemoryItem]) -> Result<u64, String> {
+    memories
+        .iter()
+        .map(|memory| memory.id)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| "active memory id space is exhausted".to_string())
 }
 
 fn lexical_similarity(left: &str, right: &str) -> f32 {
@@ -3048,17 +3606,14 @@ fn lexical_similarity(left: &str, right: &str) -> f32 {
     intersection / union
 }
 
-fn start_hermes_memory_broker_if_enabled() {
+fn start_hermes_memory_broker_if_enabled() -> Result<Option<HermesBrokerAccess>, String> {
     if !hermes_enabled() || !hermes_memory_broker_enabled() {
-        return;
+        return Ok(None);
     }
-    let _ = HERMES_BROKER_STARTED.get_or_init(|| {
-        thread::spawn(|| {
-            if let Err(error) = run_hermes_memory_broker() {
-                eprintln!("Iris Hermes memory broker stopped: {error}");
-            }
-        });
-    });
+    HERMES_BROKER_ACCESS
+        .get_or_init(initialize_hermes_memory_broker)
+        .clone()
+        .map(Some)
 }
 
 fn env_flag_default(name: &str, default: bool) -> bool {
@@ -3097,43 +3652,119 @@ fn validate_hermes_provider_policy() -> Result<(), String> {
     Ok(())
 }
 
-fn run_hermes_memory_broker() -> Result<(), String> {
-    let listener = TcpListener::bind(HERMES_MEMORY_BROKER_ADDR)
+fn initialize_hermes_memory_broker() -> Result<HermesBrokerAccess, String> {
+    let listener = TcpListener::bind(HERMES_MEMORY_BROKER_BIND_ADDR)
         .map_err(|err| format!("failed to bind Hermes memory broker: {err}"))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|err| format!("failed to inspect Hermes memory broker address: {err}"))?;
+    if !local_addr.ip().is_loopback() || local_addr.port() == 0 {
+        return Err("Hermes memory broker did not reserve a loopback endpoint".to_string());
+    }
+    let bearer_token = Arc::<str>::from(generate_hermes_broker_secret()?);
+    let access = HermesBrokerAccess {
+        url: format!("http://{local_addr}"),
+        bearer_token: bearer_token.clone(),
+    };
+    hermes_acp::configure_memory_broker(&access.url, &access.bearer_token)?;
+    thread::Builder::new()
+        .name("iris-hermes-memory-broker".to_string())
+        .spawn(move || {
+            if let Err(error) = run_hermes_memory_broker(listener, bearer_token) {
+                eprintln!("Iris Hermes memory broker stopped: {error}");
+            }
+        })
+        .map_err(|err| format!("failed to start Hermes memory broker: {err}"))?;
+    Ok(access)
+}
+
+fn generate_hermes_broker_secret() -> Result<String, String> {
+    let mut random = [0_u8; HERMES_MEMORY_BROKER_SECRET_BYTES];
+    getrandom::fill(&mut random)
+        .map_err(|_| "failed to generate Hermes memory broker credentials".to_string())?;
+    let mut encoded = String::with_capacity(random.len() * 2);
+    for byte in random {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}")
+            .map_err(|_| "failed to encode Hermes memory broker credentials".to_string())?;
+    }
+    Ok(encoded)
+}
+
+fn run_hermes_memory_broker(listener: TcpListener, bearer_token: Arc<str>) -> Result<(), String> {
+    let (connection_tx, connection_rx) =
+        mpsc::sync_channel::<TcpStream>(HERMES_MEMORY_BROKER_QUEUE_CAPACITY);
+    let connection_rx = Arc::new(Mutex::new(connection_rx));
+    for worker_index in 0..HERMES_MEMORY_BROKER_WORKERS {
+        let connection_rx = connection_rx.clone();
+        let bearer_token = bearer_token.clone();
+        thread::Builder::new()
+            .name(format!("iris-hermes-memory-worker-{worker_index}"))
+            .spawn(move || {
+                loop {
+                    let stream = {
+                        let receiver = match connection_rx.lock() {
+                            Ok(receiver) => receiver,
+                            Err(_) => return,
+                        };
+                        match receiver.recv() {
+                            Ok(stream) => stream,
+                            Err(_) => return,
+                        }
+                    };
+                    let _ = handle_hermes_broker_stream(stream, &bearer_token);
+                }
+            })
+            .map_err(|error| format!("failed to start Hermes broker worker: {error}"))?;
+    }
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
-                thread::spawn(|| {
-                    let _ = handle_hermes_broker_stream(stream);
-                });
-            }
+            Ok(stream) => enqueue_hermes_broker_connection(&connection_tx, stream)?,
             Err(error) => eprintln!("Iris Hermes memory broker connection error: {error}"),
         }
     }
     Ok(())
 }
 
-fn handle_hermes_broker_stream(mut stream: TcpStream) -> Result<(), String> {
-    let mut buffer = [0_u8; MAX_HERMES_HTTP_REQUEST_BYTES];
-    let count = stream
-        .read(&mut buffer)
-        .map_err(|err| format!("failed to read broker request: {err}"))?;
-    if count == MAX_HERMES_HTTP_REQUEST_BYTES {
-        let body = "{\"ok\":false,\"error\":\"Hermes broker request is too large\"}";
-        let response = format!(
-            "HTTP/1.1 413 Payload Too Large\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .map_err(|err| format!("failed to write broker response: {err}"))?;
-        return Ok(());
+fn enqueue_hermes_broker_connection(
+    sender: &mpsc::SyncSender<TcpStream>,
+    stream: TcpStream,
+) -> Result<(), String> {
+    match sender.try_send(stream) {
+        Ok(()) => Ok(()),
+        Err(mpsc::TrySendError::Full(mut stream)) => {
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+            write_busy_hermes_broker_response(&mut stream);
+            Ok(())
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            Err("Hermes memory broker worker queue is unavailable".to_string())
+        }
     }
-    let mut request_bytes = buffer[..count].to_vec();
+}
+
+fn write_busy_hermes_broker_response(writer: &mut impl Write) {
+    let body = "{\"ok\":false,\"error\":\"Iris memory broker is busy\"}";
+    let response = format!(
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    if let Err(error) = writer.write_all(response.as_bytes()) {
+        // A saturated client may disconnect before it can receive the 503.
+        // That is a per-connection failure and must not terminate the broker's
+        // long-lived accept loop.
+        eprintln!("failed to notify busy Hermes broker client: {error}");
+    }
+}
+
+fn handle_hermes_broker_stream(mut stream: TcpStream, bearer_token: &str) -> Result<(), String> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let mut request_bytes = Vec::with_capacity(1024);
     read_remaining_hermes_http_request(&mut stream, &mut request_bytes)?;
     let request = String::from_utf8_lossy(&request_bytes);
-    let (status, body) = handle_hermes_broker_request(&request);
+    let (status, body) = handle_hermes_broker_request(&request, bearer_token);
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -3148,23 +3779,29 @@ fn read_remaining_hermes_http_request(
     stream: &mut TcpStream,
     request_bytes: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let Some(expected_len) = expected_hermes_http_request_len(request_bytes)? else {
-        return Ok(());
-    };
-    while request_bytes.len() < expected_len {
+    loop {
+        if let Some(expected_len) = expected_hermes_http_request_len(request_bytes)? {
+            if request_bytes.len() == expected_len {
+                return Ok(());
+            }
+            if request_bytes.len() > expected_len {
+                return Err("Hermes broker request contains trailing bytes".to_string());
+            }
+        }
         if request_bytes.len() >= MAX_HERMES_HTTP_REQUEST_BYTES {
             return Err("Hermes broker request is too large".to_string());
         }
         let mut chunk = [0_u8; 1024];
+        let remaining = MAX_HERMES_HTTP_REQUEST_BYTES - request_bytes.len();
+        let read_capacity = remaining.min(chunk.len());
         let count = stream
-            .read(&mut chunk)
-            .map_err(|err| format!("failed to read broker request body: {err}"))?;
+            .read(&mut chunk[..read_capacity])
+            .map_err(|err| format!("failed to read broker request: {err}"))?;
         if count == 0 {
-            break;
+            return Err("Hermes broker request ended before headers or body completed".to_string());
         }
         request_bytes.extend_from_slice(&chunk[..count]);
     }
-    Ok(())
 }
 
 fn expected_hermes_http_request_len(request_bytes: &[u8]) -> Result<Option<usize>, String> {
@@ -3195,7 +3832,10 @@ fn expected_hermes_http_request_len(request_bytes: &[u8]) -> Result<Option<usize
     Ok(Some(expected))
 }
 
-fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
+fn handle_hermes_broker_request(
+    request: &str,
+    expected_bearer_token: &str,
+) -> (&'static str, String) {
     let mut parts = request.splitn(2, "\r\n\r\n");
     let head = parts.next().unwrap_or_default();
     let body = parts.next().unwrap_or_default();
@@ -3203,6 +3843,12 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
     let fields = request_line.split_whitespace().collect::<Vec<_>>();
     if fields.len() < 2 {
         return json_error("400 Bad Request", "invalid HTTP request");
+    }
+    if !hermes_broker_request_is_authenticated(head, expected_bearer_token) {
+        return json_error(
+            "401 Unauthorized",
+            "Iris memory broker authentication failed",
+        );
     }
     let policy = timestamp_ms().and_then(hermes_policy::snapshot).unwrap_or(
         hermes_policy::HermesPolicySnapshot {
@@ -3220,8 +3866,9 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
             json_ok(serde_json::json!({
                 "ok": true,
                 "service": "iris_hermes_memory_broker",
-                "bind": HERMES_MEMORY_BROKER_ADDR,
+                "bind": HERMES_MEMORY_BROKER_PUBLIC_DESCRIPTION,
                 "loopbackOnly": true,
+                "authenticated": true,
                 "maxRequestBytes": MAX_HERMES_HTTP_REQUEST_BYTES,
                 "maxQueryChars": MAX_HERMES_MEMORY_QUERY_CHARS,
                 "maxProposalChars": MAX_HERMES_PROPOSAL_CHARS,
@@ -3279,29 +3926,45 @@ fn handle_hermes_broker_request(request: &str) -> (&'static str, String) {
                 Err(error) => json_error("400 Bad Request", &error),
             }
         }
-        ("GET", "/memory/staging/list") => {
-            json_ok(load_staged_memory_proposals().unwrap_or_default())
-        }
-        ("POST", "/memory/staging/accept") => {
-            match serde_json::from_str::<StagingDecisionRequest>(body)
-                .map_err(|err| err.to_string())
-                .and_then(|input| accept_staged_memory(input.id))
-            {
-                Ok(response) => json_ok(response),
-                Err(error) => json_error("400 Bad Request", &error),
-            }
-        }
-        ("POST", "/memory/staging/reject") => {
-            match serde_json::from_str::<StagingDecisionRequest>(body)
-                .map_err(|err| err.to_string())
-                .and_then(|input| reject_staged_memory(input.id))
-            {
-                Ok(response) => json_ok(response),
-                Err(error) => json_error("400 Bad Request", &error),
-            }
-        }
         _ => json_error("404 Not Found", "unknown Iris memory broker route"),
     }
+}
+
+fn hermes_broker_request_is_authenticated(head: &str, expected_bearer_token: &str) -> bool {
+    let mut authorization = None;
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("authorization") {
+            continue;
+        }
+        if authorization.is_some() {
+            return false;
+        }
+        authorization = Some(value.trim());
+    }
+    let Some(value) = authorization else {
+        return false;
+    };
+    let Some((scheme, token)) = value.split_once(' ') else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("bearer")
+        && !token.is_empty()
+        && !token.chars().any(char::is_whitespace)
+        && constant_time_bytes_equal(token.as_bytes(), expected_bearer_token.as_bytes())
+}
+
+fn constant_time_bytes_equal(left: &[u8], right: &[u8]) -> bool {
+    let max_len = left.len().max(right.len());
+    let mut difference = left.len() ^ right.len();
+    for index in 0..max_len {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        difference |= usize::from(left_byte ^ right_byte);
+    }
+    difference == 0
 }
 
 fn json_ok(value: impl Serialize) -> (&'static str, String) {
@@ -3379,7 +4042,7 @@ fn hermes_status_snapshot() -> Result<HermesStatusResponse, String> {
         agentic_runtime_available: policy.agentic_runtime_available,
         agentic_session: policy.agentic_session,
         profile,
-        broker_url: "http://127.0.0.1:48731",
+        broker_url: HERMES_MEMORY_BROKER_PUBLIC_DESCRIPTION,
         tools,
         acting_tools,
         search_enabled: hermes_memory_search_enabled(),
@@ -3423,7 +4086,7 @@ fn hermes_safety_audit_snapshot() -> Result<HermesSafetyAuditResponse, String> {
     };
     Ok(HermesSafetyAuditResponse {
         ok: runtime.ok && runtime.acting_tools.is_empty(),
-        loopback_only: HERMES_MEMORY_BROKER_ADDR.starts_with("127.0.0.1:"),
+        loopback_only: HERMES_MEMORY_BROKER_BIND_ADDR.starts_with("127.0.0.1:"),
         provider_ollama_only: runtime.provider == "ollama_local"
             && runtime.endpoint == settings.generate_url,
         model_source_manifest_only: runtime.model_source == "manifest.json",
@@ -3450,9 +4113,9 @@ fn hermes_sidecar_running() -> bool {
         .get()
         .and_then(|state| state.lock().ok())
         .is_some_and(|mut guard| {
-            guard
-                .as_mut()
-                .is_some_and(|sidecar| matches!(sidecar.child.try_wait(), Ok(None)))
+            guard.as_mut().is_some_and(|sidecar| {
+                sidecar.audit_passed && matches!(sidecar.child.try_wait(), Ok(None))
+            })
         })
 }
 
@@ -3464,6 +4127,11 @@ fn stop_hermes_sidecar() -> Result<(), String> {
     let Some(mut sidecar) = guard.take() else {
         return Ok(());
     };
+    drop(guard);
+    terminate_hermes_sidecar(&mut sidecar)
+}
+
+fn terminate_hermes_sidecar(sidecar: &mut HermesSidecar) -> Result<(), String> {
     let _ = sidecar.child.kill();
     sidecar
         .child
@@ -3472,7 +4140,14 @@ fn stop_hermes_sidecar() -> Result<(), String> {
         .map_err(|err| format!("failed to stop Hermes sidecar: {err}"))
 }
 
+#[cfg(test)]
 fn start_hermes_sidecar() -> Result<(), String> {
+    let task_lock = HERMES_TASK_LOCK.get_or_init(|| Mutex::new(()));
+    let _task_guard = task_lock.lock().map_err(|err| err.to_string())?;
+    start_hermes_sidecar_unserialized()
+}
+
+fn start_hermes_sidecar_unserialized() -> Result<(), String> {
     let policy = hermes_policy::snapshot(timestamp_ms()?)?;
     if policy.mode != hermes_policy::HermesMode::Safe {
         return Err("Restricted Hermes sidecar runs only in Safe mode".to_string());
@@ -3487,12 +4162,19 @@ fn start_hermes_sidecar() -> Result<(), String> {
     if !hermes_memory_broker_enabled() {
         return Err("Hermes sidecar requires the Iris memory broker".to_string());
     }
-    start_hermes_memory_broker_if_enabled();
+    let broker_access = start_hermes_memory_broker_if_enabled()?
+        .ok_or_else(|| "Hermes sidecar requires the Iris memory broker".to_string())?;
 
     let state = HERMES_SIDECAR.get_or_init(|| Mutex::new(None));
     let mut guard = state.lock().map_err(|err| err.to_string())?;
-    if guard.is_some() {
-        return Ok(());
+    if let Some(sidecar) = guard.as_mut() {
+        if sidecar.audit_passed && matches!(sidecar.child.try_wait(), Ok(None)) {
+            return Ok(());
+        }
+        let mut stale = guard.take().expect("Hermes sidecar checked above");
+        drop(guard);
+        let _ = terminate_hermes_sidecar(&mut stale);
+        guard = state.lock().map_err(|err| err.to_string())?;
     }
 
     let resources = resource_root()?;
@@ -3506,43 +4188,153 @@ fn start_hermes_sidecar() -> Result<(), String> {
     }
     let diagnostics = writable.join("diagnostics");
     fs::create_dir_all(&diagnostics).map_err(|err| err.to_string())?;
-    let stderr = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(diagnostics.join("hermes-sidecar-stderr.log"))
-        .map_err(|err| format!("failed to open Hermes sidecar diagnostics: {err}"))?;
+    let stderr_path = diagnostics.join("hermes-sidecar-stderr.log");
+    hermes_acp::rotate_diagnostic_log(&stderr_path, hermes_acp::MAX_HERMES_STDERR_BYTES)?;
     let mut command = hermes_acp::python313_command_for_script(&resources, &script)?;
     command
         .current_dir(&resources)
         .env("IRIS_RESOURCE_ROOT", &resources)
         .env("IRIS_DATA_ROOT", &writable)
         .env("IRIS_HERMES_PROFILE", "iris_restricted")
-        .env("IRIS_HERMES_BROKER_URL", "http://127.0.0.1:48731")
+        .env("IRIS_HERMES_BROKER_URL", &broker_access.url)
+        .env(
+            "IRIS_HERMES_BROKER_TOKEN",
+            broker_access.bearer_token.as_ref(),
+        )
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr));
+        .stderr(Stdio::piped());
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     let mut child = command
         .spawn()
         .map_err(|err| format!("failed to start Hermes sidecar: {err}"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Hermes sidecar stdin unavailable".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Hermes sidecar stdout unavailable".to_string())?;
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Hermes sidecar standard streams are unavailable".to_string());
+    };
+    hermes_acp::start_bounded_stderr_reader(stderr, stderr_path);
+    let response_rx = start_hermes_sidecar_stdout_reader(stdout);
+    let child_id = child.id();
     *guard = Some(HermesSidecar {
         child,
         stdin,
-        stdout: BufReader::new(stdout),
+        response_rx,
+        audit_passed: false,
     });
     drop(guard);
-    audit_hermes_runtime_tool_registry()?;
+    if let Err(error) = audit_hermes_runtime_tool_registry_unserialized() {
+        let cleanup = stop_hermes_sidecar();
+        return Err(match cleanup {
+            Ok(()) => error,
+            Err(cleanup_error) => {
+                format!("{error}; failed to stop rejected sidecar: {cleanup_error}")
+            }
+        });
+    }
+    let mut guard = state.lock().map_err(|err| err.to_string())?;
+    let Some(sidecar) = guard
+        .as_mut()
+        .filter(|sidecar| sidecar.child.id() == child_id)
+    else {
+        drop(guard);
+        let _ = stop_hermes_sidecar();
+        return Err("Hermes sidecar stopped during its startup audit".to_string());
+    };
+    if !matches!(sidecar.child.try_wait(), Ok(None)) {
+        drop(guard);
+        let _ = stop_hermes_sidecar();
+        return Err("Hermes sidecar exited after its startup audit".to_string());
+    }
+    sidecar.audit_passed = true;
     Ok(())
+}
+
+fn start_hermes_sidecar_stdout_reader(
+    stdout: impl Read + Send + 'static,
+) -> Arc<Mutex<mpsc::Receiver<Result<String, String>>>> {
+    let (response_tx, response_rx) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            let read = std::io::Read::take(&mut reader, (MAX_HERMES_SIDECAR_LINE_BYTES + 1) as u64)
+                .read_line(&mut line);
+            match read {
+                Ok(0) => {
+                    let _ = response_tx.send(Err("Hermes sidecar stdout closed".to_string()));
+                    break;
+                }
+                Ok(count) if count > MAX_HERMES_SIDECAR_LINE_BYTES || !line.ends_with('\n') => {
+                    let _ = response_tx.send(Err(
+                        "Hermes sidecar response exceeded the line-size limit".to_string(),
+                    ));
+                    break;
+                }
+                Ok(_) => {
+                    if response_tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = response_tx.send(Err(format!(
+                        "failed to read Hermes sidecar response: {error}"
+                    )));
+                    break;
+                }
+            }
+        }
+    });
+    Arc::new(Mutex::new(response_rx))
+}
+
+fn request_hermes_sidecar_line(
+    payload: &[u8],
+    timeout: Duration,
+    require_audited_runtime: bool,
+) -> Result<String, String> {
+    let io_lock = HERMES_SIDECAR_IO_LOCK.get_or_init(|| Mutex::new(()));
+    let _io_guard = io_lock
+        .lock()
+        .map_err(|_| "Hermes sidecar I/O lock is unavailable".to_string())?;
+    let response_rx = {
+        let state = HERMES_SIDECAR
+            .get()
+            .ok_or_else(|| "Hermes sidecar state is unavailable".to_string())?;
+        let mut guard = state.lock().map_err(|err| err.to_string())?;
+        let sidecar = guard
+            .as_mut()
+            .ok_or_else(|| "Hermes sidecar is not running".to_string())?;
+        if require_audited_runtime && !sidecar.audit_passed {
+            return Err("Hermes sidecar has not passed its runtime audit".to_string());
+        }
+        sidecar
+            .stdin
+            .write_all(payload)
+            .and_then(|_| sidecar.stdin.write_all(b"\n"))
+            .and_then(|_| sidecar.stdin.flush())
+            .map_err(|err| format!("failed to write Hermes sidecar request: {err}"))?;
+        sidecar.response_rx.clone()
+    };
+    response_rx
+        .lock()
+        .map_err(|_| "Hermes sidecar response channel is unavailable".to_string())?
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                format!(
+                    "Hermes sidecar response timed out after {}s",
+                    timeout.as_secs()
+                )
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                "Hermes sidecar response channel closed".to_string()
+            }
+        })?
 }
 
 fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, String> {
@@ -3568,16 +4360,11 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
         return Err("Hermes is disabled by local policy".to_string());
     }
     if !hermes_sidecar_running() {
-        start_hermes_sidecar()?;
+        start_hermes_sidecar_unserialized()?;
     }
 
-    let state = HERMES_SIDECAR
-        .get()
-        .ok_or_else(|| "Hermes sidecar state is unavailable".to_string())?;
-    let mut guard = state.lock().map_err(|err| err.to_string())?;
-    let sidecar = guard
-        .as_mut()
-        .ok_or_else(|| "Hermes sidecar is not running".to_string())?;
+    let _inference_permit = iris_ollama::acquire_inference_permit()?;
+
     let payload = serde_json::to_string(&serde_json::json!({
         "type": "task",
         "mode": hermes_mode_name(&request.mode),
@@ -3586,26 +4373,25 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
         "dynamicContext": dynamic_context_instruction(timestamp_ms_u64().unwrap_or(0)),
     }))
     .map_err(|err| err.to_string())?;
-    sidecar
-        .stdin
-        .write_all(payload.as_bytes())
-        .and_then(|_| sidecar.stdin.write_all(b"\n"))
-        .map_err(|err| format!("failed to write Hermes task: {err}"))?;
-    sidecar
-        .stdin
-        .flush()
-        .map_err(|err| format!("failed to flush Hermes task: {err}"))?;
-
-    let mut line = String::new();
-    sidecar
-        .stdout
-        .read_line(&mut line)
-        .map_err(|err| format!("failed to read Hermes response: {err}"))?;
+    let line =
+        match request_hermes_sidecar_line(payload.as_bytes(), HERMES_SIDECAR_TASK_TIMEOUT, true) {
+            Ok(line) => line,
+            Err(error) => {
+                let _ = stop_hermes_sidecar();
+                return Err(error);
+            }
+        };
     if line.trim().is_empty() {
+        let _ = stop_hermes_sidecar();
         return Err("Hermes sidecar returned an empty response".to_string());
     }
-    let mut response = serde_json::from_str::<HermesTaskResponse>(&line)
-        .map_err(|err| format!("invalid Hermes response: {err}"))?;
+    let mut response = match serde_json::from_str::<HermesTaskResponse>(&line) {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = stop_hermes_sidecar();
+            return Err(format!("invalid Hermes response: {error}"));
+        }
+    };
     if response.text.chars().count() > MAX_HERMES_RESPONSE_CHARS {
         response.text = response
             .text
@@ -3618,23 +4404,21 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
 }
 
 fn audit_hermes_runtime_tool_registry() -> Result<HermesRuntimeStatus, String> {
-    let state = HERMES_SIDECAR
-        .get()
-        .ok_or_else(|| "Hermes sidecar state is unavailable".to_string())?;
-    let mut guard = state.lock().map_err(|err| err.to_string())?;
-    let sidecar = guard
-        .as_mut()
-        .ok_or_else(|| "Hermes sidecar is not running".to_string())?;
-    sidecar
-        .stdin
-        .write_all(b"{\"type\":\"status\"}\n")
-        .and_then(|_| sidecar.stdin.flush())
-        .map_err(|err| format!("failed to write Hermes status request: {err}"))?;
-    let mut line = String::new();
-    sidecar
-        .stdout
-        .read_line(&mut line)
-        .map_err(|err| format!("failed to read Hermes status response: {err}"))?;
+    let task_lock = HERMES_TASK_LOCK.get_or_init(|| Mutex::new(()));
+    let _task_guard = task_lock.lock().map_err(|err| err.to_string())?;
+    let result = audit_hermes_runtime_tool_registry_unserialized();
+    if result.is_err() {
+        let _ = stop_hermes_sidecar();
+    }
+    result
+}
+
+fn audit_hermes_runtime_tool_registry_unserialized() -> Result<HermesRuntimeStatus, String> {
+    let line = request_hermes_sidecar_line(
+        b"{\"type\":\"status\"}",
+        HERMES_SIDECAR_STATUS_TIMEOUT,
+        false,
+    )?;
     let status = serde_json::from_str::<HermesRuntimeStatus>(&line)
         .map_err(|err| format!("invalid Hermes runtime status: {err}"))?;
     if !status.ok {
@@ -4010,50 +4794,303 @@ fn run_image_provider(
         ));
     }
     let mut command = hermes_acp::python313_command_for_script(resource_root, &script)?;
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    let mut child = command
+    command
         .current_dir(resource_root)
         .env("IRIS_RESOURCE_ROOT", resource_root)
         .env("IRIS_DATA_ROOT", state_root)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    run_image_provider_command(command, prompt, IMAGE_PROVIDER_TIMEOUT, true)
+}
+
+fn run_image_provider_command(
+    mut command: Command,
+    prompt: &str,
+    timeout: Duration,
+    enforce_panic_stop: bool,
+) -> Result<ImageProviderOutput, String> {
+    let run_lock = IMAGE_PROVIDER_RUN_LOCK.get_or_init(|| Mutex::new(()));
+    let _run_guard = match run_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => {
+            return Err("Iris image generation is already in progress".to_string());
+        }
+        Err(TryLockError::Poisoned(_)) => {
+            return Err("Iris image provider run state is unavailable".to_string());
+        }
+    };
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to start Iris image provider: {err}"))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("failed to open Iris image provider stdin".to_string());
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("failed to open Iris image provider stdout".to_string());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("failed to open Iris image provider stderr".to_string());
+    };
+    let stdout_rx = start_bounded_process_reader(stdout, MAX_IMAGE_PROVIDER_STDOUT_BYTES);
+    let stderr_rx = start_bounded_process_reader(stderr, MAX_IMAGE_PROVIDER_STDERR_BYTES);
+    let process = Arc::new(ImageProviderProcess::new(child)?);
+    let registration = register_image_provider_process(process.clone())?;
+
+    if enforce_panic_stop && hermes_policy::snapshot(timestamp_ms()?)?.panic_stop_active {
+        process.terminate(true);
+        return Err("Iris is paused. Resume Iris before generating an image.".to_string());
+    }
     let request = serde_json::json!({ "prompt": prompt });
-    child
-        .stdin
-        .as_mut()
-        .ok_or_else(|| "failed to open Iris image provider stdin".to_string())?
+    stdin
         .write_all(request.to_string().as_bytes())
         .map_err(|err| format!("failed to send prompt to Iris image provider: {err}"))?;
-    drop(child.stdin.take());
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("failed to wait for Iris image provider: {err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    stdin
+        .flush()
+        .map_err(|err| format!("failed to flush prompt to Iris image provider: {err}"))?;
+    drop(stdin);
+
+    let status = wait_for_image_provider(&process, timeout);
+    let stdout = receive_bounded_process_output(stdout_rx, "stdout");
+    let stderr = receive_bounded_process_output(stderr_rx, "stderr");
+    drop(registration);
+    let stderr = stderr?;
+    let stderr = format_image_provider_stderr(&stderr);
+    let status = status.map_err(|error| append_image_provider_stderr(error, &stderr))?;
+    let stdout = stdout?;
+    if stdout.truncated {
+        return Err(append_image_provider_stderr(
+            format!(
+                "Iris image provider response exceeded the {} byte limit (received at least {} bytes)",
+                MAX_IMAGE_PROVIDER_STDOUT_BYTES, stdout.total_bytes
+            ),
+            &stderr,
+        ));
+    }
+    let stdout = String::from_utf8(stdout.bytes)
+        .map_err(|_| "Iris image provider returned a non-UTF-8 response".to_string())?;
     let parsed = serde_json::from_str::<ImageProviderOutput>(stdout.trim()).map_err(|err| {
         format!(
             "Iris image provider returned invalid JSON: {err}; stderr={}",
-            stderr.trim()
+            if stderr.is_empty() {
+                "[empty]"
+            } else {
+                &stderr
+            }
         )
     })?;
-    if !output.status.success() || !parsed.ok {
-        return Err(parsed.error.unwrap_or_else(|| {
-            format!(
-                "Iris image provider failed{}",
-                if stderr.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!(": {}", stderr.trim())
-                }
-            )
-        }));
+    if !status.success() || !parsed.ok {
+        return Err(parsed
+            .error
+            .map(|error| redact_and_truncate_image_provider_text(&error, 4_000))
+            .unwrap_or_else(|| {
+                format!(
+                    "Iris image provider failed{}",
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {stderr}")
+                    }
+                )
+            }));
     }
     Ok(parsed)
+}
+
+fn register_image_provider_process(
+    process: Arc<ImageProviderProcess>,
+) -> Result<ImageProviderRegistration, String> {
+    let slot = IMAGE_PROVIDER_CHILD.get_or_init(|| Mutex::new(None));
+    let mut current = slot
+        .lock()
+        .map_err(|_| "Iris image provider process registry is unavailable".to_string())?;
+    if current.is_some() {
+        process.terminate(false);
+        return Err("Iris image generation is already in progress".to_string());
+    }
+    *current = Some(process.clone());
+    Ok(ImageProviderRegistration { process })
+}
+
+fn stop_image_provider() {
+    let process = IMAGE_PROVIDER_CHILD
+        .get()
+        .and_then(|slot| slot.lock().ok())
+        .and_then(|current| current.as_ref().cloned());
+    if let Some(process) = process {
+        process.terminate(true);
+    }
+}
+
+fn wait_for_image_provider(
+    process: &ImageProviderProcess,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    let started = Instant::now();
+    loop {
+        if process.cancelled.load(Ordering::SeqCst) {
+            process.terminate(true);
+            let _ = wait_for_image_provider_exit(process, IMAGE_PROVIDER_EXIT_GRACE);
+            return Err("Iris image provider was cancelled by Panic Stop".to_string());
+        }
+        if let Some(status) = process.try_wait()? {
+            return Ok(status);
+        }
+        if started.elapsed() >= timeout {
+            process.terminate(false);
+            let _ = wait_for_image_provider_exit(process, IMAGE_PROVIDER_EXIT_GRACE);
+            return Err(format!(
+                "Iris image provider timed out after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_for_image_provider_exit(
+    process: &ImageProviderProcess,
+    timeout: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        if process.try_wait()?.is_some() {
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            return Err("Iris image provider did not exit after termination".to_string());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn start_bounded_process_reader(
+    reader: impl Read + Send + 'static,
+    max_bytes: usize,
+) -> mpsc::Receiver<Result<BoundedProcessOutput, String>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let result = read_bounded_process_output(reader, max_bytes)
+            .map_err(|error| format!("failed to read Iris image provider output: {error}"));
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn read_bounded_process_output(
+    mut reader: impl Read,
+    max_bytes: usize,
+) -> std::io::Result<BoundedProcessOutput> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut total_bytes = 0_usize;
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(count);
+        let retained = max_bytes.saturating_sub(bytes.len()).min(count);
+        bytes.extend_from_slice(&buffer[..retained]);
+    }
+    Ok(BoundedProcessOutput {
+        bytes,
+        truncated: total_bytes > max_bytes,
+        total_bytes,
+    })
+}
+
+fn receive_bounded_process_output(
+    receiver: mpsc::Receiver<Result<BoundedProcessOutput, String>>,
+    stream_name: &str,
+) -> Result<BoundedProcessOutput, String> {
+    receiver
+        .recv_timeout(IMAGE_PROVIDER_EXIT_GRACE)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                format!("Iris image provider {stream_name} did not close after process termination")
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                format!("Iris image provider {stream_name} reader stopped unexpectedly")
+            }
+        })?
+}
+
+fn format_image_provider_stderr(output: &BoundedProcessOutput) -> String {
+    let mut clean = redact_and_truncate_image_provider_text(
+        &String::from_utf8_lossy(&output.bytes),
+        MAX_IMAGE_PROVIDER_STDERR_BYTES,
+    );
+    if output.truncated {
+        if !clean.is_empty() {
+            clean.push(' ');
+        }
+        clean.push_str("[stderr truncated]");
+    }
+    clean
+}
+
+fn append_image_provider_stderr(error: String, stderr: &str) -> String {
+    if stderr.is_empty() {
+        error
+    } else {
+        format!("{error}; stderr={stderr}")
+    }
+}
+
+fn redact_and_truncate_image_provider_text(input: &str, max_bytes: usize) -> String {
+    let mut output = input
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if [
+                "password",
+                "secret",
+                "api key",
+                "api_key",
+                "token=",
+                "token:",
+                "access_token",
+                "authorization:",
+                "bearer ",
+                "openai_api_key",
+                "sk-",
+            ]
+            .iter()
+            .any(|marker| lower.contains(marker))
+            {
+                "[redacted sensitive detail]".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        let profile = profile.to_string_lossy();
+        if !profile.is_empty() {
+            output = output.replace(profile.as_ref(), "%USERPROFILE%");
+            output = output.replace(&profile.replace('\\', "/"), "%USERPROFILE%");
+        }
+    }
+    if output.len() > max_bytes {
+        let mut end = max_bytes;
+        while end > 0 && !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        output.truncate(end);
+        output.push_str("...");
+    }
+    output
 }
 
 fn write_generated_image_response(
@@ -4170,38 +5207,6 @@ fn image_extension_for_mime(mime: &str) -> Result<&'static str, String> {
     }
 }
 
-fn model_response(
-    text: &str,
-    history: &[ConversationTurn],
-    dynamic_context: Option<&str>,
-) -> Result<iris_core_types::AssistantResponse, String> {
-    let resources = resource_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&resources)?;
-    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
-    let client = iris_ollama::OllamaClient::new(settings)?;
-    let gated_context = iris_ui::gate_typed_text(text);
-    let ollama_history = history
-        .iter()
-        .map(|turn| iris_ollama::ConversationTurn {
-            role: match turn.role {
-                ConversationRole::User => iris_ollama::ConversationRole::User,
-                ConversationRole::Iris => iris_ollama::ConversationRole::Iris,
-            },
-            text: turn.text.clone(),
-        })
-        .collect::<Vec<_>>();
-    let memories = load_memories()?
-        .into_iter()
-        .map(|memory| memory.text)
-        .collect::<Vec<_>>();
-    Ok(client.respond_with_dynamic_context(
-        &gated_context,
-        &ollama_history,
-        &memories,
-        dynamic_context,
-    ))
-}
-
 fn model_response_streaming(
     text: &str,
     history: &[ConversationTurn],
@@ -4209,10 +5214,7 @@ fn model_response_streaming(
     cancellation: &AtomicBool,
     on_chunk: impl FnMut(&str),
 ) -> Result<iris_ollama::StreamingOutcome, String> {
-    let resources = resource_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&resources)?;
-    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
-    let client = iris_ollama::OllamaClient::new(settings)?;
+    let client = configured_ollama_client()?;
     let gated_context = iris_ui::gate_typed_text(text);
     let ollama_history = history
         .iter()
@@ -4262,10 +5264,7 @@ fn image_probe_response(
         return Err("image probe supports png, jpg, jpeg, and webp files".to_string());
     }
 
-    let resource_root = resource_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
-    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
-    let client = iris_ollama::OllamaClient::new(settings)?;
+    let client = configured_ollama_client()?;
     Ok(client.respond_to_image_bytes_with_context(image_bytes, clean_prompt, dynamic_context))
 }
 
@@ -4297,10 +5296,7 @@ fn screen_area_probe_response(
         ));
     }
 
-    let resource_root = resource_root()?;
-    let manifest = iris_config::load_manifest_from_workspace(&resource_root)?;
-    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
-    let client = iris_ollama::OllamaClient::new(settings)?;
+    let client = configured_ollama_client()?;
     Ok((
         client.respond_to_screen_area_bytes_with_context(
             &image_bytes,
@@ -4309,6 +5305,19 @@ fn screen_area_probe_response(
         ),
         capture.diagnostic_path,
     ))
+}
+
+fn configured_ollama_client() -> Result<iris_ollama::OllamaClient, String> {
+    if let Some(client) = OLLAMA_CLIENT.get() {
+        return Ok(client.clone());
+    }
+
+    let resources = resource_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&resources)?;
+    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+    let candidate = iris_ollama::OllamaClient::new(settings)?;
+    let _ = OLLAMA_CLIENT.set(candidate.clone());
+    Ok(OLLAMA_CLIENT.get().cloned().unwrap_or(candidate))
 }
 
 fn capture_screen_area_under_window(window: &IrisWindow) -> Result<ScreenAreaCapture, String> {
@@ -4664,6 +5673,7 @@ struct CapturedMicrophoneAudio {
     rms: f32,
     peak: f32,
     speech_ms: u64,
+    input_device: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4685,6 +5695,11 @@ fn record_microphone_mono_16khz(
     let device = host
         .default_input_device()
         .ok_or_else(|| "no default microphone input device found".to_string())?;
+    let input_device_description = device
+        .description()
+        .ok()
+        .map(|description| description.name().to_string());
+    let input_device = normalize_audio_device_label(input_device_description.as_deref());
     let supported_config = device
         .default_input_config()
         .map_err(|err| format!("failed to read microphone config: {err}"))?;
@@ -4770,7 +5785,29 @@ fn record_microphone_mono_16khz(
         rms: utterance_rms,
         peak: utterance_peak,
         speech_ms,
+        input_device,
     })
+}
+
+fn normalize_audio_device_label(label: Option<&str>) -> String {
+    let normalized = label
+        .unwrap_or_default()
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(MAX_AUDIO_DEVICE_LABEL_CHARS)
+        .collect::<String>();
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        "unknown default device".to_string()
+    } else {
+        normalized.to_string()
+    }
 }
 
 fn sample_rate_hz_from_debug(sample_rate_debug: &str) -> Result<u32, String> {
@@ -5135,15 +6172,33 @@ fn pause_command_is_stale(last_request_id: u64, requested_request_id: u64) -> bo
     requested_request_id == 0 || requested_request_id < last_request_id
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TtsPlaybackPadding {
+    preroll_ms: u64,
+    tail_ms: u64,
+}
+
+fn tts_playback_padding(first_chunk: bool) -> TtsPlaybackPadding {
+    TtsPlaybackPadding {
+        preroll_ms: if first_chunk {
+            TTS_NATIVE_FIRST_CHUNK_PREROLL_MS
+        } else {
+            0
+        },
+        tail_ms: TTS_NATIVE_CHUNK_TAIL_MS,
+    }
+}
+
 #[cfg(test)]
 fn play_tts_wav_blocking(wav_bytes: &[u8], playback_epoch: u64) -> Result<(), String> {
-    play_tts_wav_blocking_with_onset(wav_bytes, playback_epoch, || {})
+    play_tts_wav_blocking_with_onset(wav_bytes, playback_epoch, true, |_| {})
 }
 
 fn play_tts_wav_blocking_with_onset(
     wav_bytes: &[u8],
     playback_epoch: u64,
-    on_first_non_silent_frame: impl FnOnce(),
+    first_chunk: bool,
+    on_first_non_silent_frame: impl FnOnce(&str),
 ) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -5152,6 +6207,11 @@ fn play_tts_wav_blocking_with_onset(
     let device = host
         .default_output_device()
         .ok_or_else(|| "no default audio output device found".to_string())?;
+    let output_device_description = device
+        .description()
+        .ok()
+        .map(|description| description.name().to_string());
+    let output_device = normalize_audio_device_label(output_device_description.as_deref());
     let supported_config = device
         .default_output_config()
         .map_err(|err| format!("failed to read output audio config: {err}"))?;
@@ -5160,7 +6220,7 @@ fn play_tts_wav_blocking_with_onset(
     if output_channels == 0 {
         return Err("default audio output device reports zero channels".to_string());
     }
-    let samples = prepare_tts_output_samples(&wav, output_rate, output_channels);
+    let samples = prepare_tts_output_samples(&wav, output_rate, output_channels, first_chunk);
     if samples.is_empty() {
         return Err("TTS wav contains no playable samples".to_string());
     }
@@ -5253,7 +6313,7 @@ fn play_tts_wav_blocking_with_onset(
     let mut playback_finished_before_onset = false;
     loop {
         if cursor.load(Ordering::SeqCst) > onset_sample_index {
-            on_first_non_silent_frame();
+            on_first_non_silent_frame(&output_device);
             break;
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -5292,7 +6352,12 @@ fn first_non_silent_sample_index(samples: &[f32]) -> usize {
         .unwrap_or(0)
 }
 
-fn prepare_tts_output_samples(wav: &PcmWav, output_rate: u32, output_channels: usize) -> Vec<f32> {
+fn prepare_tts_output_samples(
+    wav: &PcmWav,
+    output_rate: u32,
+    output_channels: usize,
+    first_chunk: bool,
+) -> Vec<f32> {
     let input_channels = usize::from(wav.channels);
     if input_channels == 0 || output_channels == 0 {
         return Vec::new();
@@ -5302,8 +6367,9 @@ fn prepare_tts_output_samples(wav: &PcmWav, output_rate: u32, output_channels: u
         mono.push(frame.iter().copied().sum::<f32>() / input_channels as f32);
     }
     let resampled = resample_linear(&mono, wav.sample_rate, output_rate);
-    let preroll_frames = frames_for_ms(output_rate, TTS_NATIVE_PREROLL_MS);
-    let tail_frames = frames_for_ms(output_rate, TTS_NATIVE_TAIL_MS);
+    let padding = tts_playback_padding(first_chunk);
+    let preroll_frames = frames_for_ms(output_rate, padding.preroll_ms);
+    let tail_frames = frames_for_ms(output_rate, padding.tail_ms);
     let mut output =
         Vec::with_capacity((preroll_frames + resampled.len() + tail_frames) * output_channels);
     output.resize(preroll_frames * output_channels, 0.0);
@@ -5728,6 +6794,126 @@ fn keep_main_window_visible_after_startup(
     });
 }
 
+#[cfg(windows)]
+struct SingleInstancePrimary {
+    mutex: OwnedHandle,
+    focus_event: OwnedHandle,
+}
+
+#[cfg(windows)]
+struct SingleInstanceMutexState {
+    _mutex: OwnedHandle,
+}
+
+#[cfg(windows)]
+enum SingleInstanceClaim {
+    Primary(SingleInstancePrimary),
+    Secondary,
+}
+
+#[cfg(windows)]
+fn windows_kernel_object_name(name: &str) -> Result<Vec<u16>, String> {
+    if name.is_empty() || name.encode_utf16().any(|unit| unit == 0) {
+        return Err("Windows kernel object name must be non-empty and contain no NUL".to_string());
+    }
+    Ok(OsStr::new(name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect())
+}
+
+#[cfg(windows)]
+fn owned_windows_handle(handle: HANDLE) -> OwnedHandle {
+    // SAFETY: successful Win32 handle-creation APIs transfer one owned handle to the caller.
+    unsafe { OwnedHandle::from_raw_handle(handle.0) }
+}
+
+#[cfg(windows)]
+fn raw_windows_handle(handle: &OwnedHandle) -> HANDLE {
+    HANDLE(handle.as_raw_handle())
+}
+
+#[cfg(windows)]
+fn signal_single_instance_focus(event: &OwnedHandle) -> Result<(), String> {
+    // SAFETY: `event` owns a valid event handle for the duration of this call.
+    unsafe { SetEvent(raw_windows_handle(event)) }
+        .map_err(|error| format!("failed to signal the existing Iris window: {error}"))
+}
+
+#[cfg(windows)]
+fn wait_for_single_instance_focus(event: &OwnedHandle, timeout_ms: u32) -> bool {
+    // SAFETY: `event` remains owned by the caller while the wait is active.
+    (unsafe { WaitForSingleObject(raw_windows_handle(event), timeout_ms) }) == WAIT_OBJECT_0
+}
+
+#[cfg(windows)]
+fn claim_single_instance_named(
+    mutex_name: &str,
+    focus_event_name: &str,
+) -> Result<SingleInstanceClaim, String> {
+    let mutex_name = windows_kernel_object_name(mutex_name)?;
+    let focus_event_name = windows_kernel_object_name(focus_event_name)?;
+
+    // Create the event first so a concurrent secondary launch cannot signal and close the
+    // last event handle before the primary has opened it.
+    // SAFETY: the supplied name is a valid, NUL-terminated UTF-16 string and default security
+    // attributes are requested.
+    let focus_event =
+        unsafe { CreateEventW(None, false, false, PCWSTR(focus_event_name.as_ptr())) }
+            .map(owned_windows_handle)
+            .map_err(|error| format!("failed to create the Iris focus event: {error}"))?;
+
+    // SAFETY: the supplied name is a valid, NUL-terminated UTF-16 string and default security
+    // attributes are requested.
+    let mutex = unsafe { CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr())) }
+        .map_err(|error| format!("failed to create the Iris instance mutex: {error}"))?;
+    // GetLastError must be read immediately after CreateMutexW: a successful call reports
+    // ERROR_ALREADY_EXISTS when another process already owns a handle to the named object.
+    // SAFETY: GetLastError has no preconditions.
+    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let mutex = owned_windows_handle(mutex);
+
+    if already_exists {
+        signal_single_instance_focus(&focus_event)?;
+        return Ok(SingleInstanceClaim::Secondary);
+    }
+
+    Ok(SingleInstanceClaim::Primary(SingleInstancePrimary {
+        mutex,
+        focus_event,
+    }))
+}
+
+#[cfg(windows)]
+fn focus_existing_iris_window(app: &IrisAppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        keep_main_window_visible(&window);
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(windows)]
+fn start_single_instance_focus_listener(
+    app: IrisAppHandle,
+    focus_event: OwnedHandle,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("iris-single-instance-focus".to_string())
+        .spawn(move || {
+            loop {
+                if !wait_for_single_instance_focus(&focus_event, INFINITE) {
+                    eprintln!("Iris single-instance focus listener stopped after a wait failure");
+                    return;
+                }
+                focus_existing_iris_window(&app);
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("failed to start the Iris instance focus listener: {error}"))
+}
+
 pub fn run() {
     if let Some(result) = run_msix_lifecycle_probe_if_requested() {
         if let Err(error) = result {
@@ -5736,24 +6922,42 @@ pub fn run() {
         }
         return;
     }
-    if INSTANCE_LOCK
-        .set(match TcpListener::bind("127.0.0.1:48729") {
-            Ok(listener) => listener,
-            Err(_) => return,
-        })
-        .is_err()
-    {
-        return;
-    }
-    let _ = initialize_persisted_ollama_defaults();
-    start_hermes_memory_broker_if_enabled();
-    let result = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default()
-        .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                keep_main_window_visible_after_startup(window);
+    #[cfg(windows)]
+    let single_instance =
+        match claim_single_instance_named(INSTANCE_MUTEX_NAME, INSTANCE_FOCUS_EVENT_NAME) {
+            Ok(SingleInstanceClaim::Primary(primary)) => primary,
+            Ok(SingleInstanceClaim::Secondary) => return,
+            Err(error) => {
+                eprintln!("Iris single-instance coordination failed: {error}");
+                return;
             }
-            Ok(())
-        })
+        };
+    let _ = initialize_persisted_ollama_defaults();
+    if let Err(error) = start_hermes_memory_broker_if_enabled() {
+        eprintln!("Iris Hermes memory broker unavailable: {error}");
+    }
+    let builder = tauri::Builder::<tauri_runtime_wry::Wry<tauri::EventLoopMessage>>::default();
+    #[cfg(windows)]
+    let builder = builder.setup(move |app| {
+        let SingleInstancePrimary { mutex, focus_event } = single_instance;
+        if !app.manage(SingleInstanceMutexState { _mutex: mutex }) {
+            return Err(std::io::Error::other("Iris instance mutex state already exists").into());
+        }
+        start_single_instance_focus_listener(app.handle().clone(), focus_event)
+            .map_err(std::io::Error::other)?;
+        if let Some(window) = app.get_webview_window("main") {
+            keep_main_window_visible_after_startup(window);
+        }
+        Ok(())
+    });
+    #[cfg(not(windows))]
+    let builder = builder.setup(|app| {
+        if let Some(window) = app.get_webview_window("main") {
+            keep_main_window_visible_after_startup(window);
+        }
+        Ok(())
+    });
+    let result = builder
         .invoke_handler(tauri::generate_handler![
             add_memory,
             browser_preview_data_url,
@@ -5767,21 +6971,17 @@ pub fn run() {
             feedback_status,
             generated_image_data_url,
             hermes_accept_staged_memory,
-            hermes_agentic_runtime_status,
-            hermes_cancel_agentic_task,
             hermes_clear_panic_stop,
             hermes_create_agentic_session,
             hermes_end_agentic_session,
             hermes_mode_status,
             hermes_pending_agentic_approval,
             hermes_panic_stop,
-            hermes_record_agentic_activity,
             hermes_reject_staged_memory,
             hermes_respond_agentic_approval,
             hermes_safety_audit,
             hermes_set_mode,
             hermes_generate_image,
-            hermes_start_sidecar,
             hermes_staging_list,
             hermes_status,
             hermes_submit_agentic_task,
@@ -5794,7 +6994,6 @@ pub fn run() {
             list_memories,
             log_voice_diagnostic,
             log_voice_latency_report,
-            memory_archive_policy,
             native_asr_listen_interrupt,
             native_asr_listen_once,
             cancel_native_asr,
@@ -5804,9 +7003,7 @@ pub fn run() {
             save_camera_snapshot_diagnostic,
             submit_image_probe,
             submit_screen_area_probe,
-            submit_typed_hud,
             submit_typed_hud_stream,
-            validate_memory_archive_destination,
             warm_ollama_model,
             warm_kokoro_tts
         ])
@@ -5820,6 +7017,73 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_BROKER_TOKEN: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn handle_authenticated_broker_request(request: &str) -> (&'static str, String) {
+        let request = request.replacen(
+            "\r\n",
+            &format!("\r\nAuthorization: Bearer {TEST_BROKER_TOKEN}\r\n"),
+            1,
+        );
+        handle_hermes_broker_request(&request, TEST_BROKER_TOKEN)
+    }
+
+    #[cfg(windows)]
+    fn single_instance_test_names(label: &str) -> (String, String) {
+        let nonce = timestamp_ms().expect("single-instance test timestamp");
+        let base = format!(
+            r"Local\io.github.supermang617.iris.test.{label}.{}.{nonce}",
+            std::process::id()
+        );
+        (format!("{base}.instance"), format!("{base}.focus"))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_single_instance_signals_secondary_and_reacquires_after_release() {
+        let (mutex_name, focus_event_name) = single_instance_test_names("signal");
+        let first = match claim_single_instance_named(&mutex_name, &focus_event_name)
+            .expect("claim first Iris instance")
+        {
+            SingleInstanceClaim::Primary(primary) => primary,
+            SingleInstanceClaim::Secondary => panic!("first Iris instance was not primary"),
+        };
+
+        assert!(matches!(
+            claim_single_instance_named(&mutex_name, &focus_event_name)
+                .expect("claim second Iris instance"),
+            SingleInstanceClaim::Secondary
+        ));
+        assert!(wait_for_single_instance_focus(&first.focus_event, 1_000));
+
+        drop(first);
+        assert!(matches!(
+            claim_single_instance_named(&mutex_name, &focus_event_name)
+                .expect("reclaim Iris instance after primary release"),
+            SingleInstanceClaim::Primary(_)
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_single_instance_is_independent_of_legacy_fixed_port_collision() {
+        let legacy_port = match TcpListener::bind("127.0.0.1:48729") {
+            Ok(listener) => Some(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => None,
+            Err(error) => panic!("failed to arrange legacy port collision: {error}"),
+        };
+        let (mutex_name, focus_event_name) = single_instance_test_names("legacy-port");
+
+        assert!(matches!(
+            claim_single_instance_named(&mutex_name, &focus_event_name)
+                .expect("claim Iris instance while legacy port is occupied"),
+            SingleInstanceClaim::Primary(_)
+        ));
+
+        drop(legacy_port);
+    }
 
     struct KokoroTestCleanup;
 
@@ -6184,6 +7448,30 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_log_rotates_during_a_single_long_running_session() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-diagnostic-session-cap-{}-{}",
+            std::process::id(),
+            timestamp_ms().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("diagnostic cap directory");
+        let path = root.join("voice-events.jsonl");
+        let record = b"123456789\n";
+        let maximum_bytes = 32;
+
+        for _ in 0..20 {
+            append_bounded_diagnostic_record(&path, record, maximum_bytes)
+                .expect("append bounded diagnostic");
+        }
+
+        assert!(path.metadata().expect("active diagnostic").len() <= maximum_bytes);
+        assert!(root.join("voice-events.jsonl.1").is_file());
+        assert!(root.join("voice-events.jsonl.5").is_file());
+        assert!(!root.join("voice-events.jsonl.6").exists());
+        fs::remove_dir_all(root).expect("remove diagnostic cap directory");
+    }
+
+    #[test]
     fn screen_capture_diagnostic_writes_latest_artifacts() {
         let root = std::env::temp_dir().join(format!(
             "iris-screen-diagnostic-{}-{}",
@@ -6383,26 +7671,41 @@ mod tests {
     }
 
     #[test]
-    fn native_tts_output_adds_device_preroll_and_duplicates_channels() {
+    fn native_tts_output_prerolls_only_the_first_chunk_and_keeps_a_short_tail() {
         let wav = PcmWav {
             sample_rate: 1_000,
             channels: 1,
             samples: vec![0.5, -0.25],
         };
-        let output = prepare_tts_output_samples(&wav, 1_000, 2);
-        let preroll_samples = frames_for_ms(1_000, TTS_NATIVE_PREROLL_MS) * 2;
+        let first = prepare_tts_output_samples(&wav, 1_000, 2, true);
+        let continuation = prepare_tts_output_samples(&wav, 1_000, 2, false);
+        let preroll_samples = frames_for_ms(1_000, TTS_NATIVE_FIRST_CHUNK_PREROLL_MS) * 2;
+        let tail_samples = frames_for_ms(1_000, TTS_NATIVE_CHUNK_TAIL_MS) * 2;
 
+        assert!(first[..preroll_samples].iter().all(|sample| *sample == 0.0));
+        assert_eq!(first[preroll_samples], 0.5);
+        assert_eq!(first[preroll_samples + 1], 0.5);
+        assert_eq!(first[preroll_samples + 2], -0.25);
+        assert_eq!(first[preroll_samples + 3], -0.25);
+        assert_eq!(first_non_silent_sample_index(&first), preroll_samples);
+        assert_eq!(first.len(), preroll_samples + 4 + tail_samples);
         assert!(
-            output[..preroll_samples]
+            first[first.len() - tail_samples..]
                 .iter()
                 .all(|sample| *sample == 0.0)
         );
-        assert_eq!(output[preroll_samples], 0.5);
-        assert_eq!(output[preroll_samples + 1], 0.5);
-        assert_eq!(output[preroll_samples + 2], -0.25);
-        assert_eq!(output[preroll_samples + 3], -0.25);
-        assert_eq!(first_non_silent_sample_index(&output), preroll_samples);
-        assert_eq!(TTS_NATIVE_PREROLL_MS, 80);
+
+        assert_eq!(first_non_silent_sample_index(&continuation), 0);
+        assert_eq!(&continuation[..4], &[0.5, 0.5, -0.25, -0.25]);
+        assert_eq!(continuation.len(), 4 + tail_samples);
+        assert_eq!(
+            tts_playback_padding(false),
+            TtsPlaybackPadding {
+                preroll_ms: 0,
+                tail_ms: 20,
+            }
+        );
+        assert_eq!(TTS_NATIVE_FIRST_CHUNK_PREROLL_MS, 80);
     }
 
     #[test]
@@ -6642,14 +7945,319 @@ mod tests {
 
     #[test]
     fn hermes_status_reports_loopback_broker() {
-        let (_status, body) = handle_hermes_broker_request("GET /memory/status HTTP/1.1\r\n\r\n");
+        let (_status, body) =
+            handle_authenticated_broker_request("GET /memory/status HTTP/1.1\r\n\r\n");
 
         assert!(body.contains("\"ok\":true"));
         assert!(body.contains("\"loopbackOnly\":true"));
+        assert!(body.contains("\"authenticated\":true"));
         assert!(body.contains("\"stagingItems\""));
         assert!(body.contains("\"pendingStagingItems\""));
         assert!(body.contains("\"decidedStagingItems\""));
-        assert!(body.contains("127.0.0.1:48731"));
+        assert!(body.contains(HERMES_MEMORY_BROKER_PUBLIC_DESCRIPTION));
+        assert!(!body.contains(TEST_BROKER_TOKEN));
+    }
+
+    #[test]
+    fn hermes_broker_requires_authentication_before_routing() {
+        for request in [
+            "GET /memory/status HTTP/1.1\r\n\r\n",
+            "POST /memory/search HTTP/1.1\r\n\r\n{\"query\":\"iris\",\"limit\":5}",
+            "POST /memory/propose HTTP/1.1\r\n\r\n{\"text\":\"safe note\"}",
+        ] {
+            let (status, body) = handle_hermes_broker_request(request, TEST_BROKER_TOKEN);
+            assert_eq!(status, "401 Unauthorized");
+            assert!(body.contains("authentication failed"));
+            assert!(!body.contains(TEST_BROKER_TOKEN));
+        }
+
+        let wrong = "GET /memory/status HTTP/1.1\r\nAuthorization: Bearer ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\r\n\r\n";
+        assert_eq!(
+            handle_hermes_broker_request(wrong, TEST_BROKER_TOKEN).0,
+            "401 Unauthorized"
+        );
+        let duplicate = format!(
+            "GET /memory/status HTTP/1.1\r\nAuthorization: Bearer {TEST_BROKER_TOKEN}\r\nAuthorization: Bearer {TEST_BROKER_TOKEN}\r\n\r\n"
+        );
+        assert_eq!(
+            handle_hermes_broker_request(&duplicate, TEST_BROKER_TOKEN).0,
+            "401 Unauthorized"
+        );
+    }
+
+    #[test]
+    fn hermes_broker_secret_is_strong_and_not_fixed() {
+        let first = generate_hermes_broker_secret().expect("first broker secret");
+        let second = generate_hermes_broker_secret().expect("second broker secret");
+
+        assert_eq!(first.len(), HERMES_MEMORY_BROKER_SECRET_BYTES * 2);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+        assert!(constant_time_bytes_equal(
+            first.as_bytes(),
+            first.as_bytes()
+        ));
+        assert!(!constant_time_bytes_equal(
+            first.as_bytes(),
+            second.as_bytes()
+        ));
+        assert!(!constant_time_bytes_equal(b"short", first.as_bytes()));
+    }
+
+    #[test]
+    fn hermes_broker_bind_reserves_ephemeral_loopback_synchronously() {
+        let first = TcpListener::bind(HERMES_MEMORY_BROKER_BIND_ADDR)
+            .expect("reserve first ephemeral broker endpoint");
+        let second = TcpListener::bind(HERMES_MEMORY_BROKER_BIND_ADDR)
+            .expect("reserve second ephemeral broker endpoint");
+        let first_address = first.local_addr().expect("first broker address");
+        let second_address = second.local_addr().expect("second broker address");
+
+        assert!(first_address.ip().is_loopback());
+        assert!(second_address.ip().is_loopback());
+        assert_ne!(first_address.port(), 0);
+        assert_ne!(second_address.port(), 0);
+        assert_ne!(first_address, second_address);
+    }
+
+    #[test]
+    fn hermes_broker_accepts_fragmented_authenticated_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fragmented broker listener");
+        let address = listener.local_addr().expect("fragmented broker address");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("fragmented broker accept");
+            handle_hermes_broker_stream(stream, TEST_BROKER_TOKEN)
+        });
+        let mut client = TcpStream::connect(address).expect("fragmented broker client");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("fragmented broker read timeout");
+        client
+            .write_all(b"GET /memory/status HTTP/1.1\r\nAuthor")
+            .expect("write first header fragment");
+        client.flush().expect("flush first header fragment");
+        thread::sleep(Duration::from_millis(25));
+        client
+            .write_all(
+                format!("ization: Bearer {TEST_BROKER_TOKEN}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .expect("write remaining header fragment");
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .expect("finish fragmented request");
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("read fragmented broker response");
+
+        server
+            .join()
+            .expect("fragmented broker thread")
+            .expect("handle fragmented broker request");
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("\"authenticated\":true"));
+    }
+
+    #[test]
+    fn hermes_broker_queue_rejects_excess_connections_without_spawning() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bounded broker listener");
+        let address = listener.local_addr().expect("bounded broker address");
+        let _first_client = TcpStream::connect(address).expect("first bounded broker client");
+        let (first_server, _) = listener.accept().expect("first bounded broker accept");
+        let mut second_client = TcpStream::connect(address).expect("second bounded broker client");
+        let (second_server, _) = listener.accept().expect("second bounded broker accept");
+        second_client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded broker read timeout");
+        let (sender, _receiver) = mpsc::sync_channel(1);
+
+        enqueue_hermes_broker_connection(&sender, first_server)
+            .expect("queue first broker connection");
+        enqueue_hermes_broker_connection(&sender, second_server)
+            .expect("reject excess broker connection");
+        let mut response = String::new();
+        second_client
+            .read_to_string(&mut response)
+            .expect("read busy broker response");
+
+        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(response.contains("broker is busy"));
+        assert_eq!(HERMES_MEMORY_BROKER_WORKERS, 4);
+        assert_eq!(HERMES_MEMORY_BROKER_QUEUE_CAPACITY, 8);
+    }
+
+    #[test]
+    fn busy_broker_response_write_failure_is_connection_local() {
+        struct DisconnectedWriter;
+
+        impl Write for DisconnectedWriter {
+            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "test client disconnected",
+                ))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        write_busy_hermes_broker_response(&mut DisconnectedWriter);
+    }
+
+    #[test]
+    fn agentic_session_guard_rejects_panic_stop_and_session_replacement() {
+        let session = hermes_policy::AgenticSession {
+            session_id: "session-1".to_string(),
+            workspace_path: r"C:\IrisTest".to_string(),
+            created_ms: 1,
+            last_activity_ms: 1,
+            expires_at_ms: 2,
+            inactivity_timeout_ms: 1,
+            workspace_boundary: "advisory_unrestricted_powershell".to_string(),
+        };
+        let active = hermes_policy::HermesPolicySnapshot {
+            mode: hermes_policy::HermesMode::Agentic,
+            startup_default: hermes_policy::HermesMode::Safe,
+            panic_stop_active: false,
+            agentic_runtime_available: true,
+            agentic_session: Some(session.clone()),
+        };
+
+        assert_eq!(
+            require_active_agentic_session(active.clone(), Some("session-1"))
+                .expect("same active session"),
+            session
+        );
+
+        let mut stopped = active.clone();
+        stopped.mode = hermes_policy::HermesMode::Off;
+        stopped.panic_stop_active = true;
+        stopped.agentic_session = None;
+        assert!(
+            require_active_agentic_session(stopped, Some("session-1"))
+                .expect_err("Panic Stop must reject queued Agentic work")
+                .contains("Panic Stop")
+        );
+
+        let mut replaced = active;
+        replaced.agentic_session.as_mut().unwrap().session_id = "session-2".to_string();
+        assert!(
+            require_active_agentic_session(replaced, Some("session-1"))
+                .expect_err("replacement session must reject queued Agentic work")
+                .contains("ended or changed")
+        );
+    }
+
+    #[test]
+    fn hermes_sidecar_reader_is_line_bounded_and_rejects_truncation() {
+        let valid = start_hermes_sidecar_stdout_reader(std::io::Cursor::new(b"{\"ok\":true}\n"));
+        assert_eq!(
+            valid
+                .lock()
+                .expect("valid response channel")
+                .recv_timeout(Duration::from_secs(1))
+                .expect("valid response")
+                .expect("valid response line"),
+            "{\"ok\":true}\n"
+        );
+
+        let oversized = start_hermes_sidecar_stdout_reader(std::io::Cursor::new(vec![
+            b'x';
+            MAX_HERMES_SIDECAR_LINE_BYTES
+                + 2
+        ]));
+        let error = oversized
+            .lock()
+            .expect("oversized response channel")
+            .recv_timeout(Duration::from_secs(1))
+            .expect("oversized response")
+            .expect_err("oversized response rejected");
+        assert!(error.contains("line-size limit"));
+
+        let truncated = start_hermes_sidecar_stdout_reader(std::io::Cursor::new(b"{}"));
+        let error = truncated
+            .lock()
+            .expect("truncated response channel")
+            .recv_timeout(Duration::from_secs(1))
+            .expect("truncated response")
+            .expect_err("truncated response rejected");
+        assert!(error.contains("line-size limit"));
+    }
+
+    #[cfg(windows)]
+    fn install_fake_hermes_sidecar(command_text: &str) {
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                command_text,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn fake Hermes sidecar");
+        let stdin = child.stdin.take().expect("fake sidecar stdin");
+        let stdout = child.stdout.take().expect("fake sidecar stdout");
+        let state = HERMES_SIDECAR.get_or_init(|| Mutex::new(None));
+        let mut guard = state.lock().expect("fake sidecar state");
+        assert!(guard.is_none(), "Hermes sidecar state must start empty");
+        *guard = Some(HermesSidecar {
+            child,
+            stdin,
+            response_rx: start_hermes_sidecar_stdout_reader(stdout),
+            audit_passed: false,
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "spawns bounded fake sidecar processes to verify fail-closed lifecycle"]
+    fn sidecar_audit_failure_cleans_up_and_panic_stop_does_not_wait_for_stdout() {
+        install_fake_hermes_sidecar("Write-Output 'not-json'; Start-Sleep -Seconds 30");
+        let error = audit_hermes_runtime_tool_registry().expect_err("invalid audit must fail");
+        assert!(error.contains("invalid Hermes runtime status"));
+        assert!(
+            HERMES_SIDECAR
+                .get()
+                .expect("sidecar state")
+                .lock()
+                .expect("sidecar state lock")
+                .is_none(),
+            "failed audit must remove the child from lifecycle state"
+        );
+
+        install_fake_hermes_sidecar("Start-Sleep -Seconds 30");
+        let waiting = thread::spawn(|| {
+            request_hermes_sidecar_line(b"{\"type\":\"status\"}", Duration::from_secs(30), false)
+        });
+        thread::sleep(Duration::from_millis(200));
+        let stop_started = Instant::now();
+        stop_hermes_sidecar().expect("Panic Stop sidecar termination");
+        assert!(
+            stop_started.elapsed() < Duration::from_secs(3),
+            "Panic Stop must not wait for the sidecar response timeout"
+        );
+        assert!(waiting.join().expect("sidecar waiter joins").is_err());
+    }
+
+    #[test]
+    #[ignore = "requires the provisioned Hermes sidecar runtime"]
+    fn live_safe_hermes_sidecar_authenticates_to_ephemeral_broker() {
+        let access = start_hermes_memory_broker_if_enabled()
+            .expect("start authenticated memory broker")
+            .expect("memory broker enabled");
+        assert!(access.url.starts_with("http://127.0.0.1:"));
+
+        start_hermes_sidecar().expect("start Safe Hermes sidecar");
+        assert!(hermes_sidecar_running());
+        audit_hermes_runtime_tool_registry().expect("audit Safe Hermes tool registry");
+        stop_hermes_sidecar().expect("stop Safe Hermes sidecar");
     }
 
     #[test]
@@ -6698,6 +8306,7 @@ mod tests {
 
         assert!(proposal.evidence.is_none());
         assert!(proposal.provenance.is_none());
+        assert!(proposal.accepted_memory_id.is_none());
     }
 
     #[test]
@@ -6709,6 +8318,7 @@ mod tests {
                 source: "test".to_string(),
                 evidence: None,
                 provenance: None,
+                accepted_memory_id: None,
                 status: StagingStatus::Pending,
                 verdict: ProposalVerdict::Staged,
                 created_ms: 1,
@@ -6720,6 +8330,7 @@ mod tests {
                 source: "test".to_string(),
                 evidence: None,
                 provenance: None,
+                accepted_memory_id: None,
                 status: StagingStatus::Accepted,
                 verdict: ProposalVerdict::Staged,
                 created_ms: 1,
@@ -6731,6 +8342,7 @@ mod tests {
                 source: "test".to_string(),
                 evidence: None,
                 provenance: None,
+                accepted_memory_id: None,
                 status: StagingStatus::Rejected,
                 verdict: ProposalVerdict::Rejected,
                 created_ms: 1,
@@ -6739,6 +8351,212 @@ mod tests {
         ];
 
         assert_eq!(staging_status_counts(&staged), (1, 2));
+    }
+
+    #[test]
+    fn staged_memory_promotion_recovers_without_duplicate_active_memory() {
+        let unique = MEMORY_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "iris-memory-promotion-test-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("memory promotion test directory");
+        let memories_path = root.join("memories.json");
+        let staging_path = root.join("hermes_staging.json");
+        let text = "Iris keeps memory promotion idempotent";
+        let staged = vec![StagedMemoryProposal {
+            id: 7,
+            text: text.to_string(),
+            source: "test".to_string(),
+            evidence: None,
+            provenance: None,
+            accepted_memory_id: None,
+            status: StagingStatus::Pending,
+            verdict: ProposalVerdict::Staged,
+            created_ms: 10,
+            updated_ms: 10,
+        }];
+        save_staged_memory_proposals_to_path(&staging_path, &staged)
+            .expect("pending staging state");
+        save_memories_to_path(
+            &memories_path,
+            &[MemoryItem {
+                id: 42,
+                text: text.to_string(),
+                created_ms: 11,
+                updated_ms: 11,
+            }],
+        )
+        .expect("simulated active-memory write before staging commit");
+
+        let first = accept_staged_memory_at_paths(&memories_path, &staging_path, 7, 20)
+            .expect("recover promotion");
+        assert_eq!(first[0].status, StagingStatus::Accepted);
+        assert_eq!(first[0].accepted_memory_id, Some(42));
+        assert_eq!(first[0].updated_ms, 20);
+
+        let second = accept_staged_memory_at_paths(&memories_path, &staging_path, 7, 30)
+            .expect("repeat promotion");
+        assert_eq!(second[0].accepted_memory_id, Some(42));
+        assert_eq!(second[0].updated_ms, 20);
+        let memories = load_memories_from_path(&memories_path).expect("active memories");
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].id, 42);
+        assert_eq!(memories[0].text, text);
+        assert!(
+            fs::read_dir(&root)
+                .expect("memory promotion artifacts")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+        );
+
+        fs::remove_dir_all(root).expect("remove memory promotion test directory");
+    }
+
+    #[test]
+    fn repeated_memory_saves_replace_active_and_previous_generations() {
+        let unique = MEMORY_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "iris-memory-repeated-save-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("repeated memory save directory");
+        let path = root.join("memories.json");
+        let previous_path = memory_previous_file_path(&path);
+        let mut prior_generation: Option<MemoryItem> = None;
+
+        for generation in 1..=8_u64 {
+            let current = MemoryItem {
+                id: generation,
+                text: format!("durable memory generation {generation}"),
+                created_ms: u128::from(generation),
+                updated_ms: u128::from(generation),
+            };
+            save_memories_to_path(&path, std::slice::from_ref(&current))
+                .expect("replace repeated active memory generation");
+
+            let active = load_memories_from_path(&path).expect("load repeated active memory");
+            assert_eq!(active.len(), 1);
+            assert_eq!(active[0].id, current.id);
+            assert_eq!(active[0].text, current.text);
+
+            if let Some(prior) = prior_generation {
+                let previous =
+                    load_memories_from_path(&previous_path).expect("load repeated previous memory");
+                assert_eq!(previous.len(), 1);
+                assert_eq!(previous[0].id, prior.id);
+                assert_eq!(previous[0].text, prior.text);
+            }
+            prior_generation = Some(current);
+        }
+
+        assert!(
+            fs::read_dir(&root)
+                .expect("repeated memory save artifacts")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+        );
+        fs::remove_dir_all(root).expect("remove repeated memory save directory");
+    }
+
+    #[test]
+    fn active_memory_recovers_from_previous_generation_and_preserves_corruption() {
+        let unique = MEMORY_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "iris-memory-corrupt-active-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("active memory recovery directory");
+        let path = root.join("memories.json");
+        let first = vec![MemoryItem {
+            id: 1,
+            text: "first durable memory".to_string(),
+            created_ms: 1,
+            updated_ms: 1,
+        }];
+        let mut second = first.clone();
+        second.push(MemoryItem {
+            id: 2,
+            text: "newer memory generation".to_string(),
+            created_ms: 2,
+            updated_ms: 2,
+        });
+        save_memories_to_path(&path, &first).expect("write first memory generation");
+        save_memories_to_path(&path, &second).expect("write second memory generation");
+        let previous = load_memories_from_path(&memory_previous_file_path(&path))
+            .expect("load previous memories");
+        assert_eq!(previous.len(), 1);
+        assert_eq!(previous[0].id, first[0].id);
+        assert_eq!(previous[0].text, first[0].text);
+
+        fs::write(&path, b"{\"truncated\":").expect("corrupt active memories");
+        let recovered = load_memories_from_path(&path).expect("recover active memories");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, first[0].id);
+        assert_eq!(recovered[0].text, first[0].text);
+        assert_eq!(
+            fs::read(memory_corrupt_file_path(&path)).expect("corrupt memory evidence"),
+            b"{\"truncated\":"
+        );
+
+        fs::remove_dir_all(root).expect("remove active memory recovery directory");
+    }
+
+    #[test]
+    fn staged_memory_recovers_from_previous_generation_and_preserves_corruption() {
+        let unique = MEMORY_TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "iris-memory-corrupt-staging-{}-{unique}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("staging recovery directory");
+        let path = root.join("hermes_staging.json");
+        let first = vec![StagedMemoryProposal {
+            id: 1,
+            text: "first staged proposal".to_string(),
+            source: "test".to_string(),
+            evidence: None,
+            provenance: None,
+            accepted_memory_id: None,
+            status: StagingStatus::Pending,
+            verdict: ProposalVerdict::Staged,
+            created_ms: 1,
+            updated_ms: 1,
+        }];
+        let mut second = first.clone();
+        second.push(StagedMemoryProposal {
+            id: 2,
+            text: "newer staged proposal".to_string(),
+            source: "test".to_string(),
+            evidence: None,
+            provenance: None,
+            accepted_memory_id: None,
+            status: StagingStatus::Pending,
+            verdict: ProposalVerdict::Staged,
+            created_ms: 2,
+            updated_ms: 2,
+        });
+        save_staged_memory_proposals_to_path(&path, &first)
+            .expect("write first staging generation");
+        save_staged_memory_proposals_to_path(&path, &second)
+            .expect("write second staging generation");
+
+        fs::write(&path, b"[").expect("corrupt staging memory");
+        let recovered =
+            load_staged_memory_proposals_from_path(&path).expect("recover staged memory proposals");
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, 1);
+        assert_eq!(recovered[0].text, "first staged proposal");
+        assert_eq!(
+            fs::read(memory_corrupt_file_path(&path)).expect("corrupt staging evidence"),
+            b"["
+        );
+
+        fs::remove_dir_all(root).expect("remove staging recovery directory");
     }
 
     #[test]
@@ -6773,21 +8591,21 @@ mod tests {
     }
 
     #[test]
-    fn staging_accept_and_reject_routes_validate_json_shape() {
-        let (_accept_status, accept_body) = handle_hermes_broker_request(
-            "POST /memory/staging/accept HTTP/1.1\r\n\r\n{\"id\":999999}",
-        );
-        let (_reject_status, reject_body) = handle_hermes_broker_request(
-            "POST /memory/staging/reject HTTP/1.1\r\n\r\n{\"id\":999999}",
-        );
-
-        assert!(accept_body.contains("does not exist"));
-        assert!(reject_body.contains("does not exist"));
+    fn broker_does_not_expose_staging_listing_or_decisions() {
+        for request in [
+            "GET /memory/staging/list HTTP/1.1\r\n\r\n",
+            "POST /memory/staging/accept HTTP/1.1\r\n\r\n{\"id\":1}",
+            "POST /memory/staging/reject HTTP/1.1\r\n\r\n{\"id\":1}",
+        ] {
+            let (status, body) = handle_authenticated_broker_request(request);
+            assert_eq!(status, "404 Not Found");
+            assert!(body.contains("unknown Iris memory broker route"));
+        }
     }
 
     #[test]
     fn search_route_is_enabled_by_default_for_local_rag() {
-        let (_status, body) = handle_hermes_broker_request(
+        let (_status, body) = handle_authenticated_broker_request(
             "POST /memory/search HTTP/1.1\r\n\r\n{\"query\":\"iris\",\"limit\":5}",
         );
 
@@ -6984,6 +8802,106 @@ mod tests {
         .expect_err("unapproved image generation must fail");
 
         assert!(err.contains("explicit approval"));
+    }
+
+    #[test]
+    fn image_provider_reader_drains_newline_free_output_without_retaining_the_overflow() {
+        let retained_limit = 1_024;
+        let streamed_bytes = 5 * 1024 * 1024;
+        let output = read_bounded_process_output(
+            std::io::repeat(b'x').take(streamed_bytes as u64),
+            retained_limit,
+        )
+        .expect("drain bounded provider output");
+
+        assert_eq!(output.bytes.len(), retained_limit);
+        assert_eq!(output.total_bytes, streamed_bytes);
+        assert!(output.truncated);
+    }
+
+    #[test]
+    fn image_provider_stderr_is_bounded_and_redacts_credentials() {
+        let stderr = BoundedProcessOutput {
+            bytes: b"OPENAI_API_KEY=sk-test-secret\nsafe diagnostic".to_vec(),
+            truncated: true,
+            total_bytes: 100_000,
+        };
+        let clean = format_image_provider_stderr(&stderr);
+
+        assert!(clean.contains("[redacted sensitive detail]"));
+        assert!(clean.contains("safe diagnostic"));
+        assert!(clean.contains("[stderr truncated]"));
+        assert!(!clean.contains("sk-test-secret"));
+    }
+
+    #[cfg(windows)]
+    fn sleeping_image_provider_command() -> Command {
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            r#"$null = [Console]::In.ReadToEnd(); Start-Sleep -Seconds 30; [Console]::Out.Write('{"ok":false,"error":"late"}')"#,
+        ]);
+        command
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn image_provider_process_is_promptly_cancelled_and_has_a_rust_deadline() {
+        let running = thread::spawn(|| {
+            run_image_provider_command(
+                sleeping_image_provider_command(),
+                "test cancellation",
+                Duration::from_secs(35),
+                false,
+            )
+        });
+        let registration_deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let registered = IMAGE_PROVIDER_CHILD
+                .get()
+                .and_then(|slot| slot.lock().ok())
+                .is_some_and(|slot| slot.is_some());
+            if registered {
+                break;
+            }
+            assert!(
+                Instant::now() < registration_deadline,
+                "fake image provider was not registered"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        let cancel_started = Instant::now();
+        stop_image_provider();
+        let error = running
+            .join()
+            .expect("cancelled image provider thread")
+            .expect_err("cancelled image provider must fail");
+        assert!(error.contains("cancelled by Panic Stop"));
+        assert!(cancel_started.elapsed() < Duration::from_secs(3));
+
+        let timeout_started = Instant::now();
+        let error = run_image_provider_command(
+            sleeping_image_provider_command(),
+            "test timeout",
+            Duration::from_millis(120),
+            false,
+        )
+        .expect_err("timed-out image provider must fail");
+        assert!(error.contains("timed out"));
+        assert!(timeout_started.elapsed() < Duration::from_secs(3));
+        assert!(
+            IMAGE_PROVIDER_CHILD
+                .get()
+                .expect("image provider registry")
+                .lock()
+                .expect("image provider registry lock")
+                .is_none(),
+            "completed image provider runs must clear the registry"
+        );
     }
 
     #[test]
@@ -7273,7 +9191,8 @@ mod tests {
 
     #[test]
     fn hermes_broker_reports_phase4_limits() {
-        let (_status, body) = handle_hermes_broker_request("GET /memory/status HTTP/1.1\r\n\r\n");
+        let (_status, body) =
+            handle_authenticated_broker_request("GET /memory/status HTTP/1.1\r\n\r\n");
 
         assert!(body.contains("\"maxRequestBytes\":16384"));
         assert!(body.contains("\"maxQueryChars\":120"));
@@ -7303,7 +9222,37 @@ mod tests {
             "q8_0"
         );
         assert_eq!(select_ollama_server_setting(None, "1"), "1");
+        assert_eq!(OLLAMA_LOOPBACK_HOST, "127.0.0.1:11434");
         assert_eq!(OLLAMA_PERSISTED_DEFAULT_COUNT, 2);
+    }
+
+    #[test]
+    fn ollama_listener_scope_accepts_only_loopback_bindings() {
+        let loopback = concat!(
+            "  TCP    127.0.0.1:11434      0.0.0.0:0       LISTENING       100\n",
+            "  TCP    [::1]:11434          [::]:0          LISTENING       100\n",
+            "  TCP    127.0.0.1:11434      127.0.0.1:55000 ESTABLISHED     100\n",
+        );
+        assert_eq!(ollama_listener_is_loopback_only(loopback), Some(true));
+
+        for broad in [
+            "TCP 0.0.0.0:11434 0.0.0.0:0 LISTENING 200",
+            "TCP [::]:11434 [::]:0 LISTENING 200",
+        ] {
+            assert_eq!(
+                ollama_listener_is_loopback_only(broad),
+                Some(false),
+                "broad listener was accepted: {broad}"
+            );
+        }
+        assert_eq!(
+            ollama_listener_is_loopback_only("TCP 127.0.0.1:11434 127.0.0.1:55000 ESTABLISHED 100"),
+            None
+        );
+        assert_eq!(
+            ollama_listener_is_loopback_only("TCP 0.0.0.0:9999 0.0.0.0:0 LISTENING 200"),
+            None
+        );
     }
 
     fn observe_level(
@@ -7404,6 +9353,7 @@ mod tests {
             rms: 0.003,
             peak: 0.020,
             speech_ms: 600,
+            input_device: "test microphone".to_string(),
         };
 
         assert!(!wake_audio_should_transcribe(&audio));
@@ -7417,8 +9367,24 @@ mod tests {
             rms: 0.018,
             peak: 0.090,
             speech_ms: 220,
+            input_device: "test microphone".to_string(),
         };
 
         assert!(wake_audio_should_transcribe(&audio));
+    }
+
+    #[test]
+    fn audio_device_labels_are_bounded_and_control_character_safe() {
+        assert_eq!(normalize_audio_device_label(None), "unknown default device");
+        assert_eq!(
+            normalize_audio_device_label(Some("  RODE\r\nMicrophone  ")),
+            "RODE  Microphone"
+        );
+        assert_eq!(
+            normalize_audio_device_label(Some(&"x".repeat(MAX_AUDIO_DEVICE_LABEL_CHARS + 20)))
+                .chars()
+                .count(),
+            MAX_AUDIO_DEVICE_LABEL_CHARS
+        );
     }
 }

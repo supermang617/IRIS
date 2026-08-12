@@ -15,6 +15,133 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not ("Iris.Runtime.BoundedCaptureStream" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Iris.Runtime {
+    public sealed class BoundedCaptureStream : Stream {
+        private readonly byte[] buffer;
+        private readonly object sync = new object();
+        private int length;
+        private long totalBytes;
+
+        public BoundedCaptureStream(int capacity) {
+            if (capacity < 1) throw new ArgumentOutOfRangeException("capacity");
+            buffer = new byte[capacity];
+        }
+
+        public string Text {
+            get {
+                lock (sync) {
+                    string value = Encoding.UTF8.GetString(buffer, 0, length);
+                    return totalBytes > buffer.Length
+                        ? value + Environment.NewLine + "[process output truncated by Iris]"
+                        : value;
+                }
+            }
+        }
+
+        public override bool CanRead { get { return false; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return true; } }
+        public override long Length { get { lock (sync) { return length; } } }
+        public override long Position {
+            get { return Length; }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken cancellationToken) {
+            return Task.CompletedTask;
+        }
+        public override void Write(byte[] source, int offset, int count) {
+            lock (sync) {
+                totalBytes += count;
+                int retained = Math.Min(count, buffer.Length - length);
+                if (retained > 0) {
+                    Buffer.BlockCopy(source, offset, buffer, length, retained);
+                    length += retained;
+                }
+            }
+        }
+        public override Task WriteAsync(
+            byte[] source,
+            int offset,
+            int count,
+            CancellationToken cancellationToken
+        ) {
+            if (cancellationToken.IsCancellationRequested) {
+                return Task.FromCanceled(cancellationToken);
+            }
+            Write(source, offset, count);
+            return Task.CompletedTask;
+        }
+        public override int Read(byte[] target, int offset, int count) {
+            throw new NotSupportedException();
+        }
+        public override long Seek(long offset, SeekOrigin origin) {
+            throw new NotSupportedException();
+        }
+        public override void SetLength(long value) {
+            throw new NotSupportedException();
+        }
+    }
+}
+'@
+}
+
+function Start-BoundedProcessCapture {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [int]$MaximumBytesPerStream = (512 * 1024)
+    )
+
+    $stdoutSink = New-Object Iris.Runtime.BoundedCaptureStream($MaximumBytesPerStream)
+    $stderrSink = New-Object Iris.Runtime.BoundedCaptureStream($MaximumBytesPerStream)
+    return [pscustomobject]@{
+        Process = $Process
+        StdoutSink = $stdoutSink
+        StderrSink = $stderrSink
+        StdoutTask = $Process.StandardOutput.BaseStream.CopyToAsync($stdoutSink)
+        StderrTask = $Process.StandardError.BaseStream.CopyToAsync($stderrSink)
+    }
+}
+
+function Complete-BoundedProcessCapture {
+    param(
+        [Parameter(Mandatory = $true)]$Capture,
+        [int]$TimeoutMilliseconds = 5000
+    )
+
+    $tasks = [System.Threading.Tasks.Task[]]@($Capture.StdoutTask, $Capture.StderrTask)
+    $completedInTime = $false
+    try {
+        $completedInTime = [System.Threading.Tasks.Task]::WaitAll($tasks, $TimeoutMilliseconds)
+    } catch {
+        $completedInTime = $false
+    }
+    if (-not $completedInTime) {
+        $Capture.Process.StandardOutput.BaseStream.Dispose()
+        $Capture.Process.StandardError.BaseStream.Dispose()
+        try {
+            [void][System.Threading.Tasks.Task]::WaitAll($tasks, 1000)
+        } catch {
+        }
+    }
+    $streamsCompleted = @(
+        $tasks | Where-Object { -not $_.IsCompleted -or $_.IsFaulted -or $_.IsCanceled }
+    ).Count -eq 0
+    return [pscustomobject]@{
+        Output = $Capture.StdoutSink.Text
+        Error = $Capture.StderrSink.Text
+        StreamsCompleted = $streamsCompleted
+    }
+}
+
 if ($PSVersionTable.PSEdition -eq "Desktop") {
     # A Windows PowerShell child started from PowerShell 7 can inherit PS7-only
     # module roots ahead of the inbox Windows modules, which breaks autoloading.
@@ -67,10 +194,28 @@ function Assert-ManagedInstallPath {
             throw "InstallRoot must be a dedicated child directory inside the current user's profile or temp folder: $resolved"
         }
     }
-    foreach ($allowed in $allowedRoots) {
-        if ($resolved.StartsWith($allowed + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $resolved.TrimEnd("\")
+    $containingRoot = $allowedRoots |
+        Where-Object { $resolved.StartsWith($_ + "\", [System.StringComparison]::OrdinalIgnoreCase) } |
+        Sort-Object Length -Descending |
+        Select-Object -First 1
+    if ($containingRoot) {
+        # Lexical containment alone is not enough on Windows: an existing
+        # junction or symbolic-link component can redirect recursive install,
+        # rollback, or cleanup operations outside the per-user boundary.
+        # Refuse such paths before creating transaction data or touching an
+        # existing installation.
+        $relative = $resolved.Substring($containingRoot.Length).TrimStart("\")
+        $components = @($containingRoot) + @($relative -split '\\' | Where-Object { $_ })
+        $current = $null
+        foreach ($component in $components) {
+            $current = if ($null -eq $current) { $component } else { Join-Path $current $component }
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+            if ($null -ne $item -and
+                (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw "InstallRoot must be a dedicated child directory without junction or symbolic-link components inside the current user's profile or temp folder: $resolved (reparse point: $current)"
+            }
         }
+        return $resolved.TrimEnd("\")
     }
     throw "InstallRoot must be a dedicated child directory inside the current user's profile or temp folder: $resolved"
 }
@@ -111,13 +256,124 @@ function Test-ReleaseRoot {
     }
 }
 
+function Remove-ReleaseTransactionData {
+    param([Parameter(Mandatory = $true)]$Transaction)
+
+    $cleanupFailures = New-Object System.Collections.Generic.List[string]
+    foreach ($transactionPath in @($Transaction.StagingRoot, $Transaction.BackupRoot)) {
+        if (-not (Test-Path -LiteralPath $transactionPath)) {
+            continue
+        }
+        try {
+            Remove-Item -LiteralPath $transactionPath -Recurse -Force -ErrorAction Stop
+        } catch {
+            $cleanupFailures.Add("$transactionPath`: $($_.Exception.Message)") | Out-Null
+        }
+    }
+    if ($cleanupFailures.Count -gt 0) {
+        throw "Iris transaction cleanup was incomplete ($($cleanupFailures -join '; ')). Remove these transaction paths to recover disk space."
+    }
+}
+
+function Register-TransactionalFile {
+    param(
+        [Parameter(Mandatory = $true)]$Transaction,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $resolved = [System.IO.Path]::GetFullPath($Path)
+    foreach ($entry in $Transaction.ExternalFiles) {
+        if ($entry.Path -ieq $resolved) {
+            return
+        }
+    }
+    if (Test-Path -LiteralPath $resolved -PathType Container) {
+        throw "Installer transaction expected a file but found a directory: $resolved"
+    }
+
+    $backupPath = Join-Path $Transaction.BackupRoot ("external-files\{0}" -f $Transaction.ExternalFiles.Count)
+    $existed = Test-Path -LiteralPath $resolved -PathType Leaf
+    if ($existed) {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $backupPath) | Out-Null
+        Copy-Item -LiteralPath $resolved -Destination $backupPath -Force
+    }
+    $Transaction.ExternalFiles.Add([pscustomobject]@{
+        Path = $resolved
+        BackupPath = $backupPath
+        Existed = $existed
+    }) | Out-Null
+}
+
+function Undo-ReleaseFilesTransaction {
+    param([Parameter(Mandatory = $true)]$Transaction)
+
+    if ($Transaction.Committed) {
+        throw "Cannot roll back an Iris release transaction after it has been committed."
+    }
+    $rollbackFailures = New-Object System.Collections.Generic.List[string]
+
+    for ($index = $Transaction.ExternalFiles.Count - 1; $index -ge 0; $index--) {
+        $entry = $Transaction.ExternalFiles[$index]
+        try {
+            if (Test-Path -LiteralPath $entry.Path) {
+                Remove-Item -LiteralPath $entry.Path -Recurse -Force -ErrorAction Stop
+            }
+            if ($entry.Existed) {
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry.Path) | Out-Null
+                Move-Item -LiteralPath $entry.BackupPath -Destination $entry.Path -Force
+            }
+        } catch {
+            $rollbackFailures.Add("restore $($entry.Path)`: $($_.Exception.Message)") | Out-Null
+        }
+    }
+
+    for ($index = $Transaction.Installed.Count - 1; $index -ge 0; $index--) {
+        $destination = Join-Path $Transaction.DestinationRoot $Transaction.Installed[$index]
+        try {
+            if (Test-Path -LiteralPath $destination) {
+                Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction Stop
+            }
+        } catch {
+            $rollbackFailures.Add("remove $destination`: $($_.Exception.Message)") | Out-Null
+        }
+    }
+    for ($index = $Transaction.BackedUp.Count - 1; $index -ge 0; $index--) {
+        $relative = $Transaction.BackedUp[$index]
+        $destination = Join-Path $Transaction.DestinationRoot $relative
+        $backup = Join-Path $Transaction.BackupRoot $relative
+        try {
+            if (Test-Path -LiteralPath $destination) {
+                Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction Stop
+            }
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+            Move-Item -LiteralPath $backup -Destination $destination -Force
+        } catch {
+            $rollbackFailures.Add("restore $destination`: $($_.Exception.Message)") | Out-Null
+        }
+    }
+
+    if ($rollbackFailures.Count -gt 0) {
+        throw "Iris install rollback was incomplete ($($rollbackFailures -join '; ')). Recoverable backup remains at $($Transaction.BackupRoot)."
+    }
+    Remove-ReleaseTransactionData -Transaction $Transaction
+}
+
+function Complete-ReleaseFilesTransaction {
+    param([Parameter(Mandatory = $true)]$Transaction)
+
+    # Once every mandatory install step has passed, the new payload is the
+    # durable version. Never attempt to restore a partially deleted backup if
+    # the subsequent cleanup itself encounters a filesystem error.
+    $Transaction.Committed = $true
+    Remove-ReleaseTransactionData -Transaction $Transaction
+}
+
 function Copy-ReleaseFiles {
     param(
         [Parameter(Mandatory = $true)][string]$SourceRoot,
         [Parameter(Mandatory = $true)][string]$DestinationRoot
     )
-    New-Item -ItemType Directory -Force -Path $DestinationRoot | Out-Null
-    foreach ($relative in @(
+    $managedDirectories = @(
         "assets",
         "bin",
         "capabilities",
@@ -127,21 +383,8 @@ function Copy-ReleaseFiles {
         "profiles",
         "tools"
         ".iris-runtime"
-    )) {
-        $source = Join-Path $SourceRoot $relative
-        if (Test-Path -LiteralPath $source -PathType Container) {
-            $destination = Join-Path $DestinationRoot $relative
-            Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $destination) {
-                throw "Failed to remove existing install directory before upgrade: $destination"
-            }
-            New-Item -ItemType Directory -Force -Path $destination | Out-Null
-            foreach ($child in @(Get-ChildItem -LiteralPath $source -Force)) {
-                Copy-Item -LiteralPath $child.FullName -Destination $destination -Recurse -Force
-            }
-        }
-    }
-    foreach ($relative in @(
+    )
+    $managedFiles = @(
         "Check Iris Preflight.bat",
         "Iris Preflight.ps1",
         "Iris Document OCR.ps1",
@@ -158,12 +401,79 @@ function Copy-ReleaseFiles {
         "Update Iris.ps1",
         "known-limitations.md",
         "manifest.json"
-    )) {
-        $source = Join-Path $SourceRoot $relative
-        if (Test-Path -LiteralPath $source -PathType Leaf) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $relative) -Force
-        }
+    )
+
+    $destinationParent = Split-Path -Parent $DestinationRoot
+    if (-not $destinationParent) {
+        throw "DestinationRoot must include a parent directory: $DestinationRoot"
     }
+    New-Item -ItemType Directory -Force -Path $destinationParent | Out-Null
+    $transactionId = [System.Guid]::NewGuid().ToString("N")
+    $destinationName = Split-Path -Leaf $DestinationRoot
+    $transaction = [pscustomobject]@{
+        DestinationRoot = $DestinationRoot
+        StagingRoot = Join-Path $destinationParent "$destinationName.iris-staging-$transactionId"
+        BackupRoot = Join-Path $destinationParent "$destinationName.iris-backup-$transactionId"
+        BackedUp = New-Object System.Collections.Generic.List[string]
+        Installed = New-Object System.Collections.Generic.List[string]
+        ExternalFiles = New-Object System.Collections.Generic.List[object]
+        Committed = $false
+    }
+
+    try {
+        New-Item -ItemType Directory -Path $transaction.StagingRoot, $transaction.BackupRoot | Out-Null
+        foreach ($relative in $managedDirectories) {
+            $source = Join-Path $SourceRoot $relative
+            if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+                continue
+            }
+            $staged = Join-Path $transaction.StagingRoot $relative
+            New-Item -ItemType Directory -Force -Path $staged | Out-Null
+            foreach ($child in @(Get-ChildItem -LiteralPath $source -Force)) {
+                Copy-Item -LiteralPath $child.FullName -Destination $staged -Recurse -Force
+            }
+        }
+        foreach ($relative in $managedFiles) {
+            $source = Join-Path $SourceRoot $relative
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                continue
+            }
+            $staged = Join-Path $transaction.StagingRoot $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $staged) | Out-Null
+            Copy-Item -LiteralPath $source -Destination $staged -Force
+        }
+
+        # Finish every potentially fallible payload copy before replacing any
+        # part of an existing installation.
+        Test-ReleaseRoot -Root $transaction.StagingRoot
+        New-Item -ItemType Directory -Force -Path $DestinationRoot | Out-Null
+
+        foreach ($relative in @($managedDirectories) + @($managedFiles)) {
+            $staged = Join-Path $transaction.StagingRoot $relative
+            if (-not (Test-Path -LiteralPath $staged)) {
+                continue
+            }
+            $destination = Join-Path $DestinationRoot $relative
+            $backup = Join-Path $transaction.BackupRoot $relative
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination), (Split-Path -Parent $backup) | Out-Null
+            if (Test-Path -LiteralPath $destination) {
+                Move-Item -LiteralPath $destination -Destination $backup
+                $transaction.BackedUp.Add($relative) | Out-Null
+            }
+            Move-Item -LiteralPath $staged -Destination $destination
+            $transaction.Installed.Add($relative) | Out-Null
+        }
+    } catch {
+        $replacementFailure = $_
+        try {
+            Undo-ReleaseFilesTransaction -Transaction $transaction
+        } catch {
+            throw "Iris managed-file replacement failed and rollback was incomplete. Original error: $($replacementFailure.Exception.Message) Rollback error: $($_.Exception.Message)"
+        }
+        throw $replacementFailure
+    }
+
+    return $transaction
 }
 
 function New-Shortcut {
@@ -270,17 +580,35 @@ function Invoke-InstalledSelfCheck {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
 
-    [void]$process.Start()
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        Stop-ProcessTree -ProcessId $process.Id
-        throw "Installed Iris self-check timed out after $TimeoutSeconds seconds. Log: $outputPath"
-    }
-
-    $output = $process.StandardOutput.ReadToEnd()
-    $errorOutput = $process.StandardError.ReadToEnd()
-    Set-Content -LiteralPath $outputPath -Value @($output, $errorOutput) -Encoding utf8
-    if ($process.ExitCode -ne 0) {
-        throw "Installed Iris self-check failed with exit code $($process.ExitCode). Log: $outputPath"
+    try {
+        [void]$process.Start()
+        $capture = Start-BoundedProcessCapture -Process $process
+        $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
+        if ($timedOut) {
+            Stop-ProcessTree -ProcessId $process.Id
+            [void]$process.WaitForExit(5000)
+        } else {
+            # Complete asynchronous stream delivery after the process handle is signaled.
+            $process.WaitForExit()
+        }
+        $captured = Complete-BoundedProcessCapture -Capture $capture
+        $output = $captured.Output
+        $errorOutput = $captured.Error
+        if (-not $captured.StreamsCompleted) {
+            $errorOutput = @($errorOutput, "process output streams did not close within 5 seconds") -join "`n"
+        }
+        Set-Content -LiteralPath $outputPath -Value @($output, $errorOutput) -Encoding utf8
+        if ($timedOut) {
+            throw "Installed Iris self-check timed out after $TimeoutSeconds seconds. Log: $outputPath"
+        }
+        if (-not $captured.StreamsCompleted) {
+            throw "Installed Iris self-check output streams did not close. Log: $outputPath"
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "Installed Iris self-check failed with exit code $($process.ExitCode). Log: $outputPath"
+        }
+    } finally {
+        $process.Dispose()
     }
 }
 
@@ -300,8 +628,21 @@ if (-not $SourceZip) {
         }
     }
 }
+if (-not $SourceZip -and (Split-Path -Leaf $scriptRoot) -ieq "scripts") {
+    $sourceDistRoot = Join-Path $scriptRoot "..\release\dist"
+    $distSourceZip = Join-Path $sourceDistRoot "iris-windows.zip"
+    $distSha256Path = Join-Path $sourceDistRoot "iris-windows.zip.sha256"
+    if ((Test-Path -LiteralPath $distSourceZip -PathType Leaf) -and
+        (Test-Path -LiteralPath $distSha256Path -PathType Leaf)) {
+        $SourceZip = $distSourceZip
+        if (-not $Sha256Path) {
+            $Sha256Path = $distSha256Path
+        }
+    }
+}
 
 $temporaryExtract = $null
+$releaseTransaction = $null
 if ($SourceZip) {
     Require-File -Path $SourceZip
     if (-not $Sha256Path) {
@@ -331,7 +672,7 @@ try {
     Write-Host "Source: $sourceRoot"
     Write-Host "Target: $installRootResolved"
 
-    Copy-ReleaseFiles -SourceRoot $sourceRoot -DestinationRoot $installRootResolved
+    $releaseTransaction = Copy-ReleaseFiles -SourceRoot $sourceRoot -DestinationRoot $installRootResolved
     $dataRootInitializer = Join-Path $installRootResolved "Initialize Iris Data Root.ps1"
     $defaultInstallRootResolved = [System.IO.Path]::GetFullPath((Resolve-DefaultInstallRoot)).TrimEnd("\")
     if ($installRootResolved -ieq $defaultInstallRootResolved) {
@@ -351,29 +692,39 @@ try {
     $StartMenuDir = [System.IO.Path]::GetFullPath($StartMenuDir)
     $DesktopDir = [System.IO.Path]::GetFullPath($DesktopDir)
 
+    Register-TransactionalFile -Transaction $releaseTransaction -Path (Join-Path $installRootResolved "Uninstall Iris.ps1")
     Write-Uninstaller -TargetRoot $installRootResolved -MenuDir $StartMenuDir -DeskDir $DesktopDir
 
     if (-not $SkipShortcuts) {
         $powershell = (Get-Command powershell.exe).Source
+        Register-TransactionalFile -Transaction $releaseTransaction -Path (Join-Path $StartMenuDir "Iris.lnk")
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
+        Register-TransactionalFile -Transaction $releaseTransaction -Path (Join-Path $StartMenuDir "Iris Setup Wizard.lnk")
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Iris Setup Wizard.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Iris Setup Wizard.ps1`"" -WorkingDirectory $installRootResolved
+        Register-TransactionalFile -Transaction $releaseTransaction -Path (Join-Path $StartMenuDir "Update Iris.lnk")
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Update Iris.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Update Iris.ps1`"" -WorkingDirectory $installRootResolved
+        Register-TransactionalFile -Transaction $releaseTransaction -Path (Join-Path $StartMenuDir "Uninstall Iris.lnk")
         New-Shortcut -ShortcutPath (Join-Path $StartMenuDir "Uninstall Iris.lnk") -TargetPath $powershell -Arguments "-NoProfile -ExecutionPolicy Bypass -File `"$installRootResolved\Uninstall Iris.ps1`"" -WorkingDirectory $installRootResolved
+        Register-TransactionalFile -Transaction $releaseTransaction -Path (Join-Path $DesktopDir "Iris.lnk")
         New-Shortcut -ShortcutPath (Join-Path $DesktopDir "Iris.lnk") -TargetPath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
     }
 
+    $recordedSourceRoot = if ($temporaryExtract) { $null } else { $sourceRoot }
+    $recordedSourceZip = if ($SourceZip) { [System.IO.Path]::GetFullPath($SourceZip) } else { $null }
     $manifest = [ordered]@{
         installed_at = Get-Date -Format o
         install_root = $installRootResolved
-        source_root = $sourceRoot
-        source_zip = $SourceZip
+        source_root = $recordedSourceRoot
+        source_zip = $recordedSourceZip
         start_menu_dir = $StartMenuDir
         desktop_dir = $DesktopDir
         data_root = $dataRoot
         local_only_runtime = $true
         installer_dependency = "none"
     }
-    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $installRootResolved "install-manifest.json") -Encoding utf8
+    $installManifestPath = Join-Path $installRootResolved "install-manifest.json"
+    Register-TransactionalFile -Transaction $releaseTransaction -Path $installManifestPath
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $installManifestPath -Encoding utf8
 
     if ($RunSetup) {
         if ($NonInteractive.IsPresent -or $SetupNonInteractive.IsPresent) {
@@ -400,6 +751,11 @@ try {
         Invoke-InstalledSelfCheck -InstallRoot $installRootResolved -TimeoutSeconds $SelfCheckTimeoutSeconds
     }
 
+    # Retain the previous managed payload and generated install files until
+    # setup and the final installed self-check have both passed.
+    Complete-ReleaseFilesTransaction -Transaction $releaseTransaction
+    $releaseTransaction = $null
+
     Write-Host "Iris installed successfully."
     Write-Host "Install root: $installRootResolved"
     if (-not $SkipShortcuts) {
@@ -410,6 +766,17 @@ try {
         Start-Process -FilePath (Join-Path $installRootResolved "bin\iris-tauri.exe") -WorkingDirectory $installRootResolved
     }
     exit 0
+} catch {
+    $installFailure = $_
+    if ($null -ne $releaseTransaction -and -not $releaseTransaction.Committed) {
+        try {
+            Undo-ReleaseFilesTransaction -Transaction $releaseTransaction
+            $releaseTransaction = $null
+        } catch {
+            throw "Iris installation failed and the previous installation could not be restored completely. Original error: $($installFailure.Exception.Message) Rollback error: $($_.Exception.Message)"
+        }
+    }
+    throw $installFailure
 } finally {
     if ($temporaryExtract) {
         Remove-Item -LiteralPath $temporaryExtract -Recurse -Force -ErrorAction SilentlyContinue

@@ -12,6 +12,8 @@ DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "auto"
 DEFAULT_OUTPUT_FORMAT = "png"
 MAX_PROMPT_CHARS = 2000
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_PROVIDER_RESPONSE_BYTES = ((MAX_IMAGE_BYTES + 2) // 3) * 4 + 512 * 1024
 
 
 def main() -> int:
@@ -68,9 +70,12 @@ def generate_openai_image(prompt: str) -> dict:
     )
     try:
         with urllib.request.urlopen(request, timeout=180) as response:
-            parsed = json.loads(response.read().decode("utf-8"))
+            response_bytes = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+            if len(response_bytes) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise RuntimeError("OpenAI Images API response exceeded the Iris size limit")
+            parsed = json.loads(response_bytes.decode("utf-8"))
     except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace")
+        detail = error.read(801).decode("utf-8", errors="replace")
         raise RuntimeError(f"OpenAI Images API returned HTTP {error.code}: {detail[:800]}") from error
 
     data = parsed.get("data") or []
@@ -79,7 +84,9 @@ def generate_openai_image(prompt: str) -> dict:
     image_b64 = data[0].get("b64_json")
     if not image_b64:
         raise RuntimeError("OpenAI Images API returned no base64 image")
-    base64.b64decode(image_b64, validate=True)
+    image_bytes = base64.b64decode(image_b64, validate=True)
+    if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
+        raise RuntimeError("generated image must be non-empty and no larger than 25 MB")
     return {
         "provider": "openai_images_api",
         "model": model,

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 cpal = "0.18.1"
+getrandom = "0.3.4"
 iris-config = { path = "../crates/iris-config" }
 iris-core-types = { path = "../crates/iris-core-types" }
 iris-dynamic-context = { path = "../crates/iris-dynamic-context" }
@@ -23,6 +24,7 @@ tauri-runtime-wry = { version = "2", default-features = false }
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

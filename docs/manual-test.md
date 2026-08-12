@@ -53,20 +53,20 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 11. While Iris is speaking, say `Iris`, `stop`, or `Iris stop`.
 12. Confirm Iris stops speaking and returns to listening.
 13. Click the attachment icon, paste, or drag a small png, jpg, jpeg, or webp image into the text bar.
-14. Confirm a small attachment preview appears above the text bar, then ask Iris what is in the image.
+14. Confirm a small attachment preview appears above the text bar. For a simple PNG fixture, ask a narrow color/shape question; for an arbitrary scene, confirm the affected Windows Gemma 4 path names the projector limitation and refuses to guess.
 15. Drag the divider between the response pane and composer. Confirm the
     response pane grows and shrinks, then relaunch Iris and confirm the chosen
     height is retained.
 16. Drag the top Iris titlebar and confirm the window moves without disrupting
     typing, resizing, or tool buttons.
 17. Click the camera icon with an empty text bar.
-18. Confirm Iris takes a capped camera snapshot, answers what it can see, and speaks the answer.
+18. Confirm Iris takes a capped camera snapshot and does not guess at an unverified scene. On the affected Windows Gemma 4 path it must name the projector limitation, speak the response, and remain usable.
 19. Type a camera-specific question, then click the camera icon.
-20. Confirm Iris uses that typed question for the camera snapshot.
+20. Confirm Iris uses that typed question for the camera snapshot and returns only confidence-filtered visible text when available or the same explicit limitation.
 21. Move Iris over a visible app, document, or webpage, then click the screen icon.
-22. Confirm Iris briefly hides, captures the area underneath the Iris window, answers what it sees, and speaks the answer.
+22. Confirm Iris briefly hides and captures the area underneath the Iris window. It may return confidence-filtered visible text, but it must refuse an unverified general scene description on the affected projector path and remain usable.
 23. Type a screen-specific question, then click the screen icon.
-24. Confirm Iris uses that typed question for the screen-area capture.
+24. Confirm Iris uses that typed question for the screen-area capture without silently presenting an unverified scene guess.
 25. Click the attachment icon, paste, or drag a small mp4, webm, or mov video into the text bar.
 26. Confirm Iris attaches one video frame preview for the next prompt.
 27. Click the attachment icon, paste, or drag a txt, md, csv, json, log, or rtf text document into the text bar.
@@ -96,7 +96,10 @@ their errors can numerically cancel each other:
 
 For each condition:
 
-1. Ask Iris for a response long enough to speak for at least 10 seconds.
+1. Select the intended Windows default microphone and output device, then ask
+   Iris for a response long enough to speak for at least 10 seconds. The
+   retained summary must name those endpoints under `input_devices` and
+   `output_devices`; a mislabeled route invalidates that condition.
 2. Start a fresh process for five silent replies. Iris must not pause or cancel
    itself. Close Iris, retain the log as `<condition>-silent`, and summarize it
    with `-ExpectedInterruptions 0`.
@@ -128,6 +131,10 @@ Release targets for each separate run are:
 - silent and non-command runs: zero cancellations and zero interruption errors;
 - intended run: all five intended interruptions detected and zero errors;
 - no permanent cancellation for either non-command utterance;
+- zero pause failures, resume failures, or resumes without a later valid terminal
+  outcome, with run-correlated playback completion or cancellation after every
+  successful rejected resume; a detection record alone is not terminal evidence;
+- zero native playback cancellation errors;
 - median capture-to-VAD at or below 350 ms;
 - median VAD-to-pause at or below 150 ms; and
 - median confirmed-interruption resolution at or below 1,200 ms.
@@ -181,14 +188,19 @@ cargo run -p iris-runtime -- --dashboard-json
 
 Expected:
 
-- Hermes is enabled by default as an Iris-owned research, local RAG, and memory-transfer helper.
-- Hermes exposes only `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
+- Safe is the startup default. In Safe mode, Hermes is an Iris-owned research,
+  local RAG, and memory-transfer helper that exposes only
+  `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Natural Iris requests such as `look online for the latest Ollama release` route through Hermes research.
 - Natural Iris requests such as `generate an image of Iris as an electric blue logo` open an approval request, call the configured provider only after approval, save the file under `.iris-data\generated-images`, and show the generated preview.
 - Hermes can propose staged memory, and Iris can transfer it into active memory only after explicit `hermes accept <number>`.
 - Hermes cannot access raw memory files.
 - Hermes cannot access cloud-sync storage.
-- Hermes cannot run commands, edit files, control browsers/windows, use clipboard, or operate the computer.
+- Safe mode cannot run commands, edit files, control browsers/windows, use the
+  clipboard, or operate the computer.
+- An explicit Agentic Session can use the reviewed file, PowerShell, process, and isolated browser tools through Iris supervision. Its selected workspace
+  boundary is advisory rather than an OS sandbox. Scope-expanding and high-risk
+  actions require separate confirmation, and Panic Stop terminates the session.
 - Memory search is enabled for local approved memory by default.
 - Memory proposals go to staging and require Iris/user approval before promotion.
 - Memory archive export remains unavailable until real local encryption is implemented.
@@ -225,7 +237,9 @@ If Iris stops listening, the last few lines of this file should show whether nat
 
 - No fallback model should be used.
 - No model download should start.
-- No system control should occur.
+- No system control should occur in Safe mode or outside an explicitly approved
+  Agentic Session. Agentic control remains limited to the reviewed file,
+  PowerShell, process, and isolated browser tools.
 - No programmatic clipboard reading should occur. User-driven paste into the text bar is allowed for prompt attachments.
 - No continuous screen capture should occur. The screen icon performs one explicit capped capture of the area under Iris.
 - File attachments are user selected through the attachment icon, paste, or drag/drop, and are consumed by the next prompt only.

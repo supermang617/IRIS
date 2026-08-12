@@ -12,8 +12,8 @@ $BrowserExe = Join-Path $BrowserRoot "chrome.exe"
 $AgentBrowserExe = Join-Path $RuntimeRoot "node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
 $ChromeZip = Join-Path $DownloadRoot "chrome-for-testing-149.0.7827.115-win64.zip"
 $ChromeZipUrl = "https://storage.googleapis.com/chrome-for-testing-public/149.0.7827.115/win64/chrome-win64.zip"
-$ExpectedPackageIntegrity = "sha512-RZNxZFvnspSxSmpjkZjM0Lv69ArwYr8t+Ndavko/NGrfkdUkp5lVGJAs4f88tJNNcBVFcn92hhS+3pulVF9oSw=="
-$ExpectedAgentBrowserSha256 = "013c9bb6084e72d69a8ebb6c3d5669ba117129479b81d9336012b36b91f490e5"
+$ExpectedPackageIntegrity = "sha512-e+TZ0G04uw2rs+lVB8gn0IWTT7ErfiAl3jQ4zNNwyqDhgXWJKhqxYKkyibjuBGXLzx/APlzU3IWAsOVdRwh0DA=="
+$ExpectedAgentBrowserSha256 = "291f0c33c2fbcbf159b5868065ab412dfd8722d6299821e010cf0715964f2cba"
 $ExpectedChromeZipSha256 = "1553389900824037aec828effab3051337df57a571e2f8800ee71cf8ed6fa76d"
 $ExpectedChromeExeSha256 = "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56"
 
@@ -23,18 +23,18 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 
 $NodeMajor = [int]((& node --version).TrimStart("v").Split(".")[0])
 if ($NodeMajor -lt 24) {
-    throw "agent-browser 0.27.2 requires Node.js 24 or newer."
+    throw "agent-browser 0.33.2 requires Node.js 24 or newer."
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
-& npm install --prefix $RuntimeRoot --save-exact "agent-browser@0.27.2"
+& npm install --prefix $RuntimeRoot --save-exact --ignore-scripts "agent-browser@0.33.2"
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to install pinned agent-browser 0.27.2."
+    throw "Failed to install pinned agent-browser 0.33.2."
 }
 
 $LockText = Get-Content -LiteralPath (Join-Path $RuntimeRoot "package-lock.json") -Raw
 if (
-    -not $LockText.Contains('"version": "0.27.2"') -or
+    -not $LockText.Contains('"version": "0.33.2"') -or
     -not $LockText.Contains('"integrity": "' + $ExpectedPackageIntegrity + '"')
 ) {
     throw "agent-browser package lock does not match the pinned version and integrity."
@@ -78,7 +78,7 @@ if ($IncludePinnedDevelopmentBrowser) {
     if ($ChromeHash -ne $ExpectedChromeExeSha256) {
         throw "Chrome for Testing executable hash mismatch: $ChromeHash"
     }
-    Write-Output "Pinned agent-browser 0.27.2 and optional Chrome for Testing 149.0.7827.115 development fallback are ready."
+    Write-Output "Pinned agent-browser 0.33.2 and optional Chrome for Testing 149.0.7827.115 development fallback are ready."
     return
 }
 
@@ -107,4 +107,4 @@ if (-not $systemBrowser) {
     throw "Iris needs Google Chrome for isolated browser automation. Install it with: winget install --id Google.Chrome -e"
 }
 
-Write-Output "Pinned agent-browser 0.27.2 is ready with system browser: $systemBrowser"
+Write-Output "Pinned agent-browser 0.33.2 is ready with system browser: $systemBrowser"

@@ -17,7 +17,7 @@ $WheelUrl = "https://files.pythonhosted.org/packages/8a/9e/7179407c41f70d65a4d28
 $ExpectedSha256 = "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37"
 $ProvenancePath = Join-Path $RepoRoot "profiles\hermes_agent_0_18_0.json"
 $DependencyLock = Join-Path $RepoRoot "profiles\hermes_agent_python_3_13.lock.txt"
-$ExpectedDependencyLockSha256 = "faf0aa3424d35dc7caaa78c1a2ec5ada9d73e2ad7ee701629a7ac40457955a47"
+$ExpectedDependencyLockSha256 = "0e2e636b49109143e4ddf6787f94bf24722cdbd491001436298515934f47be5f"
 
 if (-not (Test-Path -LiteralPath $Uv)) {
     throw "uv is required at $Uv"
@@ -111,7 +111,7 @@ required = {
     "hermes-agent": "0.18.0",
     "agent-client-protocol": "0.9.0",
     "pyjwt": "2.13.0",
-    "cryptography": "48.0.1",
+    "cryptography": "50.0.0",
     "pillow": "12.3.0",
 }
 for name, version in required.items():

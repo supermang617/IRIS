@@ -1,5 +1,5 @@
 # Hermes Agent 0.18.0 pins vulnerable versions of these libraries exactly.
 # Iris deliberately overrides only these two transitive versions until upstream
 # publishes a compatible release with the security fixes.
-cryptography==48.0.1
+cryptography==50.0.0
 pillow==12.3.0

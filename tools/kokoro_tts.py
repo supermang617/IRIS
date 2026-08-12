@@ -6,11 +6,7 @@ import sys
 from pathlib import Path
 
 import soundfile as sf
-import numpy as np
 from kokoro_onnx import Kokoro
-
-LEAD_SILENCE_SECONDS = 0.75
-TAIL_SILENCE_SECONDS = 0.12
 
 
 def main() -> int:
@@ -52,16 +48,8 @@ def main() -> int:
         speed=args.speed,
         lang=args.lang,
     )
-    sf.write(str(output_path), pad_silence(samples, sample_rate), sample_rate)
+    sf.write(str(output_path), samples, sample_rate)
     return 0
-
-
-def pad_silence(samples, sample_rate):
-    if sample_rate <= 0:
-        return samples
-    lead = np.zeros(int(sample_rate * LEAD_SILENCE_SECONDS), dtype=samples.dtype)
-    tail = np.zeros(int(sample_rate * TAIL_SILENCE_SECONDS), dtype=samples.dtype)
-    return np.concatenate((lead, samples, tail))
 
 
 def run_server(kokoro: Kokoro, voice: str, speed: float, lang: str) -> int:
@@ -83,7 +71,7 @@ def run_server(kokoro: Kokoro, voice: str, speed: float, lang: str) -> int:
                 lang=lang,
             )
             wav = io.BytesIO()
-            sf.write(wav, pad_silence(samples, sample_rate), sample_rate, format="WAV")
+            sf.write(wav, samples, sample_rate, format="WAV")
             response = {
                 "id": request_id,
                 "ok": True,

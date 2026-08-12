@@ -12,7 +12,7 @@ to confirmation gates for consequential actions.
 
 ## Current Track
 
-Iris is a single-user Windows prototype with a local-first runtime. The previous cross-platform roadmap, multi-tier model registry, and dev-vs-user model split are retired for this workspace.
+Iris is a single-user Windows v1 application with a local-first runtime. The previous cross-platform roadmap, multi-tier model registry, and dev-vs-user model split are retired for this workspace.
 
 The only configured model identity is:
 
