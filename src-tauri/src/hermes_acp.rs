@@ -9,7 +9,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -185,6 +185,7 @@ pub struct HermesProvenance {
 
 struct HermesAcpBridge {
     child: Arc<Mutex<Child>>,
+    process_termination: Arc<AcpProcessTermination>,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: SharedPendingRequests,
     pending_approval: SharedPendingApproval,
@@ -193,8 +194,47 @@ struct HermesAcpBridge {
     next_request_id: AtomicU64,
     session: Arc<Mutex<Option<AcpSession>>>,
     browser_command_output_dir: PathBuf,
+}
+
+struct AcpProcessTermination {
+    child: Arc<Mutex<Child>>,
+    started: AtomicBool,
+    operation: Mutex<()>,
     #[cfg(windows)]
-    job: WindowsJob,
+    job: Arc<WindowsJob>,
+}
+
+impl AcpProcessTermination {
+    fn request(&self, pending_approval: &SharedPendingApproval) {
+        let _operation = self
+            .operation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.request_locked(pending_approval);
+    }
+
+    fn request_locked(&self, pending_approval: &SharedPendingApproval) {
+        if self.started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(mut approval) = pending_approval.lock() {
+            *approval = None;
+        }
+        #[cfg(windows)]
+        self.job.terminate();
+        let mut child = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = child.kill();
+    }
+
+    fn request_and_wait(&self, pending_approval: &SharedPendingApproval) {
+        self.request(pending_approval);
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.wait();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -216,7 +256,10 @@ impl BoundedAcpEvents {
         }
     }
 
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: Value) -> Result<(), String> {
+        if let Some(error) = &self.action_audit_error {
+            return Err(error.clone());
+        }
         if self.action_audit_error.is_none() && action_update(&value).is_some() {
             let audit_result = self.action_audit.as_ref().map(|audit| {
                 append_action_audit(
@@ -226,14 +269,17 @@ impl BoundedAcpEvents {
                 )
             });
             if let Some(Err(error)) = audit_result {
-                self.action_audit_error = Some(error);
+                let error =
+                    format!("Hermes action audit failed; Agentic execution was stopped: {error}");
+                self.action_audit_error = Some(error.clone());
+                return Err(error);
             }
         }
         let Ok(bytes) = serde_json::to_vec(&value).map(|bytes| bytes.len()) else {
-            return;
+            return Ok(());
         };
         if bytes > MAX_ACP_TASK_EVENT_BYTES {
-            return;
+            return Ok(());
         }
         while self.values.len() >= MAX_ACP_TASK_EVENTS
             || self.total_bytes.saturating_add(bytes) > MAX_ACP_TASK_EVENT_BYTES
@@ -247,6 +293,7 @@ impl BoundedAcpEvents {
         }
         self.total_bytes = self.total_bytes.saturating_add(bytes);
         self.values.push_back(value);
+        Ok(())
     }
 
     fn snapshot(&self) -> Vec<Value> {
@@ -461,7 +508,14 @@ pub fn submit_task_with_start_guard(
             "prompt": [{"type": "text", "text": clean}]
         }),
     );
-    let initial_events = acp_event_snapshot(&event_sink)?;
+    let initial_events = match acp_event_snapshot(&event_sink) {
+        Ok(events) => events,
+        Err(error) => {
+            drop(event_registration);
+            bridge.terminate();
+            return Err(error);
+        }
+    };
     let mut text = assistant_text_from_notifications(&initial_events);
     let response = if first_response.is_ok() && is_empty_agent_text(&text) {
         bridge.request(
@@ -477,9 +531,22 @@ pub fn submit_task_with_start_guard(
     } else {
         first_response
     };
-    response?;
+    if let Err(response_error) = response {
+        if let Err(audit_error) = acp_event_snapshot(&event_sink) {
+            drop(event_registration);
+            bridge.terminate();
+            return Err(audit_error);
+        }
+        return Err(response_error);
+    }
     drop(event_registration);
-    let raw_events = acp_event_snapshot(&event_sink)?;
+    let raw_events = match acp_event_snapshot(&event_sink) {
+        Ok(events) => events,
+        Err(error) => {
+            bridge.terminate();
+            return Err(error);
+        }
+    };
     let mut events = Vec::new();
     let mut thinking_emitted = false;
     for event in raw_events.iter().filter_map(event_from_notification) {
@@ -546,17 +613,40 @@ fn acp_event_snapshot(sink: &AcpEventSink) -> Result<Vec<Value>, String> {
     Ok(events.snapshot())
 }
 
-fn push_acp_event(sink: &AcpEventSink, value: Value) {
-    if let Ok(mut events) = sink.lock() {
-        events.push(value);
-    }
+fn push_acp_event(sink: &AcpEventSink, value: Value) -> Result<(), String> {
+    sink.lock()
+        .map_err(|_| "Hermes ACP event buffer is unavailable".to_string())?
+        .push(value)
 }
 
-fn push_registered_acp_event(registry: &SharedAcpEventSink, value: Value) {
-    if let Ok(current) = registry.lock()
-        && let Some(sink) = current.as_ref()
-    {
-        push_acp_event(sink, value);
+fn push_registered_acp_event(registry: &SharedAcpEventSink, value: Value) -> Result<(), String> {
+    let current = registry
+        .lock()
+        .map_err(|_| "Hermes ACP event state is unavailable".to_string())?;
+    let Some(sink) = current.as_ref() else {
+        return Ok(());
+    };
+    push_acp_event(sink, value)
+}
+
+fn push_registered_acp_event_or_stop(
+    registry: &SharedAcpEventSink,
+    pending: &SharedPendingRequests,
+    pending_approval: &SharedPendingApproval,
+    process_termination: &AcpProcessTermination,
+    value: Value,
+) -> bool {
+    let _operation = process_termination
+        .operation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match push_registered_acp_event(registry, value) {
+        Ok(()) => true,
+        Err(error) => {
+            process_termination.request_locked(pending_approval);
+            fail_pending_requests(pending, &error);
+            false
+        }
     }
 }
 
@@ -673,6 +763,10 @@ pub fn pending_approval() -> Option<ApprovalRequest> {
         .get()
         .and_then(|state| state.lock().ok())
         .and_then(|guard| guard.as_ref().cloned())?;
+    let _operation = bridge.process_termination.operation.lock().ok()?;
+    if bridge.process_termination.started.load(Ordering::Acquire) {
+        return None;
+    }
     bridge
         .pending_approval
         .lock()
@@ -686,9 +780,33 @@ pub fn respond_to_approval(request_id: &str, approved: bool) -> Result<(), Strin
         .and_then(|state| state.lock().ok())
         .and_then(|guard| guard.as_ref().cloned())
         .ok_or_else(|| "Hermes ACP is not running".to_string())?;
+    respond_to_pending_approval(
+        &bridge.process_termination,
+        &bridge.pending_approval,
+        request_id,
+        approved,
+        || {},
+        |response| write_json_line(&bridge.stdin, &response),
+    )
+}
+
+fn respond_to_pending_approval(
+    process_termination: &AcpProcessTermination,
+    pending_approval: &SharedPendingApproval,
+    request_id: &str,
+    approved: bool,
+    before_write: impl FnOnce(),
+    write_response: impl FnOnce(Value) -> Result<(), String>,
+) -> Result<(), String> {
+    let _operation = process_termination
+        .operation
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if process_termination.started.load(Ordering::Acquire) {
+        return Err("Hermes ACP stopped before the approval response could be sent".to_string());
+    }
     let pending = {
-        let mut guard = bridge
-            .pending_approval
+        let mut guard = pending_approval
             .lock()
             .map_err(|_| "Hermes approval state is unavailable".to_string())?;
         let current = guard
@@ -707,14 +825,13 @@ pub fn respond_to_approval(request_id: &str, approved: bool) -> Result<(), Strin
     } else {
         json!({"outcome": "cancelled"})
     };
-    write_json_line(
-        &bridge.stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": pending.rpc_id,
-            "result": {"outcome": outcome}
-        }),
-    )
+    let response = json!({
+        "jsonrpc": "2.0",
+        "id": pending.rpc_id,
+        "result": {"outcome": outcome}
+    });
+    before_write();
+    write_response(response)
 }
 
 fn ensure_bridge_guarded(
@@ -883,8 +1000,15 @@ impl HermesAcpBridge {
             .ok_or_else(|| "Hermes ACP stderr is unavailable".to_string())?;
         start_bounded_stderr_reader(stderr, paths.stderr_log.clone());
         #[cfg(windows)]
-        let job = WindowsJob::create_and_assign(&child)?;
+        let job = Arc::new(WindowsJob::create_and_assign(&child)?);
         let child = Arc::new(Mutex::new(child));
+        let process_termination = Arc::new(AcpProcessTermination {
+            child: child.clone(),
+            started: AtomicBool::new(false),
+            operation: Mutex::new(()),
+            #[cfg(windows)]
+            job,
+        });
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let pending_approval = Arc::new(Mutex::new(None));
         let event_sink = Arc::new(Mutex::new(None));
@@ -896,9 +1020,11 @@ impl HermesAcpBridge {
             pending_approval.clone(),
             event_sink.clone(),
             session.clone(),
+            process_termination.clone(),
         );
         Ok(Self {
             child,
+            process_termination,
             stdin,
             pending,
             pending_approval,
@@ -907,8 +1033,6 @@ impl HermesAcpBridge {
             next_request_id: AtomicU64::new(1),
             session,
             browser_command_output_dir: paths.browser_command_output,
-            #[cfg(windows)]
-            job,
         })
     }
 
@@ -1016,15 +1140,8 @@ impl HermesAcpBridge {
     }
 
     fn terminate(&self) {
-        if let Ok(mut pending) = self.pending_approval.lock() {
-            *pending = None;
-        }
-        #[cfg(windows)]
-        self.job.terminate();
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.process_termination
+            .request_and_wait(&self.pending_approval);
         if let Ok(entries) = fs::read_dir(&self.browser_command_output_dir) {
             for entry in entries.flatten() {
                 if entry.file_type().is_ok_and(|kind| kind.is_file()) {
@@ -1275,6 +1392,7 @@ fn start_reader(
     pending_approval: SharedPendingApproval,
     event_sink: SharedAcpEventSink,
     session: Arc<Mutex<Option<AcpSession>>>,
+    process_termination: Arc<AcpProcessTermination>,
 ) {
     thread::spawn(move || {
         let mut malformed_lines = 0;
@@ -1322,13 +1440,18 @@ fn start_reader(
                     stored = true;
                 }
                 if stored {
-                    push_registered_acp_event(
+                    if !push_registered_acp_event_or_stop(
                         &event_sink,
+                        &pending,
+                        &pending_approval,
+                        &process_termination,
                         json!({
                             "method": "iris/approval_request",
                             "params": {"approval": approval.request}
                         }),
-                    );
+                    ) {
+                        break;
+                    }
                 } else {
                     let response = json!({
                         "jsonrpc": "2.0",
@@ -1363,8 +1486,16 @@ fn start_reader(
                 }
                 continue;
             }
-            if value.get("method").and_then(Value::as_str) == Some("session/update") {
-                push_registered_acp_event(&event_sink, value);
+            if value.get("method").and_then(Value::as_str) == Some("session/update")
+                && !push_registered_acp_event_or_stop(
+                    &event_sink,
+                    &pending,
+                    &pending_approval,
+                    &process_termination,
+                    value,
+                )
+            {
+                break;
             }
         }
         fail_pending_requests(&pending, "Hermes ACP stream closed or became malformed");
@@ -2044,7 +2175,6 @@ fn collect_provenance(value: &Value, found: &mut Vec<HermesProvenance>) {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::sync::atomic::AtomicBool;
 
     // Hermes ACP owns one supervised process and session, so live tests must not
     // compete for that singleton even when the Rust test runner is parallel.
@@ -2346,7 +2476,9 @@ mod tests {
     fn acp_task_events_are_bounded_and_keep_the_latest_evidence() {
         let mut events = BoundedAcpEvents::default();
         for index in 0..(MAX_ACP_TASK_EVENTS + 32) {
-            events.push(json!({"index": index, "text": "x".repeat(2_048)}));
+            events
+                .push(json!({"index": index, "text": "x".repeat(2_048)}))
+                .expect("bounded event");
         }
 
         assert!(events.values.len() <= MAX_ACP_TASK_EVENTS);
@@ -2392,7 +2524,8 @@ mod tests {
                 "in_progress",
                 "Authorization: Bearer early-secret",
             ),
-        );
+        )
+        .expect("early action");
         for index in 0..(MAX_ACP_TASK_EVENTS + 32) {
             push_acp_event(
                 &sink,
@@ -2403,12 +2536,14 @@ mod tests {
                         "content": {"type": "text", "text": format!("noise-{index}")}
                     }}
                 }),
-            );
+            )
+            .expect("noise event");
         }
         push_acp_event(
             &sink,
             action("Late action", "completed", "late action detail"),
-        );
+        )
+        .expect("late action");
 
         let snapshot = acp_event_snapshot(&sink).expect("bounded event snapshot");
         let buffered = sink.lock().expect("bounded event buffer");
@@ -2446,6 +2581,272 @@ mod tests {
         assert!(!audit.contains("early-secret"));
 
         fs::remove_dir_all(root).expect("remove action audit test root");
+    }
+
+    fn test_pending_approval() -> PendingAcpApproval {
+        PendingAcpApproval {
+            rpc_id: json!(91),
+            request: ApprovalRequest {
+                request_id: "audit-failure-approval".to_string(),
+                risk_class: RiskClass::ScopeExpansion,
+                summary: "must not remain approvable".to_string(),
+                requires_separate_confirmation: true,
+            },
+            allow_once_option: Some("allow_once".to_string()),
+        }
+    }
+
+    fn long_running_test_process() -> (Arc<AcpProcessTermination>, Arc<Mutex<Child>>) {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd.exe");
+            command
+                .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+                .creation_flags(CREATE_NO_WINDOW);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("long-running audit test child");
+        #[cfg(windows)]
+        let job = Arc::new(WindowsJob::create_and_assign(&child).expect("audit test job"));
+        let child = Arc::new(Mutex::new(child));
+        let process_termination = Arc::new(AcpProcessTermination {
+            child: child.clone(),
+            started: AtomicBool::new(false),
+            operation: Mutex::new(()),
+            #[cfg(windows)]
+            job,
+        });
+        (process_termination, child)
+    }
+
+    fn assert_test_process_stops(child: &Arc<Mutex<Child>>) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if child
+                .lock()
+                .expect("audit test child")
+                .try_wait()
+                .expect("inspect terminated audit test child")
+                .is_some()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "audit failure did not terminate the ACP process promptly"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn action_audit_failure_stops_the_pending_agentic_task() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-hermes-action-audit-failure-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("audit failure root");
+        fs::write(root.join("diagnostics"), b"not a directory").expect("blocking diagnostics file");
+
+        let sink = Arc::new(Mutex::new(BoundedAcpEvents::with_action_audit(
+            &root,
+            "failed-audit-session",
+        )));
+        let registry: SharedAcpEventSink = Arc::new(Mutex::new(Some(sink.clone())));
+        let pending: SharedPendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let pending_approval: SharedPendingApproval =
+            Arc::new(Mutex::new(Some(test_pending_approval())));
+        let (process_termination, child) = long_running_test_process();
+        assert!(
+            child
+                .lock()
+                .expect("audit test child")
+                .try_wait()
+                .expect("inspect audit test child")
+                .is_none(),
+            "audit test child must be running before the failure"
+        );
+        let (sender, receiver) = mpsc::channel();
+        pending.lock().expect("pending requests").insert(7, sender);
+        let action = json!({
+            "method": "session/update",
+            "params": {"update": {
+                "sessionUpdate": "tool_call",
+                "title": "Must be audited",
+                "status": "in_progress"
+            }}
+        });
+
+        assert!(!push_registered_acp_event_or_stop(
+            &registry,
+            &pending,
+            &pending_approval,
+            &process_termination,
+            action,
+        ));
+        let error = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pending request must be stopped")
+            .expect_err("audit failure must fail the task");
+        assert!(error.contains("action audit failed"));
+        assert!(pending.lock().expect("pending requests").is_empty());
+        assert!(
+            pending_approval.lock().expect("pending approval").is_none(),
+            "an unaudited approval must be rejected immediately"
+        );
+        assert!(process_termination.started.load(Ordering::Acquire));
+        assert_test_process_stops(&child);
+        assert!(
+            acp_event_snapshot(&sink)
+                .expect_err("audit failure remains visible to the task owner")
+                .contains("Agentic execution was stopped")
+        );
+        assert!(!push_registered_acp_event_or_stop(
+            &registry,
+            &pending,
+            &pending_approval,
+            &process_termination,
+            json!({"method": "session/update", "params": {"update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "must not continue"}
+            }}})
+        ));
+
+        fs::remove_dir_all(root).expect("remove audit failure root");
+    }
+
+    #[test]
+    fn approval_write_and_audit_failure_are_serialized() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-hermes-approval-audit-race-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("audit race root");
+        fs::write(root.join("diagnostics"), b"not a directory").expect("blocking diagnostics file");
+        let sink = Arc::new(Mutex::new(BoundedAcpEvents::with_action_audit(
+            &root,
+            "approval-audit-race",
+        )));
+        let registry: SharedAcpEventSink = Arc::new(Mutex::new(Some(sink)));
+        let pending: SharedPendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let pending_approval: SharedPendingApproval =
+            Arc::new(Mutex::new(Some(test_pending_approval())));
+        let (process_termination, child) = long_running_test_process();
+        let response_written = Arc::new(AtomicBool::new(false));
+        let (approval_taken_tx, approval_taken_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+
+        let approval_pending = pending_approval.clone();
+        let approval_process = process_termination.clone();
+        let approval_written = response_written.clone();
+        let approval_thread = thread::spawn(move || {
+            respond_to_pending_approval(
+                &approval_process,
+                &approval_pending,
+                "audit-failure-approval",
+                true,
+                move || {
+                    approval_taken_tx
+                        .send(())
+                        .expect("signal approval was taken");
+                    continue_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .expect("resume approval response");
+                },
+                move |_response| {
+                    approval_written.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+        });
+
+        approval_taken_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("approval path reached pre-write pause");
+        assert!(
+            pending_approval.lock().expect("pending approval").is_none(),
+            "the regression must reach the former take-before-clear window"
+        );
+
+        let fatal_registry = registry.clone();
+        let fatal_pending_requests = pending.clone();
+        let fatal_pending_approval = pending_approval.clone();
+        let fatal_process = process_termination.clone();
+        let (fatal_done_tx, fatal_done_rx) = mpsc::channel();
+        let fatal_thread = thread::spawn(move || {
+            let continued = push_registered_acp_event_or_stop(
+                &fatal_registry,
+                &fatal_pending_requests,
+                &fatal_pending_approval,
+                &fatal_process,
+                json!({"method": "session/update", "params": {"update": {
+                    "sessionUpdate": "tool_call",
+                    "title": "Must be audited",
+                    "status": "in_progress"
+                }}}),
+            );
+            fatal_done_tx
+                .send(continued)
+                .expect("signal audit failure completion");
+        });
+        assert!(
+            matches!(
+                fatal_done_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "audit failure must not interleave after approval take and before its write"
+        );
+        assert!(!process_termination.started.load(Ordering::Acquire));
+        continue_tx.send(()).expect("resume approval path");
+
+        approval_thread
+            .join()
+            .expect("approval response thread")
+            .expect("approval transaction that linearized first");
+        assert!(response_written.load(Ordering::Acquire));
+        assert!(
+            !fatal_done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("audit failure completion")
+        );
+        fatal_thread.join().expect("audit failure thread");
+        assert!(process_termination.started.load(Ordering::Acquire));
+        assert_test_process_stops(&child);
+
+        *pending_approval.lock().expect("stale pending approval") = Some(test_pending_approval());
+        let late_write = AtomicBool::new(false);
+        let error = respond_to_pending_approval(
+            &process_termination,
+            &pending_approval,
+            "audit-failure-approval",
+            true,
+            || {},
+            |_response| {
+                late_write.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .expect_err("approval cannot start after fatal audit failure");
+        assert!(error.contains("stopped before the approval response"));
+        assert!(!late_write.load(Ordering::Acquire));
+
+        process_termination.request_and_wait(&pending_approval);
+        fs::remove_dir_all(root).expect("remove audit race root");
     }
 
     #[test]

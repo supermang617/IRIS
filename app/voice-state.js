@@ -4,6 +4,8 @@ export const MODEL_WARMUP_FAILED_STATUS =
   "Local model warm-up failed. Restart Ollama or run Iris Setup Wizard.";
 export const MODEL_AND_VOICE_WARMUP_FAILED_STATUS =
   "Local model and voice warm-up failed. Run Iris Setup Wizard before continuing.";
+export const RUNTIME_PREPARING_STATUS =
+  "Iris is still preparing the local model and voice runtime.";
 
 export function classifyVoiceTranscript(transcript, state) {
   const normalized = normalizeTranscript(transcript);
@@ -122,6 +124,28 @@ export function runtimeWarmHudStatus(
     return MODEL_WARMUP_FAILED_STATUS;
   }
   return voiceWarmReady ? "Waiting for input." : VOICE_SETUP_NEEDED_STATUS;
+}
+
+export function voiceCaptureCanStart({
+  runtimePreparing = false,
+  panicStopped = false,
+  enabled = true,
+  thinking = false,
+  speaking = false,
+  listening = false,
+  interruptionListening = false,
+  stopRequested = false
+} = {}) {
+  return !(
+    runtimePreparing ||
+    panicStopped ||
+    !enabled ||
+    thinking ||
+    speaking ||
+    listening ||
+    interruptionListening ||
+    stopRequested
+  );
 }
 
 export function wakeRestartDelayMs(mode, transcript, action, consecutiveMisses = 0) {

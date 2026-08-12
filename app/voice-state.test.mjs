@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   MODEL_AND_VOICE_WARMUP_FAILED_STATUS,
   MODEL_WARMUP_FAILED_STATUS,
+  RUNTIME_PREPARING_STATUS,
   VOICE_SETUP_NEEDED_STATUS,
   classifyAsrError,
   classifyVoiceTranscript,
@@ -19,6 +20,7 @@ import {
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   voiceButtonAction,
+  voiceCaptureCanStart,
   voiceTranscriptStateForMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
@@ -30,6 +32,34 @@ test("runtime warm status preserves actionable voice setup failures", () => {
   assert.equal(runtimeWarmHudStatus(true, false, false), MODEL_AND_VOICE_WARMUP_FAILED_STATUS);
   assert.equal(runtimeWarmHudStatus(true, true, true, true), "Iris is paused.");
   assert.equal(runtimeWarmHudStatus(false, false, false), null);
+});
+
+test("runtime preparation blocks push-to-talk and post-panic voice capture", () => {
+  assert.equal(
+    RUNTIME_PREPARING_STATUS,
+    "Iris is still preparing the local model and voice runtime."
+  );
+  assert.equal(voiceCaptureCanStart(), true);
+  assert.equal(voiceCaptureCanStart({ runtimePreparing: true }), false);
+  assert.equal(
+    voiceCaptureCanStart({
+      runtimePreparing: true,
+      panicStopped: false,
+      enabled: true
+    }),
+    false
+  );
+  assert.equal(voiceCaptureCanStart({ panicStopped: true }), false);
+  assert.equal(voiceCaptureCanStart({ enabled: false }), false);
+  for (const state of [
+    { thinking: true },
+    { speaking: true },
+    { listening: true },
+    { interruptionListening: true },
+    { stopRequested: true }
+  ]) {
+    assert.equal(voiceCaptureCanStart(state), false);
+  }
 });
 
 test("push-to-talk submits the full transcript", () => {

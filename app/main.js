@@ -64,6 +64,7 @@ import {
   formatStagedMemories
 } from "./staging-state.js";
 import {
+  RUNTIME_PREPARING_STATUS,
   VOICE_SETUP_NEEDED_STATUS,
   classifyAsrError,
   classifyVoiceTranscript,
@@ -80,6 +81,7 @@ import {
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
   voiceButtonAction,
+  voiceCaptureCanStart,
   voiceTranscriptStateForMode,
   wakeRestartDelayMs
 } from "./voice-state.js";
@@ -495,7 +497,7 @@ async function warmRuntimeBeforeListening() {
 
 async function submitMessage(text, source = "typed") {
   if (runtimePreparing) {
-    elements.hudOutput.textContent = "Iris is still preparing the local model and voice runtime.";
+    elements.hudOutput.textContent = RUNTIME_PREPARING_STATUS;
     return;
   }
   if (!canSubmitWhilePanicStopped(panicStopActive)) {
@@ -2070,7 +2072,7 @@ function setInputsDisabled(disabled) {
   elements.sendButton.disabled = gatedDisabled;
   elements.attachmentRemove.disabled = disabled;
   elements.attachButton.disabled = gatedDisabled;
-  elements.voiceButton.disabled = false;
+  elements.voiceButton.disabled = !voiceCaptureCanStart({ runtimePreparing });
   elements.visionButton.disabled = gatedDisabled;
   elements.screenButton.disabled = gatedDisabled;
   elements.memoryButton.disabled = gatedDisabled;
@@ -2121,10 +2123,14 @@ async function togglePanicStop() {
     stopListeningRequested = false;
     wakeMissStreak = 0;
     wakeCommandMissStreak = 0;
-    elements.voiceStatus.textContent = "Wake word armed. Say Iris.";
+    elements.voiceStatus.textContent = runtimePreparing
+      ? RUNTIME_PREPARING_STATUS
+      : "Wake word armed. Say Iris.";
     restartListeningIfReady(250);
   }
-  elements.hudOutput.textContent = panicStatusText(panicStopActive);
+  elements.hudOutput.textContent = !panicStopActive && runtimePreparing
+    ? RUNTIME_PREPARING_STATUS
+    : panicStatusText(panicStopActive);
   logVoice(panicStopActive ? "panic_stop_active" : "panic_stop_cleared");
   renderPanicStop();
 }
@@ -2170,13 +2176,31 @@ function startWindowDrag() {
 
 function restartListeningIfReady(delayMs = 650) {
   clearWakeRestartTimer();
-  if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
+  if (!voiceCaptureCanStart({
+    runtimePreparing,
+    panicStopped: panicStopActive,
+    enabled: voiceLoop || wakeWord,
+    thinking,
+    speaking,
+    listening,
+    interruptionListening,
+    stopRequested: stopListeningRequested
+  })) {
     return;
   }
 
   wakeRestartTimer = window.setTimeout(() => {
     wakeRestartTimer = null;
-    if (panicStopActive || (!voiceLoop && !wakeWord) || thinking || speaking || listening || interruptionListening || stopListeningRequested) {
+    if (!voiceCaptureCanStart({
+      runtimePreparing,
+      panicStopped: panicStopActive,
+      enabled: voiceLoop || wakeWord,
+      thinking,
+      speaking,
+      listening,
+      interruptionListening,
+      stopRequested: stopListeningRequested
+    })) {
       return;
     }
     if (pendingInterruptionPrompt) {
@@ -2200,6 +2224,10 @@ function clearWakeRestartTimer() {
 }
 
 async function listenOnce(mode) {
+  if (runtimePreparing) {
+    elements.hudOutput.textContent = RUNTIME_PREPARING_STATUS;
+    return;
+  }
   if (panicStopActive) {
     elements.hudOutput.textContent = panicStatusText(true);
     return;
@@ -2370,6 +2398,10 @@ elements.hudInput.addEventListener("keydown", (event) => {
 elements.hudInput.addEventListener("input", resizeComposerInput);
 
 elements.voiceButton.addEventListener("click", () => {
+  if (runtimePreparing) {
+    elements.hudOutput.textContent = RUNTIME_PREPARING_STATUS;
+    return;
+  }
   if (panicStopActive) {
     elements.hudOutput.textContent = panicStatusText(true);
     return;
