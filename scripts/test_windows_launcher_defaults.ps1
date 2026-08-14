@@ -42,6 +42,19 @@ foreach ($source in @($sourceLauncher, $packageScript)) {
             throw "Launcher must force and verify the local-only Ollama listener; missing: $fragment"
         }
     }
+    foreach ($fragment in @(
+            'iris_ollama_model_lock.ps1',
+            'Assert-IrisOllamaModelIdentity',
+            '$candidates = @("C:\.ollama")',
+            'if (-not [string]::IsNullOrWhiteSpace($env:OLLAMA_MODELS))',
+            '$candidates = @($env:OLLAMA_MODELS) + $candidates',
+            '-ModelsRoot $env:OLLAMA_MODELS',
+            'Iris refuses to use an Ollama model that differs from its immutable model lock.'
+        )) {
+        if (-not $source.Contains($fragment)) {
+            throw "Launcher must fail closed on Ollama model identity drift; missing: $fragment"
+        }
+    }
     if ($source.Contains('Set-IrisOllamaDefault -Name "OLLAMA_HOST"') -or
         $source.Contains('OLLAMA_HOST" -PersistForCurrentUser')) {
         throw "Launcher must not persist or honor a network-wide OLLAMA_HOST for Iris-owned launches."

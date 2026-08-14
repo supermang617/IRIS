@@ -73,6 +73,7 @@ cargo run --locked -p xtask
 cargo run --locked -p iris-runtime -- --self-check
 cargo run --locked -p iris-runtime -- --dashboard-json
 scripts\test_model_asset_lock.ps1
+scripts\test_ollama_model_lock.ps1
 scripts\test_release_model_e2e.ps1
 scripts\test_windows_release_download.ps1
 scripts\test_windows_beginner_installer.ps1

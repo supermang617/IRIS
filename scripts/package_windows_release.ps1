@@ -58,6 +58,8 @@ function Copy-RequiredDirectory {
 
 Write-Host "Packaging Iris Windows portable release from $repoRoot"
 
+& (Join-Path $repoRoot "scripts\test_ollama_model_lock.ps1")
+
 $portableWhisperFlags = @{
     GGML_NATIVE = "OFF"
     GGML_SSE42 = "OFF"
@@ -126,6 +128,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_document_ocr.ps1") 
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1") -Destination (Join-Path $packageRoot "Install Iris.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\initialize_iris_data_root.ps1") -Destination (Join-Path $packageRoot "Initialize Iris Data Root.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\update_iris_windows.ps1") -Destination (Join-Path $packageRoot "Update Iris.ps1")
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_ollama_model_lock.ps1") -Destination (Join-Path $packageRoot "scripts\iris_ollama_model_lock.ps1")
 
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "models") -Destination (Join-Path $packageRoot "models")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "profiles") -Destination (Join-Path $packageRoot "profiles")
@@ -266,6 +269,7 @@ $voiceSoundfileMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages
 $voiceNumpyMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\numpy-2.5.1.dist-info\METADATA"
 $voiceOnnxruntimeMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\onnxruntime-1.28.0.dist-info\METADATA"
 $agentBrowser = Join-Path $root ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
+$ollamaModelLockHelper = Join-Path $root "scripts\iris_ollama_model_lock.ps1"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -288,6 +292,9 @@ Require-File -Path $voiceSoundfileMetadata
 Require-File -Path $voiceNumpyMetadata
 Require-File -Path $voiceOnnxruntimeMetadata
 Require-File -Path $agentBrowser
+Require-File -Path $ollamaModelLockHelper
+
+. $ollamaModelLockHelper
 
 & $dataRootInitializer -InstallRoot $root
 
@@ -364,8 +371,7 @@ function Assert-IrisOllamaLoopbackOnly {
 
 function Get-IrisModelId {
     try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-        return [string]$manifest.model_policy.model_id
+        return [string](Get-IrisOllamaModelLock -Root $root).model_id
     } catch {
         return ""
     }
@@ -380,34 +386,22 @@ function Get-IrisNumCtx {
     }
 }
 
-function Test-OllamaModelManifest {
-    param(
-        [Parameter(Mandatory = $true)][string]$ModelsRoot,
-        [Parameter(Mandatory = $true)][string]$ModelId
-    )
-    $parts = $ModelId.Split(":", 2)
-    if ($parts.Count -ne 2) {
-        return $false
-    }
-    $nameParts = $parts[0].Split("/", 2)
-    $namespace = if ($nameParts.Count -eq 2) { $nameParts[0] } else { "library" }
-    $name = if ($nameParts.Count -eq 2) { $nameParts[1] } else { $nameParts[0] }
-    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $namespace (Join-Path $name $parts[1])))
-    return Test-Path -LiteralPath $manifest -PathType Leaf
-}
-
 function Use-IrisOllamaModelStore {
-    $modelId = Get-IrisModelId
-    if (-not $modelId) {
-        return
+    $modelLock = Get-IrisOllamaModelLock -Root $root
+    $candidates = @("C:\.ollama")
+    if (-not [string]::IsNullOrWhiteSpace($env:OLLAMA_MODELS)) {
+        $candidates = @($env:OLLAMA_MODELS) + $candidates
     }
-    $candidates = @($env:OLLAMA_MODELS, "C:\.ollama", (Join-Path $env:USERPROFILE ".ollama\models")) | Where-Object { $_ }
-    foreach ($candidate in $candidates) {
-        if (Test-OllamaModelManifest -ModelsRoot $candidate -ModelId $modelId) {
-            $env:OLLAMA_MODELS = $candidate
-            return
-        }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $candidates += Join-Path $env:USERPROFILE ".ollama\models"
     }
+    $modelId = [string]$modelLock.model_id
+    $verification = Find-IrisOllamaModelStore -Candidates $candidates -Lock $modelLock
+    if ($null -eq $verification) {
+        throw "Iris's digest-verified model is not installed. Run 'ollama pull $modelId' once to repair a missing or corrupt local model."
+    }
+    $env:OLLAMA_MODELS = [string]$verification.ModelsRoot
+    Set-IrisOllamaModelStoreAttestation -Verification $verification -Lock $modelLock
 }
 
 function Test-OllamaModelAvailable {
@@ -451,6 +445,11 @@ function Start-OllamaForIris {
 
     if (Test-OllamaReady) {
         Assert-IrisOllamaLoopbackOnly
+        try {
+            Assert-IrisOllamaModelIdentity -Root $root -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 | Out-Null
+        } catch {
+            throw "Iris refuses to use an Ollama model that differs from its immutable model lock. $($_.Exception.Message)"
+        }
         if ($script:irisOllamaServerDefaultsInitialized) {
             Write-Host "Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts."
         } elseif ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
@@ -469,6 +468,7 @@ function Start-OllamaForIris {
         Start-Sleep -Milliseconds 500
         if (Test-OllamaReady) {
             Assert-IrisOllamaLoopbackOnly
+            Assert-IrisOllamaModelIdentity -Root $root -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 | Out-Null
             return
         }
     }

@@ -4,6 +4,11 @@ This repository is a Windows-only v1 local-first release.
 
 - Text inference requires Ollama running locally with `huihui_ai/gemma-4-abliterated:e2b` already available.
 - The setup wizard can offer an approved `ollama pull` for the configured model, but Iris runtime itself does not auto-download or switch models.
+- Iris accepts only the exact Ollama tag identity recorded in
+  `profiles/iris_ollama_model.lock.json`; a republished tag or mismatched
+  digest, family, quantization, size, or required capability fails closed until
+  the locked model is restored or a reviewed release deliberately updates the
+  lock.
 - The current installer is a PowerShell per-user wrapper, not a signed MSI/MSIX/EXE.
 - MSIX/App Installer is the recommended signed path, but a trusted signing certificate input is still required before a real signed MSIX can be produced.
 - A self-signed MSIX can be produced for local testing, but normal users should use the ZIP installer until a production-trusted signing certificate is available.
@@ -18,7 +23,7 @@ This repository is a Windows-only v1 local-first release.
   implement true acoustic echo cancellation (AEC). Near-field energy gating
   reduces self-triggering but cannot guarantee it on every speaker, room, and
   microphone arrangement; headset use is the most reliable current path.
-- Ollama `/api/tags` may omit capability metadata for `huihui_ai/gemma-4-abliterated:e2b`; use `ollama show` or `/api/show` for the authoritative local capability check. The current manual-test machine verifies `completion`, `vision`, `audio`, `tools`, and `thinking` through `/api/show`, but capability metadata alone does not prove correct image embeddings. Voice capture remains handled by Iris ASR.
+- Ollama `/api/tags` may omit capability metadata for `huihui_ai/gemma-4-abliterated:e2b`; Iris therefore checks identity and size through `/api/tags` and capabilities through `/api/show`. The current lock requires `completion`, `vision`, `audio`, `tools`, and `thinking`, but capability metadata alone does not prove correct image embeddings. Voice capture remains handled by Iris ASR.
 - The current Windows Ollama Gemma 4 E2B/E4B inline projector path has a known upstream defect. Iris uses confidence-filtered local OCR and a narrow user-selected PNG color/shape classifier for facts it can verify; it refuses unverified general image, camera, and screen scene descriptions instead of guessing. Run `scripts\diagnose_raw_ollama_vision.ps1` after Ollama updates and remove this restriction only after the direct raw-model canary and the wider visual matrix pass.
 - Dynamic system context uses deterministic lexical metrics rather than a
   semantic or psychological classifier. It adapts presentation, not identity,
@@ -45,4 +50,4 @@ This repository is a Windows-only v1 local-first release.
 
 ## Dependency Security Notes
 
-- GitHub may report a moderate `glib` advisory from the Linux GTK side of Tauri's transitive lockfile. Iris v1 is Windows-only, and current upstream Tauri 2.11.2 still resolves that path through `gtk` 0.18 and `glib` 0.18.5. Update Tauri/Wry and the lockfile when upstream can resolve `glib` 0.20.0 or newer.
+- GitHub may report a moderate `glib` advisory from the Linux GTK side of Tauri's transitive lockfile. Iris v1 is Windows-only, and pinned Tauri 2.11.5 still resolves that path through `gtk` 0.18 and `glib` 0.18.5. Update Tauri/Wry and the lockfile when upstream can resolve `glib` 0.20.0 or newer.

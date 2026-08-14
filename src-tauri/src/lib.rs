@@ -1277,6 +1277,7 @@ async fn hermes_submit_agentic_task(
         let state = state_root_for(&resources)?;
         let manifest = iris_config::load_manifest_from_workspace(&resources)?;
         let _inference_permit = iris_ollama::acquire_inference_permit()?;
+        configured_ollama_client()?.verify_model_identity()?;
         let expected_session_id = session.session_id.clone();
         let result = hermes_acp::submit_task_with_start_guard(
             &resources,
@@ -1833,31 +1834,37 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
     let started = Instant::now();
     let root = resource_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&root)?;
+    let mut model_readiness_error = None;
     if ollama_loopback_ready() {
         require_loopback_only_ollama_listener()?;
         let model_ready = configured_ollama_model_ready(&manifest);
         require_loopback_only_ollama_listener()?;
-        if model_ready {
-            return Ok(LocalRuntimePreparation {
-                ready: true,
-                started_ollama: false,
-                elapsed_ms: started.elapsed().as_millis(),
-                message: "Local model service is ready.".to_string(),
-            });
+        match model_ready {
+            Ok(()) => {
+                return Ok(LocalRuntimePreparation {
+                    ready: true,
+                    started_ollama: false,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    message: "Local model service is ready.".to_string(),
+                });
+            }
+            Err(error) => model_readiness_error = Some(error),
         }
     }
-    let models_root =
-        find_ollama_models_root(&manifest.model_policy.model_id).ok_or_else(|| {
-            format!(
-                "Iris model is not installed. Run: ollama pull {}",
-                manifest.model_policy.model_id
-            )
-        })?;
+    let model_lock = iris_config::locked_ollama_model()?;
+    let models_root = find_ollama_models_root(&model_lock).map_err(|error| {
+        format!(
+            "Iris's digest-verified model is not installed. Run: ollama pull {}. {error}",
+            manifest.model_policy.model_id
+        )
+    })?;
     if ollama_loopback_ready() {
         require_loopback_only_ollama_listener()?;
         return Err(format!(
-            "Ollama is already running on 127.0.0.1:11434, but Iris could not use {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` and restart Ollama, then try again.",
-            manifest.model_policy.model_id, manifest.model_policy.model_id
+            "Ollama is already running on 127.0.0.1:11434, but Iris refused to use {}: {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` once to repair a missing or corrupt local model. If the locked digest still differs, update Iris or restore the audited model store; do not bypass the identity check.",
+            manifest.model_policy.model_id,
+            model_readiness_error.unwrap_or_else(|| "model readiness check failed".to_string()),
+            manifest.model_policy.model_id
         ));
     }
 
@@ -1887,29 +1894,29 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             require_loopback_only_ollama_listener()?;
             let model_ready = configured_ollama_model_ready(&manifest);
             require_loopback_only_ollama_listener()?;
-            if model_ready {
-                return Ok(LocalRuntimePreparation {
-                    ready: true,
-                    started_ollama: true,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    message: "Local model service started.".to_string(),
-                });
+            match model_ready {
+                Ok(()) => {
+                    return Ok(LocalRuntimePreparation {
+                        ready: true,
+                        started_ollama: true,
+                        elapsed_ms: started.elapsed().as_millis(),
+                        message: "Local model service started.".to_string(),
+                    });
+                }
+                Err(error) => model_readiness_error = Some(error),
             }
         }
     }
-    Err("Ollama did not become ready within 10 seconds".to_string())
+    Err(format!(
+        "Ollama did not become ready within 10 seconds: {}",
+        model_readiness_error.unwrap_or_else(|| "the loopback service did not respond".to_string())
+    ))
 }
 
-fn configured_ollama_model_ready(manifest: &iris_config::ProjectManifest) -> bool {
-    let Ok(settings) = iris_ollama::OllamaSettings::from_manifest(manifest) else {
-        return false;
-    };
-    let Ok(client) = iris_ollama::OllamaClient::new(settings) else {
-        return false;
-    };
-    client
-        .health_check(&iris_ui::gate_typed_text("health check"))
-        .is_ok()
+fn configured_ollama_model_ready(manifest: &iris_config::ProjectManifest) -> Result<(), String> {
+    let settings = iris_ollama::OllamaSettings::from_manifest(manifest)?;
+    let client = iris_ollama::OllamaClient::new(settings)?;
+    client.health_check(&iris_ui::gate_typed_text("health check"))
 }
 
 fn select_ollama_server_setting(current_value: Option<String>, default_value: &str) -> String {
@@ -2047,29 +2054,8 @@ fn find_ollama_executable() -> Result<PathBuf, String> {
     Ok(PathBuf::from("ollama"))
 }
 
-fn find_ollama_models_root(model_id: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(configured) = std::env::var("OLLAMA_MODELS") {
-        candidates.push(PathBuf::from(configured));
-    }
-    candidates.push(PathBuf::from(r"C:\.ollama"));
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        candidates.push(PathBuf::from(profile).join(".ollama").join("models"));
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| ollama_model_manifest(candidate, model_id).is_file())
-}
-
-fn ollama_model_manifest(models_root: &Path, model_id: &str) -> PathBuf {
-    let (name, tag) = model_id.split_once(':').unwrap_or((model_id, "latest"));
-    let (namespace, model) = name.split_once('/').unwrap_or(("library", name));
-    models_root
-        .join("manifests")
-        .join("registry.ollama.ai")
-        .join(namespace)
-        .join(model)
-        .join(tag)
+fn find_ollama_models_root(model_lock: &iris_config::OllamaModelLock) -> Result<PathBuf, String> {
+    iris_ollama::verified_ollama_models_root(model_lock)
 }
 
 fn is_local_model_unavailable_response(text: &str) -> bool {
@@ -4191,11 +4177,21 @@ fn start_hermes_sidecar_unserialized() -> Result<(), String> {
     let stderr_path = diagnostics.join("hermes-sidecar-stderr.log");
     hermes_acp::rotate_diagnostic_log(&stderr_path, hermes_acp::MAX_HERMES_STDERR_BYTES)?;
     let mut command = hermes_acp::python313_command_for_script(&resources, &script)?;
+    let model_lock = iris_config::locked_ollama_model()?;
+    let model_lock_json = serde_json::to_string(&model_lock)
+        .map_err(|error| format!("failed to serialize Iris model lock: {error}"))?;
+    let model_store_attestation_json =
+        hermes_acp::verified_model_store_child_attestation(&model_lock)?;
     command
         .current_dir(&resources)
         .env("IRIS_RESOURCE_ROOT", &resources)
         .env("IRIS_DATA_ROOT", &writable)
         .env("IRIS_HERMES_PROFILE", "iris_restricted")
+        .env("IRIS_OLLAMA_MODEL_LOCK_JSON", model_lock_json)
+        .env(
+            hermes_acp::VERIFIED_MODEL_STORE_ENV,
+            model_store_attestation_json,
+        )
         .env("IRIS_HERMES_BROKER_URL", &broker_access.url)
         .env(
             "IRIS_HERMES_BROKER_TOKEN",
@@ -4364,6 +4360,7 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
     }
 
     let _inference_permit = iris_ollama::acquire_inference_permit()?;
+    configured_ollama_client()?.verify_model_identity()?;
 
     let payload = serde_json::to_string(&serde_json::json!({
         "type": "task",

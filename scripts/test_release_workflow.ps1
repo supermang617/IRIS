@@ -187,6 +187,7 @@ foreach ($fragment in @(
         'iris-signed-provenance-${{ needs.build.outputs.tag }}-attempt-${{ github.run_attempt }}',
         "retention-days: 10",
         "iris-unsigned-build.json",
+        "profiles/iris_ollama_model.lock.json",
         "-ExpectedSignerThumbprint",
         "-ExpectedProvenancePath",
         "-RequireBuildProvenance",
@@ -213,6 +214,14 @@ if (
 }
 if ($workflow.Contains("sign_and_draft:")) {
     throw "Signing secrets and release-write credentials must remain in separate jobs."
+}
+foreach ($entry in @(
+        [pscustomobject]@{ Name = "release workflow"; Text = $workflow },
+        [pscustomobject]@{ Name = "versioned release publisher"; Text = $publisher }
+    )) {
+    if ($entry.Text.Contains("-AllowSelfSignedDevelopmentCertificate")) {
+        throw "$($entry.Name) must never opt into self-signed development signing."
+    }
 }
 if ($workflow.Contains('- "v[0-9]+"')) {
     throw "Mutable major-only release tags must not trigger new publication runs."
@@ -351,15 +360,15 @@ foreach ($match in $actionMatches) {
     }
 }
 $allowedActions = @(
-    "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
-    "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+    "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
     "actions/cache/save@caa296126883cff596d87d8935842f9db880ef25",
     "actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25",
-    "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",
-    "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
-    "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+    "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9",
+    "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
     "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294"
 )
 foreach ($match in $actionMatches) {

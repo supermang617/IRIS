@@ -1,8 +1,27 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 pub const IRIS_MODEL_ID: &str = "huihui_ai/gemma-4-abliterated:e2b";
+pub const OLLAMA_MODEL_LOCK_RELATIVE_PATH: &str = "profiles/iris_ollama_model.lock.json";
+const EMBEDDED_OLLAMA_MODEL_LOCK: &str =
+    include_str!("../../../profiles/iris_ollama_model.lock.json");
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OllamaModelLock {
+    pub schema_version: u32,
+    pub provider: String,
+    pub model_id: String,
+    pub manifest_digest: String,
+    pub model_layer_digest: String,
+    pub total_bytes: u64,
+    pub family: String,
+    pub parameter_size: String,
+    pub quantization_level: String,
+    pub required_capabilities: Vec<String>,
+    pub general_vision_verified: bool,
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ProjectManifest {
@@ -248,6 +267,7 @@ impl ProjectManifest {
             self.safety_invariant.system_control == "agentic_session_only",
             "system control must be limited to an approved Agentic Session",
         )?;
+        locked_ollama_model()?.validate_against_manifest(self)?;
         Ok(())
     }
 
@@ -262,12 +282,99 @@ impl ProjectManifest {
     }
 }
 
+impl OllamaModelLock {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        serde_json::from_str(input).map_err(|err| format!("invalid Iris Ollama model lock: {err}"))
+    }
+
+    pub fn validate_against_manifest(&self, manifest: &ProjectManifest) -> Result<(), String> {
+        require(
+            self.schema_version == 1,
+            "unsupported Ollama model lock schema",
+        )?;
+        require(
+            self.provider == "ollama_local" && self.provider == manifest.model_policy.provider,
+            "Ollama model lock provider differs from manifest policy",
+        )?;
+        require(
+            self.model_id == IRIS_MODEL_ID && self.model_id == manifest.model_policy.model_id,
+            "Ollama model lock identity differs from manifest policy",
+        )?;
+        require(
+            is_lower_sha256(&self.manifest_digest),
+            "Ollama model manifest digest must be lowercase SHA256",
+        )?;
+        require(
+            self.model_layer_digest
+                .strip_prefix("sha256:")
+                .is_some_and(is_lower_sha256),
+            "Ollama model-layer digest must be sha256-prefixed lowercase SHA256",
+        )?;
+        require(
+            self.total_bytes > 0,
+            "Ollama model byte count must be positive",
+        )?;
+        require(
+            self.family == manifest.model_policy.architecture,
+            "Ollama model family differs from manifest architecture",
+        )?;
+        require(
+            self.parameter_size == manifest.model_policy.parameter_size,
+            "Ollama model parameter size differs from manifest policy",
+        )?;
+        require(
+            !self.quantization_level.trim().is_empty(),
+            "Ollama model quantization must not be empty",
+        )?;
+        require(
+            !self.required_capabilities.is_empty()
+                && self
+                    .required_capabilities
+                    .iter()
+                    .all(|capability| !capability.trim().is_empty()),
+            "Ollama model lock must declare required capabilities",
+        )?;
+        let mut unique = self.required_capabilities.clone();
+        unique.sort();
+        unique.dedup();
+        require(
+            unique.len() == self.required_capabilities.len(),
+            "Ollama model lock capabilities must be unique",
+        )?;
+        for capability in ["completion", "vision", "audio", "tools", "thinking"] {
+            require(
+                self.required_capabilities
+                    .iter()
+                    .any(|required| required == capability),
+                "Ollama model lock is missing a required Iris capability",
+            )?;
+        }
+        Ok(())
+    }
+}
+
+pub fn locked_ollama_model() -> Result<OllamaModelLock, String> {
+    OllamaModelLock::from_json_str(EMBEDDED_OLLAMA_MODEL_LOCK)
+}
+
 pub fn load_manifest_from_workspace(start: impl AsRef<Path>) -> Result<ProjectManifest, String> {
     let manifest_path = find_manifest_path(start)?;
     let input = std::fs::read_to_string(&manifest_path)
         .map_err(|err| format!("{}: {err}", manifest_path.display()))?;
     let manifest = ProjectManifest::from_json_str(&input)?;
     manifest.validate_v0_1_policy()?;
+    let workspace_root = manifest_path
+        .parent()
+        .ok_or_else(|| "Iris manifest path has no parent".to_string())?;
+    let lock_path = workspace_root.join(OLLAMA_MODEL_LOCK_RELATIVE_PATH);
+    let lock_input = std::fs::read_to_string(&lock_path)
+        .map_err(|err| format!("{}: {err}", lock_path.display()))?;
+    let disk_lock = OllamaModelLock::from_json_str(&lock_input)?;
+    disk_lock.validate_against_manifest(&manifest)?;
+    require(
+        disk_lock == locked_ollama_model()?,
+        "packaged Ollama model lock differs from the lock embedded in Iris",
+    )?;
     Ok(manifest)
 }
 
@@ -297,6 +404,13 @@ fn require(condition: bool, message: &str) -> Result<(), String> {
     } else {
         Err(message.to_string())
     }
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -329,6 +443,38 @@ mod tests {
                 .enabled_runtime_capabilities
                 .contains(&"vision".to_string())
         );
+    }
+
+    #[test]
+    fn ollama_model_lock_is_exact_and_general_vision_stays_fail_closed() {
+        let manifest = ProjectManifest::from_json_str(VALID_MANIFEST).unwrap();
+        let lock = locked_ollama_model().unwrap();
+
+        lock.validate_against_manifest(&manifest).unwrap();
+        assert_eq!(
+            lock.manifest_digest,
+            "7c4fbc4573d646fa7a2bcd940cd682a57c5717fcd1b48fd96ea45b1ef24d499f"
+        );
+        assert_eq!(
+            lock.model_layer_digest,
+            "sha256:fd456de3e24d0a03164a636029339fbda0f4c5b1ae11616423006bbff6f2e81d"
+        );
+        assert_eq!(lock.total_bytes, 7_162_405_953);
+        assert_eq!(lock.quantization_level, "Q4_K_M");
+        assert!(!lock.general_vision_verified);
+    }
+
+    #[test]
+    fn ollama_model_lock_rejects_identity_and_capability_drift() {
+        let manifest = ProjectManifest::from_json_str(VALID_MANIFEST).unwrap();
+        let mut lock = locked_ollama_model().unwrap();
+        lock.manifest_digest = "0".repeat(63);
+        assert!(lock.validate_against_manifest(&manifest).is_err());
+
+        let mut lock = locked_ollama_model().unwrap();
+        lock.required_capabilities
+            .retain(|capability| capability != "vision");
+        assert!(lock.validate_against_manifest(&manifest).is_err());
     }
 
     #[test]

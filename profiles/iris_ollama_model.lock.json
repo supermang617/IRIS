@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "provider": "ollama_local",
+  "model_id": "huihui_ai/gemma-4-abliterated:e2b",
+  "manifest_digest": "7c4fbc4573d646fa7a2bcd940cd682a57c5717fcd1b48fd96ea45b1ef24d499f",
+  "model_layer_digest": "sha256:fd456de3e24d0a03164a636029339fbda0f4c5b1ae11616423006bbff6f2e81d",
+  "total_bytes": 7162405953,
+  "family": "gemma4",
+  "parameter_size": "5.1B",
+  "quantization_level": "Q4_K_M",
+  "required_capabilities": [
+    "audio",
+    "completion",
+    "thinking",
+    "tools",
+    "vision"
+  ],
+  "general_vision_verified": false
+}

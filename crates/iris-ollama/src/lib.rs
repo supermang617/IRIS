@@ -1,20 +1,25 @@
 use iris_core_types::{AssistantResponse, AuthorityClass, GatedContextBundle};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc, Condvar, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::{fs::MetadataExt, process::CommandExt};
 
 const DEFAULT_OLLAMA_GENERATE_URL: &str = "http://127.0.0.1:11434/api/generate";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const MODEL_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_MODEL_IDENTITY_RESPONSE_BYTES: usize = 1024 * 1024;
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const DEFAULT_KEEP_ALIVE: &str = "10m";
 const DEFAULT_NUM_PREDICT: u32 = 192;
@@ -29,6 +34,15 @@ const MAX_OCR_DIRECT_ANSWER_CHARS: usize = 240;
 const MAX_OCR_TSV_BYTES: u64 = 2 * 1024 * 1024;
 const MIN_OCR_WORD_CONFIDENCE: f32 = 70.0;
 const OCR_TIMEOUT: Duration = Duration::from_secs(8);
+const MODEL_STORE_CACHE_FILE: &str = "ollama-model-store-v1.json";
+const MODEL_STORE_ATTESTATION_ENV: &str = "IRIS_OLLAMA_MODEL_STORE_ATTESTATION_V1";
+const MAX_MODEL_STORE_CACHE_BYTES: u64 = 64 * 1024;
+const MODEL_STORE_ATTESTATION_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+#[cfg(not(windows))]
+const WINDOWS_EPOCH_OFFSET_TICKS: u64 = 621_355_968_000_000_000;
+#[cfg(windows)]
+const WINDOWS_FILETIME_TO_DOTNET_TICKS: u64 = 504_911_232_000_000_000;
+const SHA256_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -36,6 +50,8 @@ static INFERENCE_GATE: InferenceGate = InferenceGate {
     busy: Mutex::new(false),
     available: Condvar::new(),
 };
+
+static VERIFIED_MODEL_STORE: OnceLock<Mutex<Option<ModelStoreCache>>> = OnceLock::new();
 
 struct InferenceGate {
     busy: Mutex<bool>,
@@ -93,6 +109,539 @@ pub fn acquire_inference_permit() -> Result<OllamaInferencePermit, String> {
         .ok_or_else(|| "Ollama inference gate was cancelled".to_string())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaStoredManifest {
+    config: OllamaStoredDescriptor,
+    layers: Vec<OllamaStoredDescriptor>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaStoredDescriptor {
+    media_type: String,
+    digest: String,
+    size: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ModelStoreCache {
+    schema_version: u32,
+    model_id: String,
+    models_root: String,
+    lock_digest: String,
+    manifest_digest: String,
+    verified_at_unix_ms: u64,
+    descriptors: Vec<ModelStoreCacheDescriptor>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ModelStoreCacheDescriptor {
+    digest: String,
+    size: u64,
+    last_write_time_utc_ticks: u64,
+    creation_time_utc_ticks: u64,
+}
+
+struct InspectedModelStore {
+    root: PathBuf,
+    root_key: String,
+    manifest_digest: String,
+    descriptors: Vec<(PathBuf, ModelStoreCacheDescriptor)>,
+}
+
+/// Returns the first exact locked Ollama store, cryptographically verifying all
+/// descriptor blobs on a cache miss. The compact persistent cache only trusts
+/// unchanged path, lock, manifest, length, creation-time, and write-time data.
+/// It detects ordinary corruption/drift; it is not a security boundary against
+/// a malicious same-user process that can rewrite both files and metadata/cache.
+pub fn verified_ollama_models_root(
+    model_lock: &iris_config::OllamaModelLock,
+) -> Result<PathBuf, String> {
+    if model_lock != &iris_config::locked_ollama_model()? {
+        return Err("Ollama model-store verification requires Iris's embedded model lock".into());
+    }
+    let mut cache_guard = VERIFIED_MODEL_STORE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "Ollama model-store verification cache is unavailable".to_string())?;
+    if let Some(cache) = cache_guard.as_ref() {
+        let root = PathBuf::from(&cache.models_root);
+        if inspect_model_store(&root, model_lock)
+            .is_ok_and(|inspection| cache_matches_inspection(cache, &inspection, model_lock))
+        {
+            return Ok(root);
+        }
+        *cache_guard = None;
+    }
+    let mut candidates = Vec::new();
+    if let Some(configured) = std::env::var_os("OLLAMA_MODELS") {
+        candidates.push(PathBuf::from(configured));
+    }
+    candidates.push(PathBuf::from(r"C:\.ollama"));
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        candidates.push(PathBuf::from(profile).join(".ollama").join("models"));
+    }
+
+    let root = select_verified_ollama_models_root(candidates, model_lock)?;
+    let inspection = inspect_model_store(&root, model_lock)?;
+    *cache_guard = Some(cache_from_inspection(&inspection, model_lock));
+    Ok(root)
+}
+
+fn select_verified_ollama_models_root(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    model_lock: &iris_config::OllamaModelLock,
+) -> Result<PathBuf, String> {
+    let persistent_cache = read_model_store_cache().ok().flatten();
+    let attestation = read_model_store_attestation();
+    select_verified_ollama_models_root_with_cache(
+        candidates,
+        model_lock,
+        persistent_cache.as_ref(),
+        attestation.as_ref(),
+        true,
+    )
+}
+
+fn select_verified_ollama_models_root_with_cache(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    model_lock: &iris_config::OllamaModelLock,
+    persistent_cache: Option<&ModelStoreCache>,
+    attestation: Option<&ModelStoreCache>,
+    persist_verified_cache: bool,
+) -> Result<PathBuf, String> {
+    let mut candidates = candidates
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    if let Some(cache) = persistent_cache
+        && let Some(index) = candidates.iter().position(|candidate| {
+            normalized_path_key(candidate)
+                .is_ok_and(|key| key == path_key_from_text(&cache.models_root))
+        })
+    {
+        let preferred = candidates.remove(index);
+        candidates.insert(0, preferred);
+    }
+    let mut seen = Vec::<String>::new();
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        let Ok(key) = normalized_path_key(&candidate) else {
+            continue;
+        };
+        if seen.iter().any(|known| known == &key) {
+            continue;
+        }
+        seen.push(key);
+        match inspect_model_store(&candidate, model_lock) {
+            Ok(inspection) => {
+                let attested = attestation.is_some_and(|cache| {
+                    launcher_attestation_is_fresh(cache)
+                        && configured_root_matches_attestation(cache)
+                        && cache_matches_inspection(cache, &inspection, model_lock)
+                });
+                let persistently_cached = persistent_cache
+                    .is_some_and(|cache| cache_matches_inspection(cache, &inspection, model_lock));
+                if attested || persistently_cached {
+                    return Ok(inspection.root);
+                }
+                if let Err(error) = hash_all_model_store_blobs(&inspection) {
+                    failures.push(error);
+                    continue;
+                }
+                let cache = cache_from_inspection(&inspection, model_lock);
+                if persist_verified_cache {
+                    let _ = save_model_store_cache(&cache);
+                }
+                return Ok(inspection.root);
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+    let detail = if failures.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", failures.join("; "))
+    };
+    Err(format!(
+        "Iris's digest-verified Ollama model store was not found{detail}"
+    ))
+}
+
+fn inspect_model_store(
+    models_root: &Path,
+    model_lock: &iris_config::OllamaModelLock,
+) -> Result<InspectedModelStore, String> {
+    let root = absolute_path(models_root)?;
+    let root_key = normalized_path_key(&root)?;
+    let manifest_path = ollama_model_manifest(&root, &model_lock.model_id)?;
+    let manifest_bytes =
+        fs::read(&manifest_path).map_err(|err| format!("{}: {err}", manifest_path.display()))?;
+    let manifest_digest = format!("{:x}", Sha256::digest(&manifest_bytes));
+    if manifest_digest != model_lock.manifest_digest {
+        return Err(format!(
+            "{} has a different manifest digest",
+            root.display()
+        ));
+    }
+    let manifest: OllamaStoredManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|err| {
+            format!(
+                "{}: invalid Ollama manifest: {err}",
+                manifest_path.display()
+            )
+        })?;
+    if manifest.layers.is_empty() {
+        return Err(format!("{} has no model layers", manifest_path.display()));
+    }
+    let mut total_bytes = 0_u64;
+    let mut locked_model_layers = 0_usize;
+    let mut descriptors = Vec::with_capacity(manifest.layers.len() + 1);
+    for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        let digest = descriptor
+            .digest
+            .strip_prefix("sha256:")
+            .filter(|digest| is_lower_sha256(digest))
+            .ok_or_else(|| {
+                format!(
+                    "{} contains an invalid blob digest",
+                    manifest_path.display()
+                )
+            })?;
+        total_bytes = total_bytes
+            .checked_add(descriptor.size)
+            .ok_or_else(|| "Ollama model byte count overflowed".to_string())?;
+        if descriptor.media_type == "application/vnd.ollama.image.model"
+            && descriptor.digest == model_lock.model_layer_digest
+        {
+            locked_model_layers += 1;
+        }
+        let blob_path = root.join("blobs").join(format!("sha256-{digest}"));
+        let metadata =
+            fs::metadata(&blob_path).map_err(|err| format!("{}: {err}", blob_path.display()))?;
+        if !metadata.is_file() || metadata.len() != descriptor.size {
+            return Err(format!(
+                "{} has a different byte count",
+                blob_path.display()
+            ));
+        }
+        descriptors.push((
+            blob_path,
+            ModelStoreCacheDescriptor {
+                digest: descriptor.digest.clone(),
+                size: descriptor.size,
+                last_write_time_utc_ticks: metadata_write_ticks(&metadata)?,
+                creation_time_utc_ticks: metadata_creation_ticks(&metadata)?,
+            },
+        ));
+    }
+    if locked_model_layers != 1 || total_bytes != model_lock.total_bytes {
+        return Err(format!(
+            "{} differs from the locked model layout",
+            root.display()
+        ));
+    }
+    Ok(InspectedModelStore {
+        root,
+        root_key,
+        manifest_digest,
+        descriptors,
+    })
+}
+
+fn hash_all_model_store_blobs(inspection: &InspectedModelStore) -> Result<(), String> {
+    for (path, expected) in &inspection.descriptors {
+        let digest = hash_file_sha256(path)?;
+        let metadata = fs::metadata(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let unchanged = metadata.len() == expected.size
+            && metadata_write_ticks(&metadata)? == expected.last_write_time_utc_ticks
+            && metadata_creation_ticks(&metadata)? == expected.creation_time_utc_ticks;
+        if digest != expected.digest[7..] || !unchanged {
+            return Err(format!(
+                "{} failed its locked SHA-256 verification",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn hash_file_sha256(path: &Path) -> Result<String, String> {
+    let file = File::open(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let mut reader = BufReader::with_capacity(SHA256_BUFFER_BYTES, file);
+    let mut buffer = vec![0_u8; SHA256_BUFFER_BYTES];
+    let mut hasher = Sha256::new();
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn cache_matches_inspection(
+    cache: &ModelStoreCache,
+    inspection: &InspectedModelStore,
+    model_lock: &iris_config::OllamaModelLock,
+) -> bool {
+    cache.schema_version == 1
+        && cache.verified_at_unix_ms > 0
+        && cache.model_id == model_lock.model_id
+        && cache.lock_digest == model_lock_digest(model_lock)
+        && cache.manifest_digest == inspection.manifest_digest
+        && path_key_from_text(&cache.models_root) == inspection.root_key
+        && cache.descriptors.len() == inspection.descriptors.len()
+        && cache
+            .descriptors
+            .iter()
+            .zip(&inspection.descriptors)
+            .all(|(cached, (_, inspected))| cached == inspected)
+}
+
+fn cache_from_inspection(
+    inspection: &InspectedModelStore,
+    model_lock: &iris_config::OllamaModelLock,
+) -> ModelStoreCache {
+    ModelStoreCache {
+        schema_version: 1,
+        model_id: model_lock.model_id.clone(),
+        models_root: inspection.root.to_string_lossy().into_owned(),
+        lock_digest: model_lock_digest(model_lock),
+        manifest_digest: inspection.manifest_digest.clone(),
+        verified_at_unix_ms: unix_time_millis().unwrap_or(1),
+        descriptors: inspection
+            .descriptors
+            .iter()
+            .map(|(_, descriptor)| descriptor.clone())
+            .collect(),
+    }
+}
+
+fn model_lock_digest(model_lock: &iris_config::OllamaModelLock) -> String {
+    let bytes = serde_json::to_vec(model_lock)
+        .expect("serializing a validated Iris Ollama model lock cannot fail");
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn read_model_store_attestation() -> Option<ModelStoreCache> {
+    let value = std::env::var(MODEL_STORE_ATTESTATION_ENV).ok()?;
+    if value.len() as u64 > MAX_MODEL_STORE_CACHE_BYTES {
+        return None;
+    }
+    serde_json::from_str(&value).ok()
+}
+
+fn launcher_attestation_is_fresh(cache: &ModelStoreCache) -> bool {
+    unix_time_millis().is_some_and(|now| {
+        cache.verified_at_unix_ms <= now.saturating_add(30_000)
+            && now.saturating_sub(cache.verified_at_unix_ms)
+                <= MODEL_STORE_ATTESTATION_MAX_AGE.as_millis() as u64
+    })
+}
+
+fn configured_root_matches_attestation(cache: &ModelStoreCache) -> bool {
+    std::env::var_os("OLLAMA_MODELS").is_some_and(|root| {
+        normalized_path_key(Path::new(&root))
+            .is_ok_and(|key| key == path_key_from_text(&cache.models_root))
+    })
+}
+
+fn model_store_cache_path() -> Option<PathBuf> {
+    model_store_cache_path_from_roots(
+        std::env::var_os("IRIS_DATA_ROOT").as_deref(),
+        std::env::var_os("LOCALAPPDATA").as_deref(),
+    )
+}
+
+fn model_store_cache_path_from_roots(
+    configured_data_root: Option<&std::ffi::OsStr>,
+    local_app_data: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let root = match configured_data_root {
+        Some(configured) => {
+            let root = PathBuf::from(configured);
+            if root.as_os_str().is_empty() || !root.is_absolute() {
+                return None;
+            }
+            root
+        }
+        None => {
+            let local = PathBuf::from(local_app_data?);
+            if local.as_os_str().is_empty() || !local.is_absolute() {
+                return None;
+            }
+            local.join("Iris")
+        }
+    };
+    Some(
+        root.join(".iris-data")
+            .join("cache")
+            .join(MODEL_STORE_CACHE_FILE),
+    )
+}
+
+fn read_model_store_cache() -> Result<Option<ModelStoreCache>, String> {
+    let Some(path) = model_store_cache_path() else {
+        return Ok(None);
+    };
+    let Ok(metadata) = fs::metadata(&path) else {
+        return Ok(None);
+    };
+    if !metadata.is_file() || metadata.len() > MAX_MODEL_STORE_CACHE_BYTES {
+        return Ok(None);
+    }
+    let bytes = fs::read(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+    Ok(serde_json::from_slice(&bytes).ok())
+}
+
+fn save_model_store_cache(cache: &ModelStoreCache) -> Result<(), String> {
+    let Some(path) = model_store_cache_path() else {
+        return Ok(());
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Ollama model-store cache path has no parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+    let bytes = serde_json::to_vec(cache).map_err(|err| err.to_string())?;
+    if bytes.len() as u64 > MAX_MODEL_STORE_CACHE_BYTES {
+        return Err("Ollama model-store cache exceeded its size bound".to_string());
+    }
+    let temporary = parent.join(format!(
+        ".{MODEL_STORE_CACHE_FILE}.{}.{}.tmp",
+        std::process::id(),
+        unix_time_millis().unwrap_or(0)
+    ));
+    fs::write(&temporary, bytes).map_err(|err| format!("{}: {err}", temporary.display()))?;
+    if let Err(error) = replace_cache_file(&temporary, &path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn replace_cache_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(temporary, destination)
+        .map_err(|error| format!("{}: {error}", destination.display()))
+}
+
+fn ollama_model_manifest(models_root: &Path, model_id: &str) -> Result<PathBuf, String> {
+    let (name, tag) = model_id
+        .split_once(':')
+        .ok_or_else(|| "Ollama model identity must include a tag".to_string())?;
+    let (namespace, model) = name.split_once('/').unwrap_or(("library", name));
+    if name.matches('/').count() > 1
+        || ![namespace, model, tag]
+            .iter()
+            .all(|segment| is_safe_ollama_segment(segment))
+    {
+        return Err("Ollama model identity is not a safe registry tag".to_string());
+    }
+    Ok(models_root
+        .join("manifests")
+        .join("registry.ollama.ai")
+        .join(namespace)
+        .join(model)
+        .join(tag))
+}
+
+fn is_safe_ollama_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        std::env::current_dir()
+            .map(|current| current.join(path))
+            .map_err(|err| format!("failed to resolve model-store path: {err}"))
+    }
+}
+
+fn normalized_path_key(path: &Path) -> Result<String, String> {
+    let absolute = absolute_path(path)?;
+    Ok(path_key_from_text(&absolute.to_string_lossy()))
+}
+
+fn path_key_from_text(value: &str) -> String {
+    let trimmed = value
+        .strip_prefix(r"\\?\")
+        .unwrap_or(value)
+        .trim_end_matches(['\\', '/']);
+    if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(not(windows))]
+fn system_time_to_windows_ticks(value: SystemTime) -> Result<u64, String> {
+    let duration = value
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "model blob timestamp predates the Unix epoch".to_string())?;
+    WINDOWS_EPOCH_OFFSET_TICKS
+        .checked_add(duration.as_secs().saturating_mul(10_000_000))
+        .and_then(|ticks| ticks.checked_add(u64::from(duration.subsec_nanos() / 100)))
+        .ok_or_else(|| "model blob timestamp overflowed".to_string())
+}
+
+#[cfg(windows)]
+fn metadata_write_ticks(metadata: &fs::Metadata) -> Result<u64, String> {
+    WINDOWS_FILETIME_TO_DOTNET_TICKS
+        .checked_add(metadata.last_write_time())
+        .ok_or_else(|| "model blob write timestamp overflowed".to_string())
+}
+
+#[cfg(not(windows))]
+fn metadata_write_ticks(metadata: &fs::Metadata) -> Result<u64, String> {
+    system_time_to_windows_ticks(
+        metadata
+            .modified()
+            .map_err(|err| format!("failed to read model blob write time: {err}"))?,
+    )
+}
+
+#[cfg(windows)]
+fn metadata_creation_ticks(metadata: &fs::Metadata) -> Result<u64, String> {
+    WINDOWS_FILETIME_TO_DOTNET_TICKS
+        .checked_add(metadata.creation_time())
+        .ok_or_else(|| "model blob creation timestamp overflowed".to_string())
+}
+
+#[cfg(not(windows))]
+fn metadata_creation_ticks(metadata: &fs::Metadata) -> Result<u64, String> {
+    match metadata.created() {
+        Ok(value) => system_time_to_windows_ticks(value),
+        Err(_) => Ok(0),
+    }
+}
+
+fn unix_time_millis() -> Option<u64> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    u64::try_from(millis).ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationTurn {
     pub role: ConversationRole,
@@ -119,16 +668,20 @@ pub struct OllamaSettings {
     /// Safe compatibility fallback used only when Ollama's automatic placement
     /// fails while loading or allocating the configured model.
     pub num_gpu_layers: u32,
+    pub model_lock: iris_config::OllamaModelLock,
 }
 
 impl OllamaSettings {
     pub fn from_manifest(manifest: &iris_config::ProjectManifest) -> Result<Self, String> {
         manifest.validate_v0_1_policy()?;
+        let model_lock = iris_config::locked_ollama_model()?;
+        model_lock.validate_against_manifest(manifest)?;
         Ok(Self {
             generate_url: DEFAULT_OLLAMA_GENERATE_URL.to_string(),
             model_id: manifest.model_policy.model_id.clone(),
             num_ctx: manifest.model_policy.num_ctx_ceiling,
             num_gpu_layers: manifest.model_policy.num_gpu_layers,
+            model_lock,
         })
     }
 
@@ -152,6 +705,39 @@ pub struct OllamaClient {
     client: reqwest::blocking::Client,
     streaming_client: reqwest::Client,
     streaming_runtime: Arc<Mutex<tokio::runtime::Runtime>>,
+    #[cfg(test)]
+    identity_verification_bypassed: Arc<AtomicBool>,
+    #[cfg(test)]
+    identity_models_root: Arc<Mutex<PathBuf>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaTagModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagModel {
+    name: String,
+    #[serde(default)]
+    model: String,
+    digest: String,
+    size: u64,
+    details: OllamaModelDetails,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaShowResponse {
+    modelfile: String,
+    details: OllamaModelDetails,
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaModelDetails {
+    family: String,
+    parameter_size: String,
+    quantization_level: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +788,13 @@ impl GenerateAttemptError {
 impl OllamaClient {
     pub fn new(settings: OllamaSettings) -> Result<Self, String> {
         settings.validate_loopback()?;
+        let embedded_lock = iris_config::locked_ollama_model()?;
+        if settings.model_lock != embedded_lock || settings.model_id != embedded_lock.model_id {
+            return Err(
+                "Ollama client settings differ from Iris's embedded model identity lock"
+                    .to_string(),
+            );
+        }
         let client = reqwest::blocking::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
@@ -219,6 +812,10 @@ impl OllamaClient {
             client,
             streaming_client,
             streaming_runtime: Arc::new(Mutex::new(streaming_runtime)),
+            #[cfg(test)]
+            identity_verification_bypassed: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            identity_models_root: Arc::new(Mutex::new(identity_test_models_root())),
         })
     }
 
@@ -235,6 +832,220 @@ impl OllamaClient {
             return Err("Ollama model returned an empty health-check response".to_string());
         }
         Ok(())
+    }
+
+    pub fn verify_model_identity(&self) -> Result<(), String> {
+        if self.verify_model_identity_with_timeout(None, MODEL_IDENTITY_TIMEOUT)? {
+            Ok(())
+        } else {
+            Err("Ollama model identity verification was cancelled".to_string())
+        }
+    }
+
+    fn verify_model_identity_cancellable(&self, cancellation: &AtomicBool) -> Result<bool, String> {
+        match self.verify_model_identity_with_timeout(Some(cancellation), MODEL_IDENTITY_TIMEOUT) {
+            Err(_) if cancellation.load(Ordering::Acquire) => Ok(false),
+            result => result,
+        }
+    }
+
+    fn verify_model_identity_with_timeout(
+        &self,
+        cancellation: Option<&AtomicBool>,
+        timeout: Duration,
+    ) -> Result<bool, String> {
+        #[cfg(test)]
+        if self.identity_verification_bypassed.load(Ordering::Acquire) {
+            return Ok(!cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)));
+        }
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Ok(false);
+        }
+        #[cfg(not(test))]
+        let verified_models_root = verified_ollama_models_root(&self.settings.model_lock)?;
+        #[cfg(test)]
+        let verified_models_root = self
+            .identity_models_root
+            .lock()
+            .map_err(|_| "Ollama test model root is unavailable".to_string())?
+            .clone();
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Ok(false);
+        }
+        let runtime = loop {
+            match self.streaming_runtime.try_lock() {
+                Ok(runtime) => break runtime,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                        return Ok(false);
+                    }
+                    thread::sleep(CANCELLATION_POLL_INTERVAL);
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("Ollama streaming runtime is unavailable".to_string());
+                }
+            }
+        };
+        runtime.block_on(self.verify_model_identity_http(
+            cancellation,
+            timeout,
+            &verified_models_root,
+        ))
+    }
+
+    async fn verify_model_identity_http(
+        &self,
+        cancellation: Option<&AtomicBool>,
+        timeout: Duration,
+        verified_models_root: &Path,
+    ) -> Result<bool, String> {
+        let tags_url = self.ollama_endpoint("/api/tags")?;
+        let Some(tags_response) = Self::send_identity_request(
+            self.streaming_client.get(tags_url).timeout(timeout),
+            cancellation,
+            "failed to query Ollama model identity",
+            "Ollama model identity query failed",
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        let Some(tags) = Self::read_bounded_identity_json::<OllamaTagsResponse>(
+            tags_response,
+            cancellation,
+            "model identity",
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        let tag_model = tags
+            .models
+            .iter()
+            .find(|model| {
+                model.name == self.settings.model_id || model.model == self.settings.model_id
+            })
+            .ok_or_else(|| {
+                format!(
+                    "configured Ollama model is not installed: {}; run `ollama pull {}`",
+                    self.settings.model_id, self.settings.model_id
+                )
+            })?;
+        let show_url = self.ollama_endpoint("/api/show")?;
+        let Some(show_response) = Self::send_identity_request(
+            self.streaming_client
+                .post(show_url)
+                .timeout(timeout)
+                .json(&serde_json::json!({ "model": self.settings.model_id })),
+            cancellation,
+            "failed to query Ollama model capabilities",
+            "Ollama model capability query failed",
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        let Some(show) = Self::read_bounded_identity_json::<OllamaShowResponse>(
+            show_response,
+            cancellation,
+            "model capability",
+        )
+        .await?
+        else {
+            return Ok(false);
+        };
+        validate_model_identity(
+            &self.settings.model_lock,
+            tag_model,
+            &show,
+            verified_models_root,
+        )?;
+        Ok(true)
+    }
+
+    async fn send_identity_request(
+        request: reqwest::RequestBuilder,
+        cancellation: Option<&AtomicBool>,
+        send_error: &str,
+        status_error: &str,
+    ) -> Result<Option<reqwest::Response>, String> {
+        let send = request.send();
+        tokio::pin!(send);
+        let response = loop {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                return Ok(None);
+            }
+            tokio::select! {
+                response = &mut send => {
+                    break response.map_err(|err| format!("{send_error}: {err}"))?;
+                }
+                _ = tokio::time::sleep(CANCELLATION_POLL_INTERVAL) => {}
+            }
+        };
+        response
+            .error_for_status()
+            .map(Some)
+            .map_err(|err| format!("{status_error}: {err}"))
+    }
+
+    async fn read_bounded_identity_json<T: serde::de::DeserializeOwned>(
+        mut response: reqwest::Response,
+        cancellation: Option<&AtomicBool>,
+        response_kind: &str,
+    ) -> Result<Option<T>, String> {
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_MODEL_IDENTITY_RESPONSE_BYTES as u64)
+        {
+            return Err(format!(
+                "Ollama {response_kind} response exceeded the {}-byte limit",
+                MAX_MODEL_IDENTITY_RESPONSE_BYTES
+            ));
+        }
+        let mut body = Vec::new();
+        loop {
+            if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                return Ok(None);
+            }
+            let next_chunk = response.chunk();
+            tokio::pin!(next_chunk);
+            let chunk = loop {
+                tokio::select! {
+                    chunk = &mut next_chunk => {
+                        break chunk.map_err(|err| {
+                            format!("invalid Ollama {response_kind} response: {err}")
+                        })?;
+                    }
+                    _ = tokio::time::sleep(CANCELLATION_POLL_INTERVAL) => {
+                        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                            return Ok(None);
+                        }
+                    }
+                }
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            if body.len().saturating_add(chunk.len()) > MAX_MODEL_IDENTITY_RESPONSE_BYTES {
+                return Err(format!(
+                    "Ollama {response_kind} response exceeded the {}-byte limit",
+                    MAX_MODEL_IDENTITY_RESPONSE_BYTES
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body)
+            .map(Some)
+            .map_err(|err| format!("invalid Ollama {response_kind} response: {err}"))
+    }
+
+    fn ollama_endpoint(&self, path: &str) -> Result<Url, String> {
+        let mut url = Url::parse(&self.settings.generate_url)
+            .map_err(|err| format!("invalid Ollama generate URL: {err}"))?;
+        url.set_path(path);
+        url.set_query(None);
+        url.set_fragment(None);
+        Ok(url)
     }
 
     pub fn respond_with_history(
@@ -440,6 +1251,7 @@ impl OllamaClient {
         response_kind: &str,
     ) -> Result<String, String> {
         let _inference_permit = acquire_inference_permit()?;
+        self.verify_model_identity()?;
         self.with_safe_gpu_fallback(request, |attempt| {
             self.generate_full_once(attempt, response_kind)
         })
@@ -530,6 +1342,9 @@ impl OllamaClient {
         let Some(_inference_permit) = INFERENCE_GATE.acquire(Some(cancellation))? else {
             return Ok(StreamingOutcome::Cancelled(String::new()));
         };
+        if !self.verify_model_identity_cancellable(cancellation)? {
+            return Ok(StreamingOutcome::Cancelled(String::new()));
+        }
         match self.generate_streaming_once(request, cancellation, on_chunk) {
             Ok(outcome) => Ok(outcome),
             Err(primary_error)
@@ -698,7 +1513,7 @@ impl OllamaClient {
         if let Some(answer) = geometry_answer {
             return Ok(answer);
         }
-        if requires_bounded_windows_gemma4_vision(&self.settings.model_id) {
+        if !self.settings.model_lock.general_vision_verified {
             return Ok(bounded_visual_response(simple_geometry));
         }
         let visual_prompt = prompt_with_ocr_evidence_for_source(trimmed_prompt, ocr_text, source);
@@ -722,6 +1537,136 @@ impl OllamaClient {
         };
         self.generate_full_with_gpu_fallback(&request, "image response")
     }
+}
+
+#[cfg(test)]
+fn identity_test_models_root() -> PathBuf {
+    std::env::temp_dir().join("iris-ollama-identity-test-models")
+}
+
+fn modelfile_model_source(modelfile: &str) -> Result<PathBuf, String> {
+    let mut in_multiline_value = false;
+    let mut source = None;
+    for raw_line in modelfile.lines() {
+        let line = raw_line.trim();
+        let is_comment = !in_multiline_value && line.starts_with('#');
+        if !in_multiline_value && !is_comment && !line.is_empty() {
+            let directive_end = line.find(char::is_whitespace).unwrap_or(line.len());
+            let directive = &line[..directive_end];
+            if directive.eq_ignore_ascii_case("FROM") {
+                if source.is_some() {
+                    return Err(
+                        "Ollama /api/show returned more than one active FROM source".to_string()
+                    );
+                }
+                let value = line[directive_end..].trim();
+                let value = match (value.strip_prefix('"'), value.strip_suffix('"')) {
+                    (Some(without_start), Some(_)) if value.len() >= 2 => {
+                        &without_start[..without_start.len() - 1]
+                    }
+                    (None, None) => value,
+                    _ => {
+                        return Err("Ollama /api/show returned a malformed FROM source".to_string());
+                    }
+                };
+                if value.is_empty() || value.contains('\0') {
+                    return Err("Ollama /api/show returned an empty FROM source".to_string());
+                }
+                source = Some(PathBuf::from(value));
+            }
+        }
+        if !is_comment && line.matches("\"\"\"").count() % 2 == 1 {
+            in_multiline_value = !in_multiline_value;
+        }
+    }
+    if in_multiline_value {
+        return Err("Ollama /api/show returned an unterminated multiline value".to_string());
+    }
+    source.ok_or_else(|| "Ollama /api/show did not report an active FROM source".to_string())
+}
+
+fn model_source_path_key(path: &Path) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err("Ollama /api/show model source must be an absolute path".to_string());
+    }
+    let key = path_key_from_text(&path.to_string_lossy());
+    if cfg!(windows) {
+        Ok(key.replace('/', "\\"))
+    } else {
+        Ok(key)
+    }
+}
+
+fn validate_model_source(
+    lock: &iris_config::OllamaModelLock,
+    show: &OllamaShowResponse,
+    verified_models_root: &Path,
+) -> Result<(), String> {
+    let digest = lock
+        .model_layer_digest
+        .strip_prefix("sha256:")
+        .filter(|digest| is_lower_sha256(digest))
+        .ok_or_else(|| "Iris's embedded model-layer digest is invalid".to_string())?;
+    let expected = verified_models_root
+        .join("blobs")
+        .join(format!("sha256-{digest}"));
+    let actual = modelfile_model_source(&show.modelfile)?;
+    if model_source_path_key(&actual)? != model_source_path_key(&expected)? {
+        return Err(
+            "Ollama /api/show model source differs from Iris's verified model store".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_model_identity(
+    lock: &iris_config::OllamaModelLock,
+    tag_model: &OllamaTagModel,
+    show: &OllamaShowResponse,
+    verified_models_root: &Path,
+) -> Result<(), String> {
+    if tag_model.name != lock.model_id && tag_model.model != lock.model_id {
+        return Err("Ollama returned a different model identity than Iris requested".to_string());
+    }
+    if tag_model.digest != lock.manifest_digest {
+        return Err(format!(
+            "configured Ollama model digest mismatch; expected {}, found {}. Run `ollama pull {}` once to repair local corruption. If the mismatch remains, update Iris or restore the audited model store; do not bypass this check",
+            lock.manifest_digest, tag_model.digest, lock.model_id,
+        ));
+    }
+    if tag_model.size != lock.total_bytes {
+        return Err(format!(
+            "configured Ollama model byte count mismatch; expected {}, found {}",
+            lock.total_bytes, tag_model.size
+        ));
+    }
+    for (source, details) in [
+        ("/api/tags", &tag_model.details),
+        ("/api/show", &show.details),
+    ] {
+        if details.family != lock.family
+            || details.parameter_size != lock.parameter_size
+            || details.quantization_level != lock.quantization_level
+        {
+            return Err(format!(
+                "configured Ollama model metadata from {source} differs from the Iris lock"
+            ));
+        }
+    }
+    let missing = lock
+        .required_capabilities
+        .iter()
+        .filter(|required| !show.capabilities.iter().any(|actual| actual == *required))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!(
+            "configured Ollama model is missing locked capabilities: {}",
+            missing.join(", ")
+        ));
+    }
+    validate_model_source(lock, show, verified_models_root)?;
+    Ok(())
 }
 
 fn answer_from_ocr_for_visible_text_request(
@@ -1174,20 +2119,6 @@ fn answer_from_simple_visual_geometry(
         (false, true, _) => Some(geometry.shape.to_string()),
         _ => None,
     }
-}
-
-// Ollama PR #16879 documents a broken Windows inline projector for unified Gemma 4
-// E2B/E4B models. Keep arbitrary scene descriptions fail-closed until a stable
-// Ollama release contains that fix and passes Iris' raw-image release canary.
-// https://github.com/ollama/ollama/pull/16879
-fn requires_bounded_windows_gemma4_vision(model_id: &str) -> bool {
-    if !cfg!(target_os = "windows") {
-        return false;
-    }
-    let model_id = model_id.to_ascii_lowercase();
-    let is_gemma4 = model_id.contains("gemma4") || model_id.contains("gemma-4");
-    let is_affected_size = model_id.contains("e2b") || model_id.contains("e4b");
-    is_gemma4 && is_affected_size
 }
 
 fn bounded_visual_response(geometry: Option<SimpleVisualGeometry>) -> String {
@@ -2477,14 +3408,204 @@ mod tests {
 
     const MANIFEST: &str = include_str!("../../../manifest.json");
 
-    fn test_client() -> OllamaClient {
-        OllamaClient::new(OllamaSettings {
-            generate_url: "http://127.0.0.1:11434/api/generate".to_string(),
-            model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
+    fn test_settings(
+        generate_url: impl Into<String>,
+        model_id: impl Into<String>,
+    ) -> OllamaSettings {
+        OllamaSettings {
+            generate_url: generate_url.into(),
+            model_id: model_id.into(),
             num_ctx: 8192,
             num_gpu_layers: 1,
-        })
-        .unwrap()
+            model_lock: iris_config::locked_ollama_model().unwrap(),
+        }
+    }
+
+    #[test]
+    fn model_store_hashing_rejects_same_size_corruption_and_selects_later_exact_store() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-ollama-store-integrity-{}-{}",
+            std::process::id(),
+            unix_time_millis().expect("timestamp")
+        ));
+        let corrupt_store = root.join("corrupt-first");
+        let exact_store = root.join("exact-second");
+        let config_bytes = b"config";
+        let model_bytes = b"locked model";
+        let config_digest = format!("sha256:{:x}", Sha256::digest(config_bytes));
+        let model_digest = format!("sha256:{:x}", Sha256::digest(model_bytes));
+        let manifest_bytes = serde_json::to_vec(&serde_json::json!({
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": config_digest,
+                "size": config_bytes.len()
+            },
+            "layers": [{
+                "mediaType": "application/vnd.ollama.image.model",
+                "digest": model_digest,
+                "size": model_bytes.len()
+            }]
+        }))
+        .expect("manifest fixture");
+        let mut lock = iris_config::locked_ollama_model().expect("embedded lock");
+        lock.manifest_digest = format!("{:x}", Sha256::digest(&manifest_bytes));
+        lock.model_layer_digest = model_digest.clone();
+        lock.total_bytes = (config_bytes.len() + model_bytes.len()) as u64;
+
+        for store in [&corrupt_store, &exact_store] {
+            let manifest_path = ollama_model_manifest(store, &lock.model_id).expect("safe tag");
+            fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+                .expect("manifest directory");
+            fs::write(&manifest_path, &manifest_bytes).expect("manifest fixture");
+            let blobs = store.join("blobs");
+            fs::create_dir_all(&blobs).expect("blob directory");
+            fs::write(blobs.join(config_digest.replace(':', "-")), config_bytes)
+                .expect("config blob");
+            fs::write(blobs.join(model_digest.replace(':', "-")), model_bytes).expect("model blob");
+        }
+        let original_inspection =
+            inspect_model_store(&corrupt_store, &lock).expect("exact initial store");
+        hash_all_model_store_blobs(&original_inspection).expect("initial blob hashes");
+        let stale_cache = cache_from_inspection(&original_inspection, &lock);
+        let mut same_size_corruption = model_bytes.to_vec();
+        same_size_corruption[0] ^= 1;
+        fs::write(
+            corrupt_store
+                .join("blobs")
+                .join(model_digest.replace(':', "-")),
+            same_size_corruption,
+        )
+        .expect("same-size corrupt blob");
+
+        let corrupt_inspection =
+            inspect_model_store(&corrupt_store, &lock).expect("size-identical store inspection");
+        assert!(!cache_matches_inspection(
+            &stale_cache,
+            &corrupt_inspection,
+            &lock
+        ));
+        assert!(hash_all_model_store_blobs(&corrupt_inspection).is_err());
+        let selected = select_verified_ollama_models_root_with_cache(
+            [corrupt_store.clone(), exact_store.clone()],
+            &lock,
+            Some(&stale_cache),
+            None,
+            false,
+        )
+        .expect("later exact store");
+        assert_eq!(selected, exact_store);
+
+        fs::remove_dir_all(root).expect("remove model-store fixture");
+    }
+
+    #[test]
+    #[ignore = "requires the configured local Ollama model store"]
+    fn live_locked_model_store_integrity() {
+        let lock = iris_config::locked_ollama_model().expect("embedded lock");
+        let root = verified_ollama_models_root(&lock).expect("verified live model store");
+        assert!(root.is_absolute());
+    }
+
+    #[test]
+    #[ignore = "requires the configured local Ollama model store"]
+    fn live_locked_model_store_warm_cache_latency() {
+        let lock = iris_config::locked_ollama_model().expect("embedded lock");
+        verified_ollama_models_root(&lock).expect("initial verification");
+        let started = Instant::now();
+        for _ in 0..100 {
+            verified_ollama_models_root(&lock).expect("warm verification");
+        }
+        println!(
+            "100 warm model-store verifications: {:.3} ms",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
+
+    #[test]
+    fn model_store_cache_replacement_is_atomic_when_destination_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-ollama-cache-replace-{}-{}",
+            std::process::id(),
+            unix_time_millis().expect("timestamp")
+        ));
+        fs::create_dir_all(&root).expect("cache test directory");
+        let destination = root.join("cache.json");
+        let temporary = root.join("cache.tmp");
+        fs::write(&destination, b"old").expect("old cache");
+        fs::write(&temporary, b"new").expect("new cache");
+
+        replace_cache_file(&temporary, &destination).expect("atomic cache replacement");
+
+        assert_eq!(fs::read(&destination).expect("replaced cache"), b"new");
+        assert!(!temporary.exists());
+        fs::remove_dir_all(root).expect("remove cache test directory");
+    }
+
+    #[test]
+    fn model_store_cache_uses_local_app_data_when_iris_data_root_is_absent() {
+        let local_app_data = std::env::temp_dir().join("iris-local-app-data-cache-test");
+        let configured = std::env::temp_dir().join("iris-explicit-data-cache-test");
+        let relative = Path::new("relative-local-app-data");
+
+        assert_eq!(
+            model_store_cache_path_from_roots(None, Some(local_app_data.as_os_str())),
+            Some(
+                local_app_data
+                    .join("Iris")
+                    .join(".iris-data")
+                    .join("cache")
+                    .join(MODEL_STORE_CACHE_FILE)
+            )
+        );
+        assert_eq!(
+            model_store_cache_path_from_roots(
+                Some(configured.as_os_str()),
+                Some(local_app_data.as_os_str()),
+            ),
+            Some(
+                configured
+                    .join(".iris-data")
+                    .join("cache")
+                    .join(MODEL_STORE_CACHE_FILE)
+            )
+        );
+        assert_eq!(
+            model_store_cache_path_from_roots(None, Some(relative.as_os_str())),
+            None
+        );
+        assert_eq!(
+            model_store_cache_path_from_roots(
+                Some(relative.as_os_str()),
+                Some(local_app_data.as_os_str()),
+            ),
+            None
+        );
+    }
+
+    fn verified_test_client(settings: OllamaSettings) -> OllamaClient {
+        let client = OllamaClient::new(settings).unwrap();
+        client
+            .identity_verification_bypassed
+            .store(true, Ordering::Release);
+        client
+    }
+
+    fn test_client() -> OllamaClient {
+        verified_test_client(test_settings(
+            "http://127.0.0.1:11434/api/generate",
+            "huihui_ai/gemma-4-abliterated:e2b",
+        ))
+    }
+
+    fn live_test_client(settings: OllamaSettings) -> OllamaClient {
+        let models_root = verified_ollama_models_root(&settings.model_lock)
+            .expect("verified configured model store");
+        let client = OllamaClient::new(settings).expect("live Ollama client");
+        *client
+            .identity_models_root
+            .lock()
+            .expect("test identity root") = models_root;
+        client
     }
 
     fn simple_shape_canvas(shape: &str) -> image::RgbaImage {
@@ -2742,6 +3863,18 @@ mod tests {
         stream.flush().unwrap();
     }
 
+    fn write_test_json_response(stream: &mut TcpStream, body: &serde_json::Value) {
+        let body = serde_json::to_string(body).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    }
+
     #[test]
     fn settings_use_manifest_model_and_context_ceiling() {
         let manifest = iris_config::ProjectManifest::from_json_str(MANIFEST).unwrap();
@@ -2750,17 +3883,326 @@ mod tests {
         assert_eq!(settings.model_id, "huihui_ai/gemma-4-abliterated:e2b");
         assert_eq!(settings.num_ctx, 8192);
         assert_eq!(settings.num_gpu_layers, 1);
+        assert_eq!(
+            settings.model_lock.manifest_digest,
+            "7c4fbc4573d646fa7a2bcd940cd682a57c5717fcd1b48fd96ea45b1ef24d499f"
+        );
+        assert!(!settings.model_lock.general_vision_verified);
         settings.validate_loopback().unwrap();
+    }
+
+    fn locked_modelfile(lock: &iris_config::OllamaModelLock, models_root: &Path) -> String {
+        let digest = lock
+            .model_layer_digest
+            .strip_prefix("sha256:")
+            .expect("locked SHA-256 layer");
+        format!(
+            "# Modelfile generated by \"ollama show\"\n# FROM {}\n\nFROM {}\nTEMPLATE {{{{ .Prompt }}}}\nLICENSE \"\"\"\nFROM inside license text\n\"\"\"",
+            lock.model_id,
+            models_root
+                .join("blobs")
+                .join(format!("sha256-{digest}"))
+                .display()
+        )
+    }
+
+    fn locked_tag_and_show() -> (OllamaTagModel, OllamaShowResponse) {
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let tag = OllamaTagModel {
+            name: lock.model_id.clone(),
+            model: lock.model_id.clone(),
+            digest: lock.manifest_digest.clone(),
+            size: lock.total_bytes,
+            details: OllamaModelDetails {
+                family: lock.family.clone(),
+                parameter_size: lock.parameter_size.clone(),
+                quantization_level: lock.quantization_level.clone(),
+            },
+        };
+        let show = OllamaShowResponse {
+            modelfile: locked_modelfile(&lock, &identity_test_models_root()),
+            details: OllamaModelDetails {
+                family: lock.family.clone(),
+                parameter_size: lock.parameter_size.clone(),
+                quantization_level: lock.quantization_level.clone(),
+            },
+            capabilities: lock.required_capabilities.clone(),
+        };
+        (tag, show)
+    }
+
+    #[test]
+    fn immutable_model_identity_accepts_only_the_locked_metadata() {
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let models_root = identity_test_models_root();
+        let (tag, show) = locked_tag_and_show();
+        validate_model_identity(&lock, &tag, &show, &models_root).unwrap();
+
+        let (mut wrong_identity, show) = locked_tag_and_show();
+        wrong_identity.name = "different/model:latest".to_string();
+        wrong_identity.model = "different/model:latest".to_string();
+        assert!(
+            validate_model_identity(&lock, &wrong_identity, &show, &models_root)
+                .unwrap_err()
+                .contains("different model identity")
+        );
+
+        let (mut bad_tag, show) = locked_tag_and_show();
+        bad_tag.digest = "0".repeat(64);
+        assert!(
+            validate_model_identity(&lock, &bad_tag, &show, &models_root)
+                .unwrap_err()
+                .contains("digest mismatch")
+        );
+
+        let (tag, mut bad_show) = locked_tag_and_show();
+        bad_show
+            .capabilities
+            .retain(|capability| capability != "vision");
+        assert!(
+            validate_model_identity(&lock, &tag, &bad_show, &models_root)
+                .unwrap_err()
+                .contains("missing locked capabilities")
+        );
+
+        let (tag, mut missing_source) = locked_tag_and_show();
+        missing_source.modelfile = "# no active model source".to_string();
+        assert!(
+            validate_model_identity(&lock, &tag, &missing_source, &models_root)
+                .unwrap_err()
+                .contains("did not report an active FROM source")
+        );
+    }
+
+    #[test]
+    fn model_identity_rejects_show_source_from_a_different_store() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let server_lock = lock.clone();
+        let wrong_models_root = identity_test_models_root().with_file_name("wrong-model-store");
+        let server = thread::spawn(move || {
+            let (mut tags_stream, _) = listener.accept().unwrap();
+            read_test_http_request(&mut tags_stream);
+            write_test_json_response(
+                &mut tags_stream,
+                &serde_json::json!({
+                    "models": [{
+                        "name": server_lock.model_id.clone(),
+                        "model": server_lock.model_id.clone(),
+                        "digest": server_lock.manifest_digest.clone(),
+                        "size": server_lock.total_bytes,
+                        "details": {
+                            "family": server_lock.family.clone(),
+                            "parameter_size": server_lock.parameter_size.clone(),
+                            "quantization_level": server_lock.quantization_level.clone()
+                        }
+                    }]
+                }),
+            );
+
+            let (mut show_stream, _) = listener.accept().unwrap();
+            read_test_http_request(&mut show_stream);
+            write_test_json_response(
+                &mut show_stream,
+                &serde_json::json!({
+                    "modelfile": locked_modelfile(&server_lock, &wrong_models_root),
+                    "details": {
+                        "family": server_lock.family.clone(),
+                        "parameter_size": server_lock.parameter_size.clone(),
+                        "quantization_level": server_lock.quantization_level.clone()
+                    },
+                    "capabilities": server_lock.required_capabilities.clone()
+                }),
+            );
+        });
+        let client = OllamaClient::new(test_settings(
+            format!("http://{address}/api/generate"),
+            lock.model_id,
+        ))
+        .unwrap();
+
+        let error = client.verify_model_identity().unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("differs from Iris's verified model store"));
+    }
+
+    #[test]
+    fn model_identity_is_revalidated_instead_of_cached_for_the_process_lifetime() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let server_lock = lock.clone();
+        let server_models_root = identity_test_models_root();
+        let server = thread::spawn(move || {
+            let drift_digest = "0".repeat(64);
+            for digest in [&server_lock.manifest_digest, &drift_digest] {
+                let (mut tags_stream, _) = listener.accept().unwrap();
+                read_test_http_request(&mut tags_stream);
+                write_test_json_response(
+                    &mut tags_stream,
+                    &serde_json::json!({
+                        "models": [{
+                            "name": server_lock.model_id.clone(),
+                            "model": server_lock.model_id.clone(),
+                            "digest": digest,
+                            "size": server_lock.total_bytes,
+                            "details": {
+                                "family": server_lock.family.clone(),
+                                "parameter_size": server_lock.parameter_size.clone(),
+                                "quantization_level": server_lock.quantization_level.clone()
+                            }
+                        }]
+                    }),
+                );
+
+                let (mut show_stream, _) = listener.accept().unwrap();
+                read_test_http_request(&mut show_stream);
+                write_test_json_response(
+                    &mut show_stream,
+                    &serde_json::json!({
+                        "modelfile": locked_modelfile(&server_lock, &server_models_root),
+                        "details": {
+                            "family": server_lock.family.clone(),
+                            "parameter_size": server_lock.parameter_size.clone(),
+                            "quantization_level": server_lock.quantization_level.clone()
+                        },
+                        "capabilities": server_lock.required_capabilities.clone()
+                    }),
+                );
+            }
+        });
+        let client = OllamaClient::new(test_settings(
+            format!("http://{address}/api/generate"),
+            lock.model_id,
+        ))
+        .unwrap();
+
+        client.verify_model_identity().unwrap();
+        let error = client.verify_model_identity().unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("digest mismatch"));
+    }
+
+    #[test]
+    fn model_identity_rejects_a_streamed_response_over_the_byte_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            let oversized_body = vec![b'x'; MAX_MODEL_IDENTITY_RESPONSE_BYTES + 1];
+            let _ = stream.write_all(&oversized_body);
+            let _ = stream.flush();
+        });
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let client = OllamaClient::new(test_settings(
+            format!("http://{address}/api/generate"),
+            lock.model_id,
+        ))
+        .unwrap();
+
+        let error = client.verify_model_identity().unwrap_err();
+        server.join().unwrap();
+
+        assert!(error.contains("response exceeded the 1048576-byte limit"));
+    }
+
+    #[test]
+    fn model_identity_no_response_obeys_its_request_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_test_http_request(&mut stream);
+            thread::sleep(Duration::from_millis(300));
+        });
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let client = OllamaClient::new(test_settings(
+            format!("http://{address}/api/generate"),
+            lock.model_id,
+        ))
+        .unwrap();
+        let started = Instant::now();
+
+        let error = client
+            .verify_model_identity_with_timeout(None, Duration::from_millis(80))
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        server.join().unwrap();
+
+        assert!(error.contains("failed to query Ollama model identity"));
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "identity timeout took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn model_identity_cancellation_interrupts_a_stalled_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_test_http_request(&mut stream);
+            thread::sleep(Duration::from_millis(400));
+        });
+        let lock = iris_config::locked_ollama_model().unwrap();
+        let client = OllamaClient::new(test_settings(
+            format!("http://{address}/api/generate"),
+            lock.model_id,
+        ))
+        .unwrap();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let cancellation_trigger = Arc::clone(&cancellation);
+        let trigger = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            cancellation_trigger.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+
+        let verified = client
+            .verify_model_identity_with_timeout(Some(cancellation.as_ref()), MODEL_IDENTITY_TIMEOUT)
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        trigger.join().unwrap();
+        server.join().unwrap();
+        assert!(!verified);
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "identity cancellation took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn client_rejects_settings_that_bypass_the_embedded_model_lock() {
+        let mut settings = test_settings(
+            "http://127.0.0.1:11434/api/generate",
+            "huihui_ai/gemma-4-abliterated:e2b",
+        );
+        settings.model_id = "different/model:latest".to_string();
+
+        assert!(
+            OllamaClient::new(settings)
+                .unwrap_err()
+                .contains("embedded model identity lock")
+        );
     }
 
     #[test]
     fn rejects_non_loopback_endpoint() {
-        let settings = OllamaSettings {
-            generate_url: "https://example.com/api/generate".to_string(),
-            model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
-            num_ctx: 8192,
-            num_gpu_layers: 1,
-        };
+        let settings = test_settings(
+            "https://example.com/api/generate",
+            "huihui_ai/gemma-4-abliterated:e2b",
+        );
 
         assert!(settings.validate_loopback().is_err());
     }
@@ -3001,13 +4443,10 @@ mod tests {
                 }
             }
         });
-        let client = OllamaClient::new(OllamaSettings {
-            generate_url: format!("http://{address}/api/generate"),
-            model_id: "test-model".to_string(),
-            num_ctx: 8192,
-            num_gpu_layers: 1,
-        })
-        .unwrap();
+        let client = verified_test_client(test_settings(
+            format!("http://{address}/api/generate"),
+            "huihui_ai/gemma-4-abliterated:e2b",
+        ));
         let bundle = gate_context(vec![RawContextItem::new(
             ContextSource::UserUtterance,
             "hello",
@@ -3061,15 +4500,10 @@ mod tests {
                 handler.join().unwrap();
             }
         });
-        let client = Arc::new(
-            OllamaClient::new(OllamaSettings {
-                generate_url: format!("http://{address}/api/generate"),
-                model_id: "test-model".to_string(),
-                num_ctx: 8192,
-                num_gpu_layers: 1,
-            })
-            .unwrap(),
-        );
+        let client = Arc::new(verified_test_client(test_settings(
+            format!("http://{address}/api/generate"),
+            "huihui_ai/gemma-4-abliterated:e2b",
+        )));
         let barrier = Arc::new(Barrier::new(3));
         let workers = (0..2)
             .map(|index| {
@@ -3139,13 +4573,10 @@ mod tests {
             stream.flush().unwrap();
             thread::sleep(Duration::from_millis(400));
         });
-        let client = OllamaClient::new(OllamaSettings {
-            generate_url: format!("http://{address}/api/generate"),
-            model_id: "test-model".to_string(),
-            num_ctx: 8192,
-            num_gpu_layers: 1,
-        })
-        .unwrap();
+        let client = verified_test_client(test_settings(
+            format!("http://{address}/api/generate"),
+            "huihui_ai/gemma-4-abliterated:e2b",
+        ));
         let bundle = gate_context(vec![RawContextItem::new(
             ContextSource::UserUtterance,
             "hello",
@@ -3214,12 +4645,10 @@ mod tests {
 
     #[test]
     fn pre_cancelled_stream_never_contacts_ollama_or_attempts_gpu_fallback() {
-        let client = OllamaClient::new(OllamaSettings {
-            generate_url: "http://127.0.0.1:1/api/generate".to_string(),
-            model_id: "huihui_ai/gemma-4-abliterated:e2b".to_string(),
-            num_ctx: 8192,
-            num_gpu_layers: 1,
-        })
+        let client = OllamaClient::new(test_settings(
+            "http://127.0.0.1:1/api/generate",
+            "huihui_ai/gemma-4-abliterated:e2b",
+        ))
         .unwrap();
         let bundle = gate_context(vec![RawContextItem::new(
             ContextSource::UserUtterance,
@@ -3242,7 +4671,7 @@ mod tests {
     #[ignore = "requires the configured local Ollama model"]
     fn live_streaming_response_matches_incremental_chunks() {
         let manifest = iris_config::ProjectManifest::from_json_str(MANIFEST).unwrap();
-        let client = OllamaClient::new(OllamaSettings::from_manifest(&manifest).unwrap()).unwrap();
+        let client = live_test_client(OllamaSettings::from_manifest(&manifest).unwrap());
         let bundle = gate_context(vec![RawContextItem::new(
             ContextSource::UserUtterance,
             "Reply with exactly: streaming ready",
@@ -3261,7 +4690,7 @@ mod tests {
     #[ignore = "requires the configured local Ollama model"]
     fn live_streaming_cancellation_stops_after_delivered_text() {
         let manifest = iris_config::ProjectManifest::from_json_str(MANIFEST).unwrap();
-        let client = OllamaClient::new(OllamaSettings::from_manifest(&manifest).unwrap()).unwrap();
+        let client = live_test_client(OllamaSettings::from_manifest(&manifest).unwrap());
         let bundle = gate_context(vec![RawContextItem::new(
             ContextSource::UserUtterance,
             "Count slowly from one to twenty in complete sentences.",
@@ -3682,18 +5111,10 @@ mod tests {
     }
 
     #[test]
-    fn affected_windows_gemma4_projectors_are_bounded_narrowly() {
-        assert_eq!(
-            requires_bounded_windows_gemma4_vision("huihui_ai/gemma-4-abliterated:e2b"),
-            cfg!(target_os = "windows")
-        );
-        assert_eq!(
-            requires_bounded_windows_gemma4_vision("gemma4:e4b"),
-            cfg!(target_os = "windows")
-        );
-        assert!(!requires_bounded_windows_gemma4_vision("gemma4:12b"));
-        assert!(!requires_bounded_windows_gemma4_vision("gemma3:4b"));
-        assert!(!requires_bounded_windows_gemma4_vision("qwen3-vl:e2b"));
+    fn general_vision_is_bounded_by_the_explicit_model_lock_policy() {
+        let lock = iris_config::locked_ollama_model().unwrap();
+
+        assert!(!lock.general_vision_verified);
     }
 
     #[test]

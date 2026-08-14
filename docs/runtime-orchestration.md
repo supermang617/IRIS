@@ -46,6 +46,9 @@ These are the safest universal settings for the current model and hardware
 target:
 
 - Ollama model: `huihui_ai/gemma-4-abliterated:e2b`
+- Immutable Ollama identity: `profiles/iris_ollama_model.lock.json`; Iris checks
+  the exact manifest digest, byte count, family, parameter size, quantization,
+  and required capabilities before inference.
 - Ollama endpoint: `http://127.0.0.1:11434/api/generate`
 - Context ceiling: `8192`
 - Output cap per response: `192` tokens
@@ -70,6 +73,9 @@ target:
 - Agentic action tools: `read_file`, `write_file`, `patch`, `search_files`,
   `terminal`, `process`
 - Agentic native durable memory, MCP, lazy installs, and cloud fallback: disabled
+- Agentic context compression: Iris-locked local Ollama only, with a 24,000-character
+  input cap, 1,024-token output cap, no auxiliary fallback route, and no message
+  deletion when model-identity validation or summary generation fails
 - Dynamic context: enabled by default, 30-day half-life, 64-observation cap,
   no raw text storage
 
@@ -136,8 +142,9 @@ path.
 When all pieces are healthy:
 
 - `ollama list` shows `huihui_ai/gemma-4-abliterated:e2b`.
-- Ollama reports `vision` in the configured model capabilities before claiming
-  the image-probe milestone is ready.
+- `scripts\test_ollama_model_lock.ps1 -Live` confirms the running tag matches
+  the immutable model lock. Capability metadata never overrides the explicit
+  `general_vision_verified` release-canary policy.
 - Iris preflight reports Ollama/model PASS.
 - Iris text ask returns a short local response.
 - Iris image probe identifies the bounded red-circle fixture. When the direct

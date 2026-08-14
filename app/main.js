@@ -181,8 +181,8 @@ let lastFeedbackTurn = null;
 let selectedFeedbackRating = null;
 const conversationHistory = [];
 const maxHistoryTurns = 8;
-const feedbackModelId = "huihui_ai/gemma-4-abliterated:e2b";
-const feedbackProvider = "ollama_local";
+let feedbackModelId = "unavailable";
+let feedbackProvider = "unavailable";
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
 const cameraPermissionTimeoutMs = 12000;
@@ -337,6 +337,8 @@ function rememberTurn(role, text) {
 async function refreshDashboard() {
   try {
     const snapshot = await call("dashboard_snapshot");
+    feedbackModelId = String(snapshot.model.id || "unavailable");
+    feedbackProvider = String(snapshot.model.provider || "unavailable");
     logVoice(
       "system_snapshot",
       `model=${snapshot.model.parameter_size}; ram=${formatGb(snapshot.hardware.total_ram_gb)}; free=${formatGb(snapshot.hardware.available_ram_gb)}; usable=${formatGb(snapshot.hardware.usable_after_reserve_gb)}; cpu=${snapshot.hardware.cpu_cores}`

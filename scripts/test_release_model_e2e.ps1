@@ -54,7 +54,10 @@ $capabilities = @($show.capabilities)
 if (-not ($capabilities -contains "vision")) {
     throw "Configured Ollama model does not report vision capability from /api/show. Capabilities: $($capabilities -join ', ')"
 }
-$rawVisionCanary = @(& $rawVisionCanaryPath -PassThru) | Where-Object { $_.PSObject.Properties.Name -contains "Status" }
+$rawVisionCanary = @(
+    @(& $rawVisionCanaryPath -PassThru) |
+        Where-Object { $_.PSObject.Properties.Name -contains "Status" }
+)
 if ($rawVisionCanary.Count -ne 1 -or $rawVisionCanary[0].Status -notin @("PASS", "BLOCKED")) {
     throw "Raw Ollama vision canary did not return one valid status."
 }

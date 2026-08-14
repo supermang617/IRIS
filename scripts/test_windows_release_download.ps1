@@ -125,8 +125,13 @@ function Test-ExpectedCiPrerequisiteFailure {
     return $Output.Contains("Python 3.13") -or
         $Output.Contains("Ollama is not available on PATH") -or
         $Output.Contains("Ollama/model health check failed") -or
+        $Output.Contains("Iris's digest-verified model is not installed") -or
         $Output.Contains("[FAIL] Ollama executable") -or
         $Output.Contains("[FAIL] Configured Ollama model")
+}
+
+if (-not (Test-ExpectedCiPrerequisiteFailure -Output "Iris's digest-verified model is not installed on this clean runner.")) {
+    throw "CI prerequisite classification must allow the packaged model-store diagnostic."
 }
 
 try {
@@ -169,6 +174,7 @@ try {
         "profiles\iris_restricted.json",
         "profiles\iris_agentic.json",
         "profiles\iris_browser.json",
+        "profiles\iris_ollama_model.lock.json",
         ".iris-runtime\hermes\.venv\Lib\site-packages\hermes_agent-0.18.0.dist-info\METADATA",
         ".iris-runtime\hermes\.venv\Lib\site-packages\agent_client_protocol-0.9.0.dist-info\METADATA",
         ".iris-runtime\voice\Lib\site-packages\kokoro_onnx-0.5.0.dist-info\METADATA",
@@ -177,6 +183,7 @@ try {
         ".iris-runtime\voice\Lib\site-packages\onnxruntime-1.28.0.dist-info\METADATA",
         ".iris-runtime\voice\runtime-lock.txt",
         "profiles\iris_voice_python_3_13.lock.txt",
+        "scripts\iris_ollama_model_lock.ps1",
         ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe",
         ".iris-runtime\runtime-manifest.json",
         "capabilities\v0_1_capability_ledger.toml"
@@ -184,6 +191,13 @@ try {
 
     foreach ($relative in $required) {
         Require-File -Path (Join-Path $extractRoot $relative)
+    }
+
+    . (Join-Path $extractRoot "scripts\iris_ollama_model_lock.ps1")
+    $packagedOllamaLock = Get-IrisOllamaModelLock -Root $extractRoot
+    if ([string]$packagedOllamaLock.manifest_digest -cne "7c4fbc4573d646fa7a2bcd940cd682a57c5717fcd1b48fd96ea45b1ef24d499f" -or
+        $packagedOllamaLock.general_vision_verified -ne $false) {
+        throw "Packaged Ollama model lock differs from the audited runtime identity or general-vision policy."
     }
 
     $releaseReadme = Get-Content -LiteralPath (Join-Path $extractRoot "README_RELEASE.md") -Raw

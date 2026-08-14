@@ -76,6 +76,9 @@ Run it from the portable release folder:
 - Microsoft Edge WebView2 Runtime.
 - Ollama executable and local service model list.
 - Required model: `huihui_ai/gemma-4-abliterated:e2b`.
+- Exact Ollama model manifest digest, byte count, family, parameter size,
+  quantization, and required capabilities from
+  `profiles/iris_ollama_model.lock.json`.
 - Local Tesseract OCR for document-image text extraction.
 - Bundled Kokoro and Whisper assets.
 - Python availability and optional Kokoro TTS packages.
@@ -102,6 +105,8 @@ The interactive setup wizard can offer these repairs only:
 - Start the local Ollama service.
 - Download the configured local model with
   `ollama pull huihui_ai/gemma-4-abliterated:e2b`.
+  Preflight then verifies the downloaded tag against Iris' immutable model
+  lock before inference is allowed.
 - Install exact Python 3.13 through `winget`, or show Python's official Windows
   page.
 - Repair or upgrade Iris if its hash-locked Kokoro voice package layer is

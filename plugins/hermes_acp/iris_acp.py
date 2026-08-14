@@ -6,8 +6,8 @@ import logging
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from urllib.parse import urlparse
 
 os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
 
@@ -25,12 +25,16 @@ from iris_action_tools import (
     IRIS_ACTION_TOOLSETS,
     register_iris_action_guards,
 )
-from iris_memory_tools import IRIS_MEMORY_TOOLS, register_iris_memory_tools
+from iris_memory_tools import IRIS_MEMORY_TOOLS, iris_broker, register_iris_memory_tools
 
 
 IRIS_TOOLSET = "iris-acp-bridge"
 IRIS_MAX_ITERATIONS = 8
 IRIS_MAX_TOKENS = 512
+IRIS_OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1"
+IRIS_OLLAMA_API_KEY = "ollama-local"
+IRIS_COMPRESSION_MAX_TOKENS = 1024
+IRIS_COMPRESSION_MAX_PROMPT_CHARS = 24_000
 IRIS_SYSTEM_PROMPT = """You are Hermes, Iris's local task helper.
 Follow the user's current request using only the tools Iris provides for this turn.
 When the user explicitly tells you to call an available tool, call it before answering.
@@ -92,10 +96,151 @@ def required_env(name: str) -> str:
 
 def local_ollama_base_url() -> str:
     value = required_env("IRIS_HERMES_OLLAMA_BASE_URL").rstrip("/")
-    parsed = urlparse(value)
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeError("Hermes ACP Ollama endpoint must be plain HTTP loopback")
+    if value != IRIS_OLLAMA_BASE_URL:
+        raise RuntimeError("Hermes ACP Ollama endpoint differs from Iris's locked endpoint")
     return value
+
+
+def _bounded_compression_prompt(prompt: str) -> str:
+    clean_prompt = prompt.strip()
+    if not clean_prompt:
+        raise RuntimeError("Hermes compression prompt is empty")
+    if len(clean_prompt) <= IRIS_COMPRESSION_MAX_PROMPT_CHARS:
+        return clean_prompt
+    marker = "\n\n[IRIS BOUNDED COMPRESSION: middle source text omitted]\n\n"
+    remaining = IRIS_COMPRESSION_MAX_PROMPT_CHARS - len(marker)
+    head_chars = remaining // 2
+    tail_chars = remaining - head_chars
+    return f"{clean_prompt[:head_chars]}{marker}{clean_prompt[-tail_chars:]}"
+
+
+def iris_locked_compression_call(
+    task: str | None = None,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    main_runtime: dict[str, Any] | None = None,
+    messages: list[dict[str, Any]],
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    timeout: float | None = None,
+    extra_body: dict[str, Any] | None = None,
+    api_mode: str | None = None,
+    stream: bool = False,
+    stream_options: dict[str, Any] | None = None,
+):
+    """Run Hermes compaction only through Iris's locked local generator."""
+    lock = iris_broker.configured_iris_model_lock()
+    locked_model = str(lock["model_id"])
+    expected_runtime = {
+        "model": locked_model,
+        "provider": "custom",
+        "base_url": IRIS_OLLAMA_BASE_URL,
+        "api_key": IRIS_OLLAMA_API_KEY,
+        "api_mode": "chat_completions",
+    }
+    if task != "compression" or main_runtime != expected_runtime:
+        raise RuntimeError("Hermes compression runtime differs from Iris's model lock")
+    if provider not in (None, "custom") or model not in (None, locked_model):
+        raise RuntimeError("Hermes compression provider or model override is forbidden")
+    if base_url not in (None, IRIS_OLLAMA_BASE_URL) or api_key not in (
+        None,
+        IRIS_OLLAMA_API_KEY,
+    ):
+        raise RuntimeError("Hermes compression endpoint or credential override is forbidden")
+    if api_mode not in (None, "chat_completions"):
+        raise RuntimeError("Hermes compression API-mode override is forbidden")
+    invalid_temperature = temperature is not None and (
+        isinstance(temperature, bool)
+        or not isinstance(temperature, (int, float))
+        or float(temperature) != 0.0
+    )
+    if (
+        tools is not None
+        or timeout is not None
+        or extra_body not in (None, {})
+        or stream
+        or stream_options is not None
+        or invalid_temperature
+    ):
+        raise RuntimeError("Hermes compression request options are outside Iris policy")
+    if (
+        not isinstance(messages, list)
+        or len(messages) != 1
+        or not isinstance(messages[0], dict)
+        or messages[0].get("role") != "user"
+        or not isinstance(messages[0].get("content"), str)
+    ):
+        raise RuntimeError("Hermes compression request shape is outside Iris policy")
+    if max_tokens is None:
+        requested_tokens = IRIS_COMPRESSION_MAX_TOKENS
+    elif type(max_tokens) is int and max_tokens > 0:
+        requested_tokens = max_tokens
+    else:
+        raise RuntimeError("Hermes compression token budget is invalid")
+    bounded_tokens = min(requested_tokens, IRIS_COMPRESSION_MAX_TOKENS)
+    prompt = _bounded_compression_prompt(messages[0]["content"])
+    text = iris_broker.iris_generate_text(
+        prompt,
+        max_tokens=bounded_tokens,
+        temperature=0.0,
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
+    )
+
+
+def install_iris_locked_context_compression() -> None:
+    from agent import context_compressor as hermes_context_compressor
+
+    generate_summary = hermes_context_compressor.ContextCompressor._generate_summary
+    if "call_llm" not in generate_summary.__code__.co_names:
+        raise RuntimeError("Hermes context-compression boundary is unsupported")
+    hermes_context_compressor.call_llm = iris_locked_compression_call
+
+
+def configure_iris_locked_context_compression(agent: Any) -> None:
+    from agent.context_compressor import ContextCompressor
+
+    install_iris_locked_context_compression()
+    compressor = getattr(agent, "context_compressor", None)
+    lock = iris_broker.configured_iris_model_lock()
+    if type(compressor) is not ContextCompressor:
+        raise RuntimeError("Hermes must use Iris's locked built-in context compressor")
+    if (
+        compressor.model != lock["model_id"]
+        or compressor.provider != "custom"
+        or compressor.base_url != IRIS_OLLAMA_BASE_URL
+        or compressor.api_key != IRIS_OLLAMA_API_KEY
+        or compressor.api_mode != "chat_completions"
+        or compressor.summary_model
+    ):
+        raise RuntimeError("Hermes context compressor differs from Iris's model lock")
+    agent.compression_enabled = True
+    # Hermes's generic feasibility probe resolves auxiliary fallback providers
+    # and may query their model catalogues before the first compression. Iris
+    # already caps the prompt and output independently, so the exact compressor
+    # validation above is the complete feasibility decision for this runtime.
+    agent._compression_feasibility_checked = True
+    compressor.abort_on_summary_failure = True
+
+
+class IrisLockedOllamaAgentMixin:
+    def _ensure_primary_openai_client(self, *, reason: str):
+        # Hermes may make several model calls inside one approved Agentic task.
+        # Revalidate the parent-provided immutable identity immediately before
+        # every OpenAI-wire request rather than trusting a startup-only check.
+        # This is the shared boundary used both by ordinary request-local client
+        # creation and by Hermes's direct max-iteration summary/retry requests.
+        iris_broker.assert_iris_ollama_model_identity()
+        return super()._ensure_primary_openai_client(reason=reason)
+
+    def _compress_context(self, *args: Any, **kwargs: Any):
+        configure_iris_locked_context_compression(self)
+        return super()._compress_context(*args, **kwargs)
 
 
 class IrisSessionManager(SessionManager):
@@ -115,6 +260,11 @@ class IrisSessionManager(SessionManager):
         from run_agent import AIAgent
         from toolsets import TOOLSETS
 
+        install_iris_locked_context_compression()
+
+        class IrisLockedAIAgent(IrisLockedOllamaAgentMixin, AIAgent):
+            pass
+
         os.environ["TERMINAL_CWD"] = cwd
         os.environ["IRIS_AGENTIC_WORKSPACE"] = cwd
         _register_task_cwd(session_id, cwd)
@@ -133,12 +283,12 @@ class IrisSessionManager(SessionManager):
         }
         configured_model = required_env("IRIS_HERMES_MODEL")
         configured_base_url = local_ollama_base_url()
-        agent = AIAgent(
+        agent = IrisLockedAIAgent(
             platform="acp",
             provider="custom",
             api_mode="chat_completions",
             base_url=configured_base_url,
-            api_key="ollama-local",
+            api_key=IRIS_OLLAMA_API_KEY,
             model=configured_model,
             enabled_toolsets=[
                 IRIS_TOOLSET,
@@ -167,6 +317,7 @@ class IrisSessionManager(SessionManager):
                 },
             },
         )
+        configure_iris_locked_context_compression(agent)
         agent._print_fn = lambda *args, **kwargs: print(
             *args, **{**kwargs, "file": sys.stderr}
         )
@@ -388,6 +539,9 @@ def audit_tools() -> int:
                 "systemPromptChars": len(IRIS_SYSTEM_PROMPT),
                 "nativeDurableMemory": False,
                 "mcpAllowed": False,
+                "contextCompression": "iris_locked_ollama",
+                "compressionMaxTokens": IRIS_COMPRESSION_MAX_TOKENS,
+                "auxiliaryFallbackModels": False,
             },
             separators=(",", ":"),
         )

@@ -12,11 +12,17 @@ if ((Split-Path -Leaf $root) -ieq "scripts") {
 }
 Set-Location -LiteralPath $root
 
+$ollamaModelLockHelper = Join-Path $root "scripts\iris_ollama_model_lock.ps1"
+if (-not (Test-Path -LiteralPath $ollamaModelLockHelper -PathType Leaf)) {
+    throw "Missing Iris Ollama model-lock verifier: $ollamaModelLockHelper"
+}
+. $ollamaModelLockHelper
+
 $reportRoot = if ($env:IRIS_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT) } else { $root }
 $diagnosticsDir = Join-Path $reportRoot "diagnostics"
 $preflightJson = Join-Path $diagnosticsDir "preflight-report.json"
 $setupReport = Join-Path $diagnosticsDir "setup-wizard-report.txt"
-$modelId = "huihui_ai/gemma-4-abliterated:e2b"
+$modelId = [string](Get-IrisOllamaModelLock -Root $root).model_id
 
 function Write-Step {
     param(
@@ -119,11 +125,11 @@ function Get-RepairPlan {
                 Action = "start:ollama"
             }
         }
-        "^Configured Ollama model$" {
+        "^Configured Ollama model( identity)?$" {
             $description = if ($NonInteractive) {
                 "Open Iris after installation; the launcher self-check will verify the configured local model and report a clear error if it is unavailable."
             } else {
-                "This downloads $modelId into the local Ollama model store."
+                "This downloads $modelId into the local Ollama model store. If the locked digest still differs afterward, update Iris or restore its audited model store instead of bypassing verification."
             }
             return [pscustomobject]@{
                 Title = "Download the configured local model"
