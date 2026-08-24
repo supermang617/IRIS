@@ -28,7 +28,7 @@
   },
   "workspace": {
     "selection": "single_user_selected_directory",
-    "boundary": "advisory_unrestricted_powershell",
+    "boundary": "selected_workspace_no_shell_process",
     "scope_expansion_requires_confirmation": true
   },
   "session_approved_tools": [
@@ -36,8 +36,6 @@
     "write_file",
     "patch",
     "search_files",
-    "terminal",
-    "process",
     "browser_open",
     "browser_snapshot",
     "browser_click",
@@ -56,8 +54,6 @@
     "write_file",
     "patch",
     "search_files",
-    "terminal",
-    "process",
     "browser_open",
     "browser_snapshot",
     "browser_click",
@@ -74,8 +70,6 @@
     "write_file",
     "patch",
     "search_files",
-    "terminal",
-    "process",
     "browser_open",
     "browser_snapshot",
     "browser_click",
@@ -96,6 +90,14 @@
     "payment",
     "sensitive_files",
     "scope_expansion"
+  ],
+  "forbidden_tools": [
+    "terminal",
+    "shell",
+    "process",
+    "command",
+    "code_execution",
+    "powershell"
   ],
   "memory": {
     "authority": "iris",

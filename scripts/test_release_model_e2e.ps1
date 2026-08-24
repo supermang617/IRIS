@@ -129,12 +129,12 @@ try {
         -Arguments @("--image-probe", $imagePath, "Describe the mood and scene in this image.") `
         -Name "release bounded image probe"
     $boundedVisionText = $boundedVision.Output.ToLowerInvariant()
-    $runtimeFailedClosed = $boundedVisionText.Contains("known projector defect") -and $boundedVisionText.Contains("won't guess")
-    if ($rawVisionStatus -eq "BLOCKED" -and -not $runtimeFailedClosed) {
-        throw "Affected Windows Gemma 4 path did not fail closed for an unverified scene description: $($boundedVision.Output)"
+    if ($rawVisionStatus -ne "PASS") {
+        throw "The exact locked Qwen visual route failed its raw projector canary."
     }
-    if ($rawVisionStatus -eq "PASS" -and $runtimeFailedClosed) {
-        throw "Raw Ollama vision now passes, but Iris still applies the temporary Windows projector restriction. Re-evaluate and remove only the obsolete gate after the full visual matrix passes."
+    if ($boundedVisionText.Contains("known projector defect") -or
+        $boundedVisionText.Contains("local image probe unavailable")) {
+        throw "The release runtime did not use the verified Qwen route for broad visual inference: $($boundedVision.Output)"
     }
 
     $documentBitmap = New-Object System.Drawing.Bitmap 1000, 360

@@ -175,6 +175,7 @@ try {
         "profiles\iris_agentic.json",
         "profiles\iris_browser.json",
         "profiles\iris_ollama_model.lock.json",
+        "profiles\iris_ollama_vision_model.lock.json",
         ".iris-runtime\hermes\.venv\Lib\site-packages\hermes_agent-0.18.0.dist-info\METADATA",
         ".iris-runtime\hermes\.venv\Lib\site-packages\agent_client_protocol-0.9.0.dist-info\METADATA",
         ".iris-runtime\voice\Lib\site-packages\kokoro_onnx-0.5.0.dist-info\METADATA",
@@ -198,6 +199,12 @@ try {
     if ([string]$packagedOllamaLock.manifest_digest -cne "7c4fbc4573d646fa7a2bcd940cd682a57c5717fcd1b48fd96ea45b1ef24d499f" -or
         $packagedOllamaLock.general_vision_verified -ne $false) {
         throw "Packaged Ollama model lock differs from the audited runtime identity or general-vision policy."
+    }
+    $packagedVisionLock = Get-IrisOllamaModelLock -Root $extractRoot -Role Vision
+    if ([string]$packagedVisionLock.model_id -cne "qwen3.5:4b" -or
+        [string]$packagedVisionLock.manifest_digest -cne "2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd" -or
+        $packagedVisionLock.general_vision_verified -ne $true) {
+        throw "Packaged Ollama vision lock differs from the audited runtime identity or general-vision policy."
     }
 
     $releaseReadme = Get-Content -LiteralPath (Join-Path $extractRoot "README_RELEASE.md") -Raw

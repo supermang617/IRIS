@@ -422,6 +422,7 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "PRIVACY.md",
         "profiles/uv_windows_amd64.lock.txt",
         "profiles/iris_ollama_model.lock.json",
+        "profiles/iris_ollama_vision_model.lock.json",
         "scripts/install_iris_windows.ps1",
         "scripts/iris_document_ocr.ps1",
         "scripts/iris_preflight_wizard.ps1",
@@ -946,6 +947,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !installer.contains("Iris Setup Wizard.bat")
         || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
+        || !installer.contains("ollama pull qwen3.5:4b")
         || !installer.contains("never installs or downloads")
         || !installer.contains("Tesseract")
     {
@@ -1153,14 +1155,14 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     for required in [
         "This guide defines the Windows end-user acceptance checks",
-        "Ollama `/api/show` reports the configured model has `vision`",
+        "capability metadata and model bytes alone do not prove",
         "Hermes should not be opened separately",
         "Safe is the startup default",
         "Agentic Session is a separate, explicit, approval-gated mode",
         "file, PowerShell, process, and isolated browser tools",
         "require separate confirmation",
         "Tesseract document OCR",
-        "`BLOCKED` is the truthful current result",
+        "`PASS` with `red circle` is required",
         "do not certify acoustic interruption behavior",
     ] {
         if !manual_end_user_test.contains(required) {
@@ -1203,13 +1205,15 @@ fn assert_manifest_policy(root: &Path) -> Result<(), String> {
         "\"target_platform\": \"windows\"",
         "\"provider\": \"ollama_local\"",
         "\"model_id\": \"huihui_ai/gemma-4-abliterated:e2b\"",
-        "\"single_model_only\": true",
+        "\"single_model_only\": false",
         "\"fallback_models_allowed\": false",
         "\"num_ctx_ceiling\": 8192",
-        "\"unified_model\": true",
+        "\"unified_model\": false",
         "\"vision_capable\": true",
         "\"image_input_capable\": true",
-        "\"separate_vision_model\": false",
+        "\"separate_vision_model\": true",
+        "\"model_id\": \"qwen3.5:4b\"",
+        "\"num_ctx_ceiling\": 2048",
         "\"runtime_external_network\": \"disabled\"",
         "\"reserved_system_memory_ratio\": 0.35",
         "\"provider\": \"kokoro_onnx_python\"",
@@ -1244,6 +1248,31 @@ fn assert_ollama_model_lock(root: &Path) -> Result<(), String> {
         if !lock.contains(&format!("\"{capability}\"")) {
             return Err(format!(
                 "Ollama model lock missing required capability {capability}"
+            ));
+        }
+    }
+
+    let vision_lock = read(root.join("profiles/iris_ollama_vision_model.lock.json"))?;
+    for required in [
+        "\"model_id\": \"qwen3.5:4b\"",
+        "\"manifest_digest\": \"2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd\"",
+        "\"model_layer_digest\": \"sha256:81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490\"",
+        "\"total_bytes\": 3389983735",
+        "\"family\": \"qwen35\"",
+        "\"parameter_size\": \"4.7B\"",
+        "\"quantization_level\": \"Q4_K_M\"",
+        "\"general_vision_verified\": true",
+    ] {
+        if !vision_lock.contains(required) {
+            return Err(format!(
+                "Ollama vision model lock missing immutable identity: {required}"
+            ));
+        }
+    }
+    for capability in ["completion", "thinking", "tools", "vision"] {
+        if !vision_lock.contains(&format!("\"{capability}\"")) {
+            return Err(format!(
+                "Ollama vision model lock missing required capability {capability}"
             ));
         }
     }
@@ -1577,7 +1606,7 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
         "\"local_ollama_only\": true",
         "\"cloud_fallback\": false",
         "\"native_durable_memory\": false",
-        "\"boundary\": \"advisory_unrestricted_powershell\"",
+        "\"boundary\": \"selected_workspace_no_shell_process\"",
         "\"scope_expansion_requires_confirmation\": true",
         "\"authority\": \"iris\"",
         "\"direct_promotion\": false",
@@ -1595,8 +1624,6 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",
@@ -1623,8 +1650,6 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",
@@ -1649,8 +1674,6 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",

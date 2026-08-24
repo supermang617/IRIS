@@ -15,9 +15,13 @@ function Assert-IrisOllamaLockExactProperties {
 }
 
 function Get-IrisOllamaModelLock {
-    param([Parameter(Mandatory = $true)][string]$Root)
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [ValidateSet("Primary", "Vision")][string]$Role = "Primary"
+    )
 
-    $lockPath = Join-Path ([System.IO.Path]::GetFullPath($Root)) "profiles\iris_ollama_model.lock.json"
+    $lockName = if ($Role -eq "Vision") { "iris_ollama_vision_model.lock.json" } else { "iris_ollama_model.lock.json" }
+    $lockPath = Join-Path ([System.IO.Path]::GetFullPath($Root)) (Join-Path "profiles" $lockName)
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
         throw "Iris Ollama model lock is missing: $lockPath"
     }
@@ -64,11 +68,17 @@ function Get-IrisOllamaModelLock {
         throw "Iris manifest is missing: $manifestPath"
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ([string]$manifest.model_policy.provider -cne [string]$lock.provider -or
-        [string]$manifest.model_policy.model_id -cne [string]$lock.model_id -or
-        [string]$manifest.model_policy.architecture -cne [string]$lock.family -or
-        [string]$manifest.model_policy.parameter_size -cne [string]$lock.parameter_size) {
-        throw "manifest.json model policy differs from profiles/iris_ollama_model.lock.json."
+    $policy = if ($Role -eq "Vision") { $manifest.vision_model_policy } else { $manifest.model_policy }
+    if ($null -eq $policy -or
+        [string]$policy.provider -cne [string]$lock.provider -or
+        [string]$policy.model_id -cne [string]$lock.model_id -or
+        [string]$policy.architecture -cne [string]$lock.family -or
+        [string]$policy.parameter_size -cne [string]$lock.parameter_size) {
+        throw "manifest.json $($Role.ToLowerInvariant()) model policy differs from profiles/$lockName."
+    }
+    if ($Role -eq "Vision" -and
+        (-not [bool]$policy.general_vision_verified -or -not [bool]$lock.general_vision_verified)) {
+        throw "Iris vision model policy must remain release-verified for general vision."
     }
     return $lock
 }
@@ -203,10 +213,17 @@ function Get-IrisOllamaModelManifestPath {
 }
 
 function Get-IrisOllamaModelStoreCachePath {
+    param($Lock = $null)
+
     if ([string]::IsNullOrWhiteSpace($env:IRIS_DATA_ROOT)) {
         return $null
     }
-    return Join-Path ([System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT)) ".iris-data\cache\ollama-model-store-v1.json"
+    $cacheName = if ($null -ne $Lock -and [string]$Lock.model_id -ceq "qwen3.5:4b") {
+        "ollama-vision-model-store-v1.json"
+    } else {
+        "ollama-model-store-v1.json"
+    }
+    return Join-Path ([System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT)) (Join-Path ".iris-data\cache" $cacheName)
 }
 
 function Get-IrisOllamaModelLockDigest {
@@ -222,7 +239,9 @@ function Get-IrisOllamaModelLockDigest {
 }
 
 function Get-IrisOllamaModelStoreCache {
-    $cachePath = Get-IrisOllamaModelStoreCachePath
+    param($Lock = $null)
+
+    $cachePath = Get-IrisOllamaModelStoreCachePath -Lock $Lock
     if ($null -eq $cachePath -or -not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {
         return $null
     }
@@ -256,7 +275,7 @@ function Save-IrisOllamaModelStoreCache {
         [Parameter(Mandatory = $true)]$Lock
     )
 
-    $cachePath = Get-IrisOllamaModelStoreCachePath
+    $cachePath = Get-IrisOllamaModelStoreCachePath -Lock $Lock
     if ($null -eq $cachePath) {
         return
     }
@@ -307,7 +326,7 @@ function Get-IrisOllamaModelStoreVerification {
         if ($null -eq $manifest.config -or @($manifest.layers).Count -eq 0) {
             return $null
         }
-        $cache = Get-IrisOllamaModelStoreCache
+        $cache = Get-IrisOllamaModelStoreCache -Lock $Lock
         $cacheValid = $null -ne $cache -and
             [string]$cache.model_id -ceq [string]$Lock.model_id -and
             [string]$cache.models_root -ceq [System.IO.Path]::GetFullPath($ModelsRoot) -and
@@ -406,15 +425,7 @@ function Find-IrisOllamaModelStore {
     $candidatePaths = @($Candidates | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object {
             try { [System.IO.Path]::GetFullPath([string]$_) } catch { }
         })
-    $cache = Get-IrisOllamaModelStoreCache
-    $orderedCandidates = @()
-    if ($null -ne $cache) {
-        $cachedRoot = [System.IO.Path]::GetFullPath([string]$cache.models_root)
-        if (@($candidatePaths | Where-Object { $_ -ieq $cachedRoot }).Count -gt 0) {
-            $orderedCandidates += $cachedRoot
-        }
-    }
-    $orderedCandidates += $candidatePaths
+    $orderedCandidates = $candidatePaths
     $seen = @{}
     foreach ($candidate in $orderedCandidates) {
         try {
@@ -450,25 +461,32 @@ function Set-IrisOllamaModelStoreAttestation {
         verified_at_unix_ms = [long][DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
         descriptors = @($Verification.Descriptors)
     }
-    $env:IRIS_OLLAMA_MODEL_STORE_ATTESTATION_V1 = $attestation | ConvertTo-Json -Depth 5 -Compress
+    $environmentName = if ([string]$Lock.model_id -ceq "qwen3.5:4b") {
+        "IRIS_OLLAMA_VISION_MODEL_STORE_ATTESTATION_V1"
+    } else {
+        "IRIS_OLLAMA_MODEL_STORE_ATTESTATION_V1"
+    }
+    Set-Item -Path "Env:$environmentName" -Value ($attestation | ConvertTo-Json -Depth 5 -Compress)
 }
 
 function Assert-IrisOllamaModelIdentity {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
         [string]$ModelsRoot = "",
-        [int]$TimeoutSeconds = 15
+        [int]$TimeoutSeconds = 15,
+        [ValidateSet("Primary", "Vision")][string]$Role = "Primary"
     )
 
-    $lock = Get-IrisOllamaModelLock -Root $Root
+    $lock = Get-IrisOllamaModelLock -Root $Root -Role $Role
     if ([string]::IsNullOrWhiteSpace($ModelsRoot)) {
-        $candidates = @("C:\.ollama")
+        $candidates = @()
         if (-not [string]::IsNullOrWhiteSpace($env:OLLAMA_MODELS)) {
-            $candidates = @($env:OLLAMA_MODELS) + $candidates
+            $candidates += $env:OLLAMA_MODELS
         }
         if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
             $candidates += Join-Path $env:USERPROFILE ".ollama\models"
         }
+        $candidates += "C:\.ollama"
         $verification = Find-IrisOllamaModelStore -Candidates $candidates -Lock $lock
     } else {
         $verification = Get-IrisOllamaModelStoreVerification -ModelsRoot $ModelsRoot -Lock $lock

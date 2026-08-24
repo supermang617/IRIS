@@ -8,6 +8,7 @@ export const RUNTIME_PREPARING_STATUS =
   "Iris is still preparing the local model and voice runtime.";
 
 export function classifyVoiceTranscript(transcript, state) {
+  const voiceState = state || {};
   const normalized = normalizeTranscript(transcript);
   if (!normalized) {
     return { action: "ignore", prompt: "", source: "voice", status: "No speech transcript captured." };
@@ -16,7 +17,18 @@ export function classifyVoiceTranscript(transcript, state) {
     return { action: "ignore", prompt: "", source: "voice", status: "No speech transcript captured." };
   }
 
-  if (state.interruptionOnly) {
+  if (voiceState.sleeping) {
+    if (isWakeFromSleepCommand(normalized)) {
+      return { action: "wake-from-sleep", prompt: "", source: "wake-word", status: "Awake." };
+    }
+    return { action: "sleep-ignore", prompt: "", source: "sleep", status: "Sleeping. Say Iris wake up." };
+  }
+
+  if (isSleepCommand(normalized)) {
+    return { action: "sleep", prompt: "", source: "sleep", status: "Sleeping. Say Iris wake up." };
+  }
+
+  if (voiceState.interruptionOnly) {
     const interruption = interruptionMatch(normalized);
     if (interruption) {
       return {
@@ -26,15 +38,10 @@ export function classifyVoiceTranscript(transcript, state) {
         status: "Interrupted."
       };
     }
-    const wakeMatch = findWakeMatch(normalized);
+    const wakeMatch = findStrongWakeMatch(normalized);
     if (wakeMatch) {
-      const prompt = wakeMatch.index === 0
-        ? normalized.slice(wakeMatch.length).trim()
-        : "";
+      const prompt = normalized.slice(wakeMatch.length).trim();
       return { action: "interrupt", prompt, source: "interruption", status: "Interrupted." };
-    }
-    if (isBareWakeWord(normalized)) {
-      return { action: "interrupt", prompt: "", source: "interruption", status: "Interrupted." };
     }
 
     return { action: "ignore", prompt: "", source: "interruption", status: "Listening for interruption." };
@@ -44,17 +51,21 @@ export function classifyVoiceTranscript(transcript, state) {
     return { action: "interrupt", prompt: "", source: "interruption", status: "Interrupted." };
   }
 
-  if (state.voiceLoop) {
+  if (voiceState.wakeCommandArmed) {
+    return { action: "submit", prompt: normalized, source: "wake-followup", status: `Heard: ${normalized}` };
+  }
+
+  if (voiceState.voiceLoop) {
     return { action: "submit", prompt: normalized, source: "voice-loop", status: `Heard: ${normalized}` };
   }
 
-  if (!state.wakeWord) {
+  if (!voiceState.wakeWord) {
     return { action: "submit", prompt: normalized, source: "voice", status: `Heard: ${normalized}` };
   }
 
-  const wakeMatch = findWakeMatch(normalized);
+  const wakeMatch = findStrongWakeMatch(normalized);
   if (wakeMatch) {
-    const prompt = normalized.slice(wakeMatch.index + wakeMatch.length).trim();
+    const prompt = normalized.slice(wakeMatch.length).trim();
     if (prompt && !isWakeOnlyPrompt(prompt)) {
       return { action: "submit", prompt, source: "wake-word", status: `Heard: ${normalized}` };
     }
@@ -67,8 +78,13 @@ export function classifyVoiceTranscript(transcript, state) {
     };
   }
 
-  if (state.wakeCommandArmed) {
-    return { action: "submit", prompt: normalized, source: "wake-followup", status: `Heard: ${normalized}` };
+  if (isShortStandaloneWeakWake(normalized)) {
+    return {
+      action: "arm-wake-followup",
+      prompt: "",
+      source: "wake-word",
+      status: "Wake word heard. Listening for your request."
+    };
   }
 
   return { action: "wait-for-wake", prompt: "", source: "wake-word", status: "Waiting for wake word: Iris." };
@@ -101,6 +117,17 @@ export function classifyAsrError(error) {
     normalized === "no-speech"
   ) {
     return { severity: "nonfatal", event: "native_asr_no_input", status: "No speech transcript captured." };
+  }
+  if (
+    normalized.includes("windows audio device handle became invalid") ||
+    normalized.includes("hresult(0x80070006)") ||
+    normalized.includes("the handle is invalid")
+  ) {
+    return {
+      severity: "nonfatal",
+      event: "native_asr_transient_error",
+      status: "Audio capture reset. Retrying microphone."
+    };
   }
   return { severity: "error", event: "native_asr_error", status: message || "Native ASR failed." };
 }
@@ -180,7 +207,14 @@ export function shouldDisplayVoiceTranscript(decision) {
   return decision?.action === "preview-transcript";
 }
 
-export function nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop }) {
+export function voiceSubmitKeepsSession(source) {
+  return ["voice", "voice-loop", "wake-word", "wake-followup", "voice-session"].includes(source);
+}
+
+export function nextVoiceListenMode({ sleeping = false, wakeCommandArmed, wakeWord, voiceLoop }) {
+  if (sleeping) {
+    return "wake";
+  }
   if (wakeCommandArmed) {
     return "command";
   }
@@ -194,10 +228,7 @@ export function nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop }) {
 }
 
 export function shouldContinueVoiceSession(decision) {
-  return (
-    decision?.action === "submit" &&
-    ["voice", "voice-loop", "wake-word", "wake-followup", "voice-session"].includes(decision.source)
-  );
+  return decision?.action === "submit" && voiceSubmitKeepsSession(decision.source);
 }
 
 export function interruptionSignalIsCurrent(signal, state) {
@@ -226,6 +257,12 @@ export function interruptionCandidatePauseAllowed(rejectedPauses, maximumRejecte
   const rejected = Math.max(0, Number(rejectedPauses) || 0);
   const maximum = Math.max(1, Number(maximumRejectedPauses) || 2);
   return rejected < maximum;
+}
+
+export function interruptionSignalAllowsSpeculativePause(signal) {
+  const aecApplied = signal?.aecApplied ?? signal?.aec_applied;
+  const rawFallbackAllowed = signal?.rawFallbackAllowed ?? signal?.raw_fallback_allowed;
+  return aecApplied === true || rawFallbackAllowed === true;
 }
 
 export function interruptionRetryDelayMs(completedAttempts, rejectedPauses) {
@@ -324,41 +361,75 @@ function isInterruption(text) {
 }
 
 function interruptionMatch(text) {
-  const match = text.match(
-    /^(?:iris[\s,.:;!?-]+)?(?:stop|pause|quiet|cancel|interrupt)\b[\s,.:;!?-]*/i
-  );
+  const match = text.match(interruptionPattern());
   return match ? { end: match[0].length } : null;
-}
-
-function isBareWakeWord(text) {
-  return (
-    /^(?:hey|hi|okay|ok)?\s*(?:iris|irish|airis|eyeris|aires|ares|aris|eris|i\s+reese)[\s,.:;!?-]*$/i.test(
-      text
-    ) || /^eric\s+sway\s*up[\s,.:;!?-]*$/i.test(text)
-  );
 }
 
 function isWakeOnlyPrompt(text) {
   return /^(wake\s*up|wake|wakeup|hello|hi|hey)[\s,.:;!?-]*$/i.test(text);
 }
 
-function findWakeMatch(text) {
-  const patterns = [
-    /\b(?:hey|hi|okay|ok)\s+(?:iris|irish|airis|eyeris|aires|ares|aris|eris)\b[\s,.:;!?-]*/i,
-    /\b(?:iris|irish|airis|eyeris|aires|ares|aris|eris)\b[\s,.:;!?-]*/i,
-    /\bi\s+reese\b[\s,.:;!?-]*/i,
-    /\beric\s+sway\s*up\b[\s,.:;!?-]*/i,
-    /\bhi\s+i'?m\s+eric\s+sway\s*up\b[\s,.:;!?-]*/i,
-    /\bi\s+always\b[\s,.:;!?-]*/i,
-    /\bi\s+(?:are|hear|here)\s+a?\s*wake\s*up\b[\s,.:;!?-]*/i
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match) {
-      return { index: match.index || 0, length: match[0].length };
-    }
+function isWakeFromSleepCommand(text) {
+  const wakeMatch = findStrongWakeMatch(text);
+  if (!wakeMatch) {
+    return false;
   }
-  return null;
+  const prompt = text.slice(wakeMatch.length).trim();
+  return /^(?:wake\s*up|wakeup|wake\s+back\s+up)[\s,.:;!?-]*$/i.test(prompt);
+}
+
+function isSleepCommand(text) {
+  return sleepCommandPattern().test(text);
+}
+
+function findStrongWakeMatch(text) {
+  const match = text.match(strongWakePattern());
+  return match ? { length: match[0].length } : null;
+}
+
+function isShortStandaloneWeakWake(text) {
+  if (text.length > 32) {
+    return false;
+  }
+  return (
+    weakWakePattern().test(text) ||
+    /^(?:hi\s+i'?m\s+)?eric\s+sway\s*up[\s,.:;!?-]*$/i.test(text) ||
+    /^i\s+(?:are|hear|here)\s+a?\s*wake\s*up[\s,.:;!?-]*$/i.test(text)
+  );
+}
+
+function wakeLeadInSource() {
+  return "(?:(?:hey|hi|hello|okay|ok)(?:\\s+there)?[\\s,.:;!?-]+)?";
+}
+
+function strongWakeSource() {
+  return "(?:iris|irish|airis|eyeris|i\\s+reese)";
+}
+
+function weakWakeSource() {
+  return "(?:aires|ares|aris|eris)";
+}
+
+function strongWakePattern() {
+  return new RegExp(`^${wakeLeadInSource()}${strongWakeSource()}\\b[\\s,.:;!?-]*`, "i");
+}
+
+function weakWakePattern() {
+  return new RegExp(`^${wakeLeadInSource()}${weakWakeSource()}\\b[\\s,.:;!?-]*$`, "i");
+}
+
+function interruptionPattern() {
+  return new RegExp(
+    `^(?:${wakeLeadInSource()}(?:${strongWakeSource()}|${weakWakeSource()})[\\s,.:;!?-]+)?(?:stop|pause|quiet|cancel|interrupt)\\b[\\s,.:;!?-]*`,
+    "i"
+  );
+}
+
+function sleepCommandPattern() {
+  return new RegExp(
+    `^(?:${wakeLeadInSource()}(?:${strongWakeSource()}|${weakWakeSource()})[\\s,.:;!?-]+)?(?:sleep|go\\s+sleep|go\\s+to\\s+sleep|stop\\s+(?:and\\s+)?(?:go\\s+to\\s+)?sleep)\\b[\\s,.:;!?-]*(?:now|please|for\\s+now)?[\\s,.:;!?-]*$`,
+    "i"
+  );
 }
 
 function normalizeTranscript(text) {

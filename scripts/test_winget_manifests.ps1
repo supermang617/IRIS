@@ -250,6 +250,8 @@ try {
     }
     if (-not $locale.Contains("launch Iris from the Windows Start menu") -or
         -not $locale.Contains("ollama pull huihui_ai/gemma-4-abliterated:e2b") -or
+        -not $locale.Contains("ollama pull qwen3.5:4b") -or
+        -not $locale.Contains("raw visual projector canary") -or
         -not $locale.Contains("includes its pinned Python voice packages") -or
         -not $locale.Contains("Google Chrome supplies the separately isolated browser engine") -or
         -not $locale.Contains("WebView2 powers the Iris desktop shell") -or

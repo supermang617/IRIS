@@ -35,6 +35,33 @@ if ($verified.ModelId -cne [string]$lock.model_id -or $verified.GeneralVisionVer
     throw "The verified model identity or general-vision policy is incorrect."
 }
 
+$visionLock = Get-IrisOllamaModelLock -Root $repoRoot -Role Vision
+if ([string]$visionLock.model_id -cne "qwen3.5:4b" -or
+    [string]$visionLock.manifest_digest -cne "2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd" -or
+    [string]$visionLock.model_layer_digest -cne "sha256:81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490" -or
+    [int64]$visionLock.total_bytes -ne 3389983735 -or
+    -not [bool]$visionLock.general_vision_verified) {
+    throw "The embedded visual model lock differs from the audited Qwen profile."
+}
+$visionTagModel = [pscustomobject]@{
+    name = $visionLock.model_id
+    digest = $visionLock.manifest_digest
+    size = $visionLock.total_bytes
+    details = [pscustomobject]@{
+        family = $visionLock.family
+        parameter_size = $visionLock.parameter_size
+        quantization_level = $visionLock.quantization_level
+    }
+}
+$visionShow = [pscustomobject]@{
+    details = $visionTagModel.details
+    capabilities = @($visionLock.required_capabilities)
+}
+$visionVerified = Assert-IrisOllamaModelIdentityData -Lock $visionLock -TagModel $visionTagModel -Show $visionShow
+if (-not $visionVerified.GeneralVisionVerified) {
+    throw "The Qwen visual lock must remain release-verified for general vision."
+}
+
 $badDigest = $tagModel.PSObject.Copy()
 $badDigest.digest = "0" * 64
 try {
@@ -97,6 +124,11 @@ try {
     $warmVerification = Get-IrisOllamaModelStoreVerification -ModelsRoot $storeRoot -Lock $fixtureLock
     if ($null -eq $warmVerification -or -not $warmVerification.CacheHit) {
         throw "Unchanged exact model store did not use its compact verification cache."
+    }
+    $preferredSelection = Find-IrisOllamaModelStore -Candidates @($secondStoreRoot, $storeRoot) -Lock $fixtureLock
+    if ($null -eq $preferredSelection -or
+        [System.IO.Path]::GetFullPath([string]$preferredSelection.ModelsRoot) -cne [System.IO.Path]::GetFullPath($secondStoreRoot)) {
+        throw "Persistent model-store cache unexpectedly outranked the preferred exact candidate."
     }
     [byte[]]$sameSizeCorruption = $modelBytes.Clone()
     $sameSizeCorruption[0] = $sameSizeCorruption[0] -bxor 1
@@ -193,8 +225,10 @@ FROM inside license text
 }
 
 if ($Live) {
-    $liveIdentity = Assert-IrisOllamaModelIdentity -Root $repoRoot
+    $liveIdentity = Assert-IrisOllamaModelIdentity -Root $repoRoot -Role Primary
+    $liveVisionIdentity = Assert-IrisOllamaModelIdentity -Root $repoRoot -Role Vision
     Write-Host "Live Ollama identity verified: $($liveIdentity.ModelId)@$($liveIdentity.ManifestDigest)"
+    Write-Host "Live Ollama vision identity verified: $($liveVisionIdentity.ModelId)@$($liveVisionIdentity.ManifestDigest)"
 }
 
 Write-Host "Iris Ollama model lock tests passed."

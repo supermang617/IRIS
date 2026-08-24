@@ -27,7 +27,8 @@ source code, not third-party model files or downloaded assets.
 
 Model traffic remains local to Ollama loopback. Safe mode does not act.
 An explicitly approved Agentic Session can use the packaged Hermes file,
-PowerShell, process, and isolated browser tools. High-risk actions require
+patch/search, and isolated browser tools. Arbitrary shell and process tools are
+not exposed. High-risk actions require
 separate confirmation, the browser uses an isolated, nonpersistent Iris session, and clipboard,
 mouse, keyboard, general window control, arbitrary plugins, and cloud model APIs
 remain unavailable.
@@ -77,12 +78,13 @@ package notes, then launch Iris from the Windows Start menu:
 
 ```powershell
 ollama pull huihui_ai/gemma-4-abliterated:e2b
+ollama pull qwen3.5:4b
 ```
 
 The first production WinGet-compatible Iris release uses immutable semantic
 tag `v1.0.0`; later releases increment it. Rust is not an end-user dependency. Hermes' pinned packages ship with
 Iris and use WinGet-managed Python 3.13, llama inference ships with Ollama, and
-the selected Ollama model remains an explicit first-run download rather than a
+the two fixed-role Ollama models remain explicit first-run downloads rather than a
 WinGet payload.
 
 ## Portable/Advanced Download
@@ -111,7 +113,7 @@ First run the setup wizard:
 .\Iris Setup Wizard.bat
 ```
 
-It checks Windows, RAM, disk space, WebView2, Ollama, the configured model,
+It checks Windows, RAM, disk space, WebView2, Ollama, both configured models,
 Tesseract OCR, Kokoro/Whisper assets, exact Python 3.13, the Iris-owned
 hash-locked voice package layer, and local-only policy. It shows
 PASS/WARN/FAIL steps, official links, and
@@ -159,7 +161,7 @@ process, CurrentUser, or machine override. On first run it persists
 so the separately running Ollama server can inherit them. If Ollama was already
 running when those values were first initialized, Iris restarts that server
 once to apply them. `OLLAMA_NUM_PARALLEL=1` and
-`OLLAMA_MAX_LOADED_MODELS=1` remain process-only so Iris does not globally
+`OLLAMA_MAX_LOADED_MODELS=2` remain process-only so Iris does not globally
 restrict other Ollama clients.
 
 For a non-destructive startup check:

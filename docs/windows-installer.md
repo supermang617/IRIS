@@ -124,8 +124,11 @@ The installer does not change Iris runtime permissions. Iris remains local-only:
 - no cloud model/API dependency;
 - no clipboard access;
 - no general window, mouse, or keyboard automation;
-- Agentic browser, file, PowerShell, and process tools only through explicit
-  Iris session approval and high-risk confirmation;
+- Agentic browser, file, PowerShell, and process tools are not broadly exposed:
+  browser and safe file/patch/search tools require explicit Iris session
+  approval and high-risk confirmation, while arbitrary shell and process
+  execution remain disabled;
+- no arbitrary shell or process tool exposure;
 - no unapproved model-output-driven execution.
 
 The setup wizard can offer allowlisted prerequisite installs or downloads only
@@ -165,10 +168,10 @@ then performs a one-time registered MSIX install. It neither overwrites newer
 state nor removes the originals. Confirm the Start-menu MSIX works before
 uninstalling the old managed files.
 
-For a genuinely fresh MSIX install, WinGet displays the one large user-owned
-first-run command: pull the configured Ollama model with
-`ollama pull huihui_ai/gemma-4-abliterated:e2b`. Iris does not hide that
-multi-gigabyte network operation inside application startup. The pinned voice
+For a genuinely fresh MSIX install, WinGet displays the two user-owned
+first-run commands: `ollama pull huihui_ai/gemma-4-abliterated:e2b` and
+`ollama pull qwen3.5:4b`. Iris does not hide those multi-gigabyte network
+operations inside application startup. The pinned voice
 packages ship as an Iris-owned layer and update with Iris itself.
 
 WinGet upgrades require monotonically increasing package versions and immutable
@@ -207,9 +210,14 @@ omitted; the release uses the independently updateable exact Python 3.13
 runtime instead of pretending the build-machine interpreter is portable.
 
 The release ships the pinned Windows agent-browser controller but not a
-duplicate browser engine. WinGet installs and updates Google Chrome; Iris
-launches it in a separate, domain-contained, nonpersistent session and never
-reuses the user's normal browser profile. Headed manual sign-ins last only for
-the current session. This removes roughly 415 MiB uncompressed (about
-188 MiB from the ZIP in the measured v1 staging build) while retaining the
-same browser capability and improving browser security-update cadence.
+duplicate browser engine. The controller remains API-compatible with
+agent-browser 0.33.2 and carries Iris's fail-closed startup-race repair; its
+official upstream PR head, source patch, archive, and executable are SHA-256
+bound under `third_party/agent-browser/`. The compact source archive is a
+provisioning input only and is not copied into the release. WinGet installs
+and updates Google Chrome; Iris launches it in a separate, domain-contained,
+nonpersistent session and never reuses the user's normal browser profile.
+Headed manual sign-ins last only for the current session. This removes roughly
+415 MiB uncompressed (about 188 MiB from the ZIP in the measured v1 staging
+build) while retaining the same browser capability and improving browser
+security-update cadence.

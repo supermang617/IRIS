@@ -140,8 +140,9 @@ The signed installer path must not change Iris runtime permissions:
 - no cloud model/API runtime;
 - no clipboard control;
 - no general window automation;
-- Agentic browser, shell, and process tools only through the reviewed,
+- Agentic browser, file, and patch/search tools only through the reviewed,
   approval-gated Hermes session;
+- no arbitrary shell or process tool exposure;
 - no model-output-driven high-risk action without separate confirmation;
 - no local memory exposure outside Iris-owned boundaries.
 

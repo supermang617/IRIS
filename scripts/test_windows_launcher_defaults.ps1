@@ -45,15 +45,25 @@ foreach ($source in @($sourceLauncher, $packageScript)) {
     foreach ($fragment in @(
             'iris_ollama_model_lock.ps1',
             'Assert-IrisOllamaModelIdentity',
-            '$candidates = @("C:\.ollama")',
+            '$candidates = @()',
             'if (-not [string]::IsNullOrWhiteSpace($env:OLLAMA_MODELS))',
-            '$candidates = @($env:OLLAMA_MODELS) + $candidates',
+            '$candidates += $env:OLLAMA_MODELS',
+            '$candidates += Join-Path $env:USERPROFILE ".ollama\models"',
+            '$candidates += "C:\.ollama"',
             '-ModelsRoot $env:OLLAMA_MODELS',
+            '-Role Vision',
+            'Get-IrisVisionModelId',
+            'primary and vision models must be installed in the same verified Ollama model store',
             'Iris refuses to use an Ollama model that differs from its immutable model lock.'
         )) {
         if (-not $source.Contains($fragment)) {
             throw "Launcher must fail closed on Ollama model identity drift; missing: $fragment"
         }
+    }
+    $userStoreIndex = $source.IndexOf('$candidates += Join-Path $env:USERPROFILE ".ollama\models"', [StringComparison]::Ordinal)
+    $legacyStoreIndex = $source.IndexOf('$candidates += "C:\.ollama"', [StringComparison]::Ordinal)
+    if ($userStoreIndex -lt 0 -or $legacyStoreIndex -lt 0 -or $userStoreIndex -gt $legacyStoreIndex) {
+        throw "Launcher must prefer the normal Windows user Ollama store before the legacy C:\.ollama fallback."
     }
     if ($source.Contains('Set-IrisOllamaDefault -Name "OLLAMA_HOST"') -or
         $source.Contains('OLLAMA_HOST" -PersistForCurrentUser')) {
@@ -94,7 +104,7 @@ foreach ($source in @($sourceLauncher, $packageScript)) {
     }
     foreach ($processOnlyDefault in @(
             'Set-IrisOllamaDefault -Name "OLLAMA_NUM_PARALLEL" -Value "1"',
-            'Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "1"'
+            'Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "2"'
         )) {
         if (-not $source.Contains($processOnlyDefault) -or $source.Contains("$processOnlyDefault -PersistForCurrentUser")) {
             throw "Ollama concurrency default must remain process-only: $processOnlyDefault"

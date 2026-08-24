@@ -143,8 +143,10 @@ if (-not (Test-Path -LiteralPath $ollamaModelLockHelper -PathType Leaf)) {
 . $ollamaModelLockHelper
 $ollamaModelLock = Get-IrisOllamaModelLock -Root $root
 $modelId = [string]$ollamaModelLock.model_id
+$ollamaVisionModelLock = Get-IrisOllamaModelLock -Root $root -Role Vision
+$visionModelId = [string]$ollamaVisionModelLock.model_id
 $minimumRamGb = 16
-$recommendedFreeDiskGb = 12
+$recommendedFreeDiskGb = 16
 $reportRoot = if ($env:IRIS_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT) } else { $root }
 $reportDir = Join-Path $reportRoot "diagnostics"
 $reportPath = Join-Path $reportDir "preflight-report.txt"
@@ -498,15 +500,13 @@ function Find-Tesseract {
 
 function Test-ConfiguredModelIdentity {
     try {
-        $identity = Assert-IrisOllamaModelIdentity -Root $root -TimeoutSeconds 15
+        $identity = Assert-IrisOllamaModelIdentity -Root $root -TimeoutSeconds 15 -Role Primary
         Add-Check -Status "PASS" -Name "Configured Ollama model identity" -Detail "$($identity.ModelId) matches locked digest $($identity.ManifestDigest), family $($identity.Family), quantization $($identity.QuantizationLevel), and required capabilities." -Repair "No action needed."
-        if ($identity.GeneralVisionVerified) {
-            Add-Check -Status "PASS" -Name "General vision policy" -Detail "The locked model passed Iris' general-vision release canary." -Repair "No action needed."
-        } else {
-            Add-Check -Status "WARN" -Name "General vision policy" -Detail "General scene descriptions remain fail-closed by explicit model-lock policy; bounded OCR and simple visual evidence remain available." -Repair "No repair is required. Change this policy only after the exact locked model passes the raw-image release canary."
-        }
+        $visionIdentity = Assert-IrisOllamaModelIdentity -Root $root -TimeoutSeconds 15 -Role Vision
+        Add-Check -Status "PASS" -Name "Configured Ollama vision model identity" -Detail "$($visionIdentity.ModelId) matches locked digest $($visionIdentity.ManifestDigest), family $($visionIdentity.Family), quantization $($visionIdentity.QuantizationLevel), and release-verified general vision policy." -Repair "No action needed."
+        Add-Check -Status "PASS" -Name "General vision policy" -Detail "Camera, image, and broad screen inference use Iris's exact release-verified local visual model; text, tools, and Hermes remain on the primary companion model." -Repair "No action needed."
     } catch {
-        Add-Check -Status "FAIL" -Name "Configured Ollama model identity" -Detail $_.Exception.Message -Repair "Run `ollama pull $modelId` once to repair a missing or corrupt local model, verify Ollama is using the intended model store, then rerun this preflight. If the locked digest still differs, update Iris or restore the audited model store. Iris will not infer with mismatched model metadata."
+        Add-Check -Status "FAIL" -Name "Configured Ollama model identity" -Detail $_.Exception.Message -Repair "Run `ollama pull $modelId` and `ollama pull $visionModelId` once to repair missing or corrupt local models, verify Ollama is using the intended model store, then rerun this preflight. Iris will not infer with mismatched model metadata."
     }
 }
 
@@ -581,11 +581,11 @@ if ($ollamaPath) {
         $ollamaList = Invoke-PreflightProbe -FilePath $ollamaPath -Arguments "list" -TimeoutSeconds 20
         $tags = @($ollamaList.Output, $ollamaList.Error) -join "`n"
         if ($ollamaList.ExitCode -eq 0) {
-            if ($tags.Contains($modelId)) {
-                Add-Check -Status "PASS" -Name "Configured Ollama model" -Detail "$modelId is available locally." -Repair "No action needed."
+            if ($tags.Contains($modelId) -and $tags.Contains($visionModelId)) {
+                Add-Check -Status "PASS" -Name "Configured Ollama model" -Detail "$modelId and $visionModelId are available locally." -Repair "No action needed."
                 Test-ConfiguredModelIdentity
             } else {
-                Add-Check -Status "FAIL" -Name "Configured Ollama model" -Detail "$modelId is not listed by the current Ollama service." -Repair "Install or point Ollama at the existing local model store for $modelId, then rerun this preflight. This script will not pull models automatically."
+                Add-Check -Status "FAIL" -Name "Configured Ollama model" -Detail "One or both required models are not listed by the current Ollama service: $modelId, $visionModelId." -Repair "Install or point Ollama at the existing local model store for both exact models, then rerun this preflight. This script will not pull models automatically."
             }
         } else {
             Add-Check -Status "FAIL" -Name "Ollama service" -Detail "ollama list failed or timed out: $tags" -Repair "Start Ollama, then rerun this preflight."
@@ -710,6 +710,7 @@ $jsonPayload = [ordered]@{
     root = $root
     generated = $generated
     model_id = $modelId
+    vision_model_id = $visionModelId
     summary = [ordered]@{
         "pass" = $passCount
         "warn" = $warnCount

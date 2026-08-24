@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "provider": "ollama_local",
+  "model_id": "qwen3.5:4b",
+  "manifest_digest": "2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd",
+  "model_layer_digest": "sha256:81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490",
+  "total_bytes": 3389983735,
+  "family": "qwen35",
+  "parameter_size": "4.7B",
+  "quantization_level": "Q4_K_M",
+  "required_capabilities": [
+    "completion",
+    "thinking",
+    "tools",
+    "vision"
+  ],
+  "general_vision_verified": true
+}

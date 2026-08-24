@@ -561,8 +561,6 @@ pub fn runtime_status(resource_root: &Path, state_root: &Path) -> HermesAcpRunti
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",

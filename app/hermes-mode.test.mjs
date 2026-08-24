@@ -34,10 +34,10 @@ test("Hermes mode formatter exposes active session boundary", () => {
       sessionId: "session-1",
       workspacePath: "C:\\Projects\\IRIS",
       expiresAtMs: 1_800_000,
-      workspaceBoundary: "advisory_unrestricted_powershell"
+      workspaceBoundary: "selected_workspace_no_shell_process"
     }
   });
   assert.match(formatted, /Hermes mode: agentic/);
   assert.match(formatted, /Session: session-1/);
-  assert.match(formatted, /advisory_unrestricted_powershell/);
+  assert.match(formatted, /selected_workspace_no_shell_process/);
 });

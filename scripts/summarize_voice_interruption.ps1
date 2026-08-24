@@ -30,7 +30,7 @@ $records = New-Object System.Collections.Generic.List[object]
 $lineNumber = 0
 $latest = $null
 $latestTimestampMs = [long]::MinValue
-foreach ($line in Get-Content -LiteralPath $resolved) {
+foreach ($line in Get-Content -LiteralPath $resolved -Encoding UTF8) {
     $lineNumber += 1
     if (-not $line.Trim()) {
         continue
@@ -312,9 +312,24 @@ $candidateDetails = @(
         Where-Object { [string]$_.event -eq "speech_interruption_vad_candidate" } |
         ForEach-Object { [string]$_.detail }
 )
+$resultDetails = @(
+    $session |
+        Where-Object { [string]$_.event -eq "speech_interruption_result" } |
+        ForEach-Object { [string]$_.detail }
+)
+$aecPrepared = Get-EventCount -Name "speech_aec_prepared"
+$aecUnavailable = Get-EventCount -Name "speech_aec_unavailable"
 $inputDevices = @(Get-DeviceLabels -EventName "audio_input_device")
 $outputDevices = @(Get-DeviceLabels -EventName "audio_output_device")
-$aecStatus = if ($candidateDetails.Count -gt 0 -and @($candidateDetails | Where-Object { $_ -notmatch "(?:^|;\s*)aec=false(?:;|$)" }).Count -eq 0) {
+$aecAppliedEvidence = @(
+    @($candidateDetails) + @($resultDetails) |
+        Where-Object { $_ -match "(?:^|;\s*)aec=true(?:;|$)" }
+).Count
+$aecStatus = if ($aecAppliedEvidence -gt 0) {
+    "applied"
+} elseif ($aecPrepared -gt 0) {
+    "prepared-not-applied"
+} elseif ($candidateDetails.Count -gt 0 -and @($candidateDetails | Where-Object { $_ -notmatch "(?:^|;\s*)aec=false(?:;|$)" }).Count -eq 0) {
     "not-enabled"
 } else {
     "not-proven"
@@ -345,6 +360,9 @@ $summary = [pscustomobject]@{
     missed_expected_interruptions = $missed
     unexpected_cancellations = $unexpected
     interruption_errors = $errors
+    aec_prepared_events = $aecPrepared
+    aec_unavailable_events = $aecUnavailable
+    aec_applied_evidence = $aecAppliedEvidence
     median_capture_to_vad_ms = Get-Median -Values (Get-DetailMetric -EventName "speech_interruption_vad_candidate" -Metric "capture_to_vad_ms")
     median_vad_to_pause_ms = Get-Median -Values (Get-DetailMetric -EventName "speech_interruption_vad_pause" -Metric "vad_to_pause_ms" -RequiredDetailPattern "(?:^|;\s*)paused=true(?:;|$)")
     median_resolution_ms = Get-Median -Values (Get-DetailMetric -EventName "speech_interruption_detected" -Metric "resolution_ms")

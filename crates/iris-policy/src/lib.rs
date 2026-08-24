@@ -1,6 +1,6 @@
 pub const SYSTEM_CONTROL: &str =
-    "System Control: Safe mode unsupported; Agentic Session approval-gated";
-pub const EXECUTOR: &str = "Executor: Agentic Session only";
+    "System Control: Fixed Iris actions only; Agentic Session tool use approval-gated";
+pub const EXECUTOR: &str = "Executor: No arbitrary shell or process tool";
 pub const INPUT_SIMULATION: &str = "Input Simulation: Not present";
 pub const CLIPBOARD_ACCESS: &str = "Clipboard Access: Not present";
 pub const RUNTIME_NETWORK: &str =
@@ -29,6 +29,8 @@ pub const FORBIDDEN_CAPABILITIES: &[&str] = &[
     "dynamic_plugin_loading",
     "dynamic_code_loading",
     "runtime_scripting",
+    "arbitrary_shell",
+    "arbitrary_process_execution",
     "accessibility_tree_control",
     "window_manipulation",
 ];
@@ -209,8 +211,8 @@ mod tests {
 
     #[test]
     fn policy_constants_are_exact() {
-        assert!(SYSTEM_CONTROL.contains("Safe mode unsupported"));
-        assert_eq!(EXECUTOR, "Executor: Agentic Session only");
+        assert!(SYSTEM_CONTROL.contains("Fixed Iris actions only"));
+        assert_eq!(EXECUTOR, "Executor: No arbitrary shell or process tool");
         assert_eq!(INPUT_SIMULATION, "Input Simulation: Not present");
         assert_eq!(CLIPBOARD_ACCESS, "Clipboard Access: Not present");
         assert!(RUNTIME_NETWORK.contains("explicitly requested"));

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "package": {
+    "name": "agent-browser",
+    "version": "0.33.2",
+    "npm_integrity": "sha512-e+TZ0G04uw2rs+lVB8gn0IWTT7ErfiAl3jQ4zNNwyqDhgXWJKhqxYKkyibjuBGXLzx/APlzU3IWAsOVdRwh0DA=="
+  },
+  "source": {
+    "repository": "https://github.com/vercel-labs/agent-browser.git",
+    "issue": "https://github.com/vercel-labs/agent-browser/issues/1651",
+    "pull_request": "https://github.com/vercel-labs/agent-browser/pull/1655",
+    "pull_request_head": "c21c9b741a1eb23218c2bc9d165dc9c0af718604",
+    "pull_request_parent": "acbc22bdc5d4f6c5a88d97d4a4745d3c5eb0591f",
+    "local_patch": "iris-default-context-race.patch",
+    "local_patch_sha256": "b62c7599e3e185e92813f3e891b0e446da54ad1bdc7810f9c6e0bb5750e2a36f"
+  },
+  "build": {
+    "target": "x86_64-pc-windows-msvc",
+    "command": "cargo build --release --locked --manifest-path cli/Cargo.toml"
+  },
+  "artifact": {
+    "archive": "agent-browser-win32-x64.zip",
+    "archive_bytes": 5650150,
+    "archive_sha256": "4b7e61f0c106b679f9451f146bdd6a3c7ef33f2287a490605e40ca049240a04f",
+    "executable": "agent-browser-win32-x64.exe",
+    "executable_bytes": 14817280,
+    "executable_sha256": "87ec662f82290a9f841808808f3d6934ae6502544da9ef564dafb634761dc86c"
+  },
+  "validation": {
+    "chrome_for_testing_version": "149.0.7827.115",
+    "chrome_executable_sha256": "815ac13164ee3a5fa15a0e119fe868ec8d6ef6b3bd16bbe35ddd1da57c515c56",
+    "allowed_navigation": "https://www.youtube.com/watch?v=CFGLoQIhmow",
+    "blocked_navigation": "https://example.com/",
+    "blocked_navigation_error": "Domain 'example.com' is not in the allowed domains list"
+  }
+}

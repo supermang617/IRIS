@@ -120,9 +120,37 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          choco install llvm --version=22.1.7 -y --no-progress
+          $expectedClangPattern = "^clang version 22\.1\.7\b"
+          $clangPath = "C:\Program Files\LLVM\bin\clang.exe"
+          if (Test-Path -LiteralPath $clangPath) {
+            $existingClangVersion = (& $clangPath --version | Select-Object -First 1)
+            if ($existingClangVersion -match $expectedClangPattern) {
+              "LLVM 22.1.7 already available: $existingClangVersion"
+              "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+              return
+            }
+          }
+          $lastError = $null
+          foreach ($attempt in 1..4) {
+            try {
+              choco install llvm --version=22.1.7 -y --no-progress
+              $lastError = $null
+              break
+            } catch {
+              $lastError = $_
+              if ($attempt -eq 4) {
+                break
+              }
+              $delaySeconds = 20 * $attempt
+              Write-Warning "Chocolatey LLVM install attempt $attempt failed: $($_.Exception.Message). Retrying in $delaySeconds seconds."
+              Start-Sleep -Seconds $delaySeconds
+            }
+          }
+          if ($lastError) {
+            throw $lastError
+          }
           $clangVersion = (& "C:\Program Files\LLVM\bin\clang.exe" --version | Select-Object -First 1)
-          if ($clangVersion -notmatch "^clang version 22\.1\.7\b") {
+          if ($clangVersion -notmatch $expectedClangPattern) {
             throw "Expected LLVM 22.1.7, found: $clangVersion"
           }
           "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
@@ -369,6 +397,7 @@ jobs:
               "profiles/iris_voice_python_3_13.lock.txt",
               "profiles/iris_model_assets.lock.json",
               "profiles/iris_ollama_model.lock.json",
+              "profiles/iris_ollama_vision_model.lock.json",
               "profiles/uv_windows_amd64.lock.txt"
           )) {
             $provenance.locks[$lockPath] = (

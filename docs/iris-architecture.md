@@ -14,13 +14,10 @@ process work.
 
 - Run from a portable Windows ZIP.
 - Use local Ollama loopback for text and verified visual inference.
-- Use the configured model `huihui_ai/gemma-4-abliterated:e2b`.
+- Keep companion text, tools, and Hermes on `huihui_ai/gemma-4-abliterated:e2b`; route only camera, image, and screen inference to the separately locked `qwen3.5:4b` model.
 - Inspect user-selected images, camera snapshots, and explicit screen-area
   evidence as untrusted evidence.
-- On affected Windows Gemma 4 E2B/E4B projector builds, answer only
-  confidence-filtered OCR and bounded simple-diagram facts; unverified general
-  scene descriptions fail closed until Ollama's projector fix passes Iris's raw
-  image canary.
+- Require the exact Qwen/Ollama visual runtime to pass a raw red-circle canary at startup. Broad visual inference fails closed if that projector canary fails; local OCR and simple-diagram evidence remain independently bounded.
 - Use native local Whisper ASR and Kokoro ONNX TTS when the local prerequisites
   are present.
 - Keep Iris-owned local memories that the user can edit or delete.

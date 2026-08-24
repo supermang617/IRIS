@@ -4,5 +4,7 @@
 *.toml text eol=lf
 *.md text eol=lf
 profiles/*.lock.txt text eol=lf
+third_party/agent-browser/*.patch text eol=lf
+third_party/agent-browser/*.zip binary
 *.ps1 text eol=crlf
 *.bat text eol=crlf

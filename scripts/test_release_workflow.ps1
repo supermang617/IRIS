@@ -188,6 +188,7 @@ foreach ($fragment in @(
         "retention-days: 10",
         "iris-unsigned-build.json",
         "profiles/iris_ollama_model.lock.json",
+        "profiles/iris_ollama_vision_model.lock.json",
         "-ExpectedSignerThumbprint",
         "-ExpectedProvenancePath",
         "-RequireBuildProvenance",
@@ -412,7 +413,7 @@ foreach ($fragment in @(
         "Get-AuthenticodeSignature",
         "%LOCALAPPDATA%\Iris",
         "true acoustic echo cancellation is not claimed",
-        "known upstream projector defect",
+        "raw red-circle visual-runtime canary",
         "PRIVACY.md",
         "known-limitations.md"
     )) {

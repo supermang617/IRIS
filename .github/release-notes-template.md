@@ -88,7 +88,7 @@ Normal assistant inference, speech, memory, and diagnostics stay on the Windows 
 
 - Initial setup still requires Ollama and a local model download.
 - Camera, microphone, speaker, Bluetooth, and driver behavior varies by device.
-- The affected Windows Gemma 4 E2B/E4B path has a known upstream projector defect. Iris answers only confidence-filtered OCR and bounded simple-image facts, then refuses unverified general image, camera, or screen descriptions instead of guessing until the direct raw-model canary passes.
+- Camera, image, and screen inference uses the separately digest-locked `qwen3.5:4b` model while companion chat, tools, and Hermes remain on Gemma. Iris requires a raw red-circle visual-runtime canary at startup and fails broad vision closed if that canary does not pass.
 - Spoken interruption currently uses local onset detection plus transcript confirmation; true acoustic echo cancellation is not claimed until physical speaker/headset evidence justifies and validates it.
 - The WinGet command is unavailable until Microsoft merges the submission and the public catalog propagates.
 

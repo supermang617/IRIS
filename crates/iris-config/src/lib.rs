@@ -3,9 +3,14 @@ use std::path::{Path, PathBuf};
 
 pub const MANIFEST_FILE_NAME: &str = "manifest.json";
 pub const IRIS_MODEL_ID: &str = "huihui_ai/gemma-4-abliterated:e2b";
+pub const IRIS_VISION_MODEL_ID: &str = "qwen3.5:4b";
 pub const OLLAMA_MODEL_LOCK_RELATIVE_PATH: &str = "profiles/iris_ollama_model.lock.json";
+pub const OLLAMA_VISION_MODEL_LOCK_RELATIVE_PATH: &str =
+    "profiles/iris_ollama_vision_model.lock.json";
 const EMBEDDED_OLLAMA_MODEL_LOCK: &str =
     include_str!("../../../profiles/iris_ollama_model.lock.json");
+const EMBEDDED_OLLAMA_VISION_MODEL_LOCK: &str =
+    include_str!("../../../profiles/iris_ollama_vision_model.lock.json");
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +32,7 @@ pub struct OllamaModelLock {
 pub struct ProjectManifest {
     pub project: ProjectSection,
     pub model_policy: ModelPolicy,
+    pub vision_model_policy: VisionModelPolicy,
     pub resource_policy: ResourcePolicy,
     pub dynamic_context_policy: DynamicContextPolicy,
     pub tts_policy: TtsPolicy,
@@ -64,6 +70,19 @@ pub struct ModelPolicy {
     pub enabled_runtime_capabilities: Vec<String>,
     pub separate_vision_model: bool,
     pub rejected_architectures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct VisionModelPolicy {
+    pub provider: String,
+    pub model_id: String,
+    pub model_display_name: String,
+    pub parameter_size: String,
+    pub num_ctx_ceiling: u32,
+    pub num_gpu_layers: u32,
+    pub architecture: String,
+    pub image_input_capable: bool,
+    pub general_vision_verified: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -142,16 +161,16 @@ impl ProjectManifest {
             "Iris model must be huihui_ai/gemma-4-abliterated:e2b",
         )?;
         require(
-            self.model_policy.single_model_only,
-            "Iris must be configured as a single-model program",
+            !self.model_policy.single_model_only,
+            "Iris must declare its separately locked visual model",
         )?;
         require(
             !self.model_policy.fallback_models_allowed,
             "Iris must not define fallback models",
         )?;
         require(
-            self.model_policy.unified_model,
-            "manifest must declare one unified model",
+            !self.model_policy.unified_model,
+            "manifest must not claim one unified model when visual inference is separate",
         )?;
         require(
             self.model_policy.vision_capable,
@@ -169,15 +188,8 @@ impl ProjectManifest {
             "manifest must enable completion capability",
         )?;
         require(
-            self.model_policy
-                .enabled_runtime_capabilities
-                .iter()
-                .any(|capability| capability == "vision"),
-            "manifest must enable vision capability",
-        )?;
-        require(
-            !self.model_policy.separate_vision_model,
-            "manifest must reject a separate vision model",
+            self.model_policy.separate_vision_model,
+            "manifest must declare the separately locked vision model",
         )?;
         require(
             self.model_policy.num_ctx_ceiling == 8192,
@@ -190,6 +202,29 @@ impl ProjectManifest {
         require(
             self.model_policy.architecture == "gemma4",
             "manifest must select the locked Gemma 4 architecture",
+        )?;
+        require(
+            self.vision_model_policy.provider == "ollama_local",
+            "Iris vision must use the local Ollama provider",
+        )?;
+        require(
+            self.vision_model_policy.model_id == IRIS_VISION_MODEL_ID,
+            "Iris vision model must be qwen3.5:4b",
+        )?;
+        require(
+            self.vision_model_policy.parameter_size == "4.7B"
+                && self.vision_model_policy.architecture == "qwen35",
+            "Iris vision model metadata differs from the audited Qwen target",
+        )?;
+        require(
+            self.vision_model_policy.num_ctx_ceiling == 2048
+                && self.vision_model_policy.num_gpu_layers == 1,
+            "Iris vision model runtime bounds differ from the audited profile",
+        )?;
+        require(
+            self.vision_model_policy.image_input_capable
+                && self.vision_model_policy.general_vision_verified,
+            "Iris vision model must declare verified local image input",
         )?;
         require(
             self.model_policy
@@ -264,10 +299,12 @@ impl ProjectManifest {
             "IPC allowed hosts must include localhost loopback",
         )?;
         require(
-            self.safety_invariant.system_control == "agentic_session_only",
-            "system control must be limited to an approved Agentic Session",
+            self.safety_invariant.system_control == "agentic_session_approved_tool_actions_only"
+                && self.safety_invariant.executor == "no_arbitrary_shell_process",
+            "system control must be limited to approved tool actions without arbitrary shell/process execution",
         )?;
         locked_ollama_model()?.validate_against_manifest(self)?;
+        locked_ollama_vision_model()?.validate_against_vision_policy(&self.vision_model_policy)?;
         Ok(())
     }
 
@@ -351,10 +388,87 @@ impl OllamaModelLock {
         }
         Ok(())
     }
+
+    pub fn validate_against_vision_policy(&self, policy: &VisionModelPolicy) -> Result<(), String> {
+        self.validate_common()?;
+        require(
+            self.provider == policy.provider,
+            "vision model lock provider differs from manifest policy",
+        )?;
+        require(
+            self.model_id == IRIS_VISION_MODEL_ID && self.model_id == policy.model_id,
+            "vision model lock identity differs from manifest policy",
+        )?;
+        require(
+            self.family == policy.architecture && self.parameter_size == policy.parameter_size,
+            "vision model lock metadata differs from manifest policy",
+        )?;
+        for capability in ["completion", "vision", "tools", "thinking"] {
+            require(
+                self.required_capabilities
+                    .iter()
+                    .any(|required| required == capability),
+                "vision model lock is missing a required Iris capability",
+            )?;
+        }
+        require(
+            self.general_vision_verified && policy.general_vision_verified,
+            "vision model lock must be release-verified for general vision",
+        )?;
+        Ok(())
+    }
+
+    fn validate_common(&self) -> Result<(), String> {
+        require(
+            self.schema_version == 1,
+            "unsupported Ollama model lock schema",
+        )?;
+        require(
+            self.provider == "ollama_local",
+            "unsupported Ollama model provider",
+        )?;
+        require(
+            is_lower_sha256(&self.manifest_digest),
+            "Ollama model manifest digest must be lowercase SHA256",
+        )?;
+        require(
+            self.model_layer_digest
+                .strip_prefix("sha256:")
+                .is_some_and(is_lower_sha256),
+            "Ollama model-layer digest must be sha256-prefixed lowercase SHA256",
+        )?;
+        require(
+            self.total_bytes > 0,
+            "Ollama model byte count must be positive",
+        )?;
+        require(
+            !self.quantization_level.trim().is_empty(),
+            "Ollama model quantization must not be empty",
+        )?;
+        require(
+            !self.required_capabilities.is_empty()
+                && self
+                    .required_capabilities
+                    .iter()
+                    .all(|capability| !capability.trim().is_empty()),
+            "Ollama model lock must declare required capabilities",
+        )?;
+        let mut unique = self.required_capabilities.clone();
+        unique.sort();
+        unique.dedup();
+        require(
+            unique.len() == self.required_capabilities.len(),
+            "Ollama model lock capabilities must be unique",
+        )
+    }
 }
 
 pub fn locked_ollama_model() -> Result<OllamaModelLock, String> {
     OllamaModelLock::from_json_str(EMBEDDED_OLLAMA_MODEL_LOCK)
+}
+
+pub fn locked_ollama_vision_model() -> Result<OllamaModelLock, String> {
+    OllamaModelLock::from_json_str(EMBEDDED_OLLAMA_VISION_MODEL_LOCK)
 }
 
 pub fn load_manifest_from_workspace(start: impl AsRef<Path>) -> Result<ProjectManifest, String> {
@@ -374,6 +488,15 @@ pub fn load_manifest_from_workspace(start: impl AsRef<Path>) -> Result<ProjectMa
     require(
         disk_lock == locked_ollama_model()?,
         "packaged Ollama model lock differs from the lock embedded in Iris",
+    )?;
+    let vision_lock_path = workspace_root.join(OLLAMA_VISION_MODEL_LOCK_RELATIVE_PATH);
+    let vision_lock_input = std::fs::read_to_string(&vision_lock_path)
+        .map_err(|err| format!("{}: {err}", vision_lock_path.display()))?;
+    let disk_vision_lock = OllamaModelLock::from_json_str(&vision_lock_input)?;
+    disk_vision_lock.validate_against_vision_policy(&manifest.vision_model_policy)?;
+    require(
+        disk_vision_lock == locked_ollama_vision_model()?,
+        "packaged Ollama vision model lock differs from the lock embedded in Iris",
     )?;
     Ok(manifest)
 }
@@ -438,7 +561,7 @@ mod tests {
         assert!(manifest.model_policy.vision_capable);
         assert!(manifest.model_policy.image_input_capable);
         assert!(
-            manifest
+            !manifest
                 .model_policy
                 .enabled_runtime_capabilities
                 .contains(&"vision".to_string())
@@ -446,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn ollama_model_lock_is_exact_and_general_vision_stays_fail_closed() {
+    fn ollama_model_locks_are_exact_and_visual_route_is_verified() {
         let manifest = ProjectManifest::from_json_str(VALID_MANIFEST).unwrap();
         let lock = locked_ollama_model().unwrap();
 
@@ -462,6 +585,25 @@ mod tests {
         assert_eq!(lock.total_bytes, 7_162_405_953);
         assert_eq!(lock.quantization_level, "Q4_K_M");
         assert!(!lock.general_vision_verified);
+
+        let vision_lock = locked_ollama_vision_model().unwrap();
+        vision_lock
+            .validate_against_vision_policy(&manifest.vision_model_policy)
+            .unwrap();
+        assert_eq!(vision_lock.model_id, IRIS_VISION_MODEL_ID);
+        assert_eq!(
+            vision_lock.manifest_digest,
+            "2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd"
+        );
+        assert_eq!(
+            vision_lock.model_layer_digest,
+            "sha256:81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490"
+        );
+        assert_eq!(vision_lock.total_bytes, 3_389_983_735);
+        assert_eq!(vision_lock.family, "qwen35");
+        assert_eq!(vision_lock.parameter_size, "4.7B");
+        assert_eq!(vision_lock.quantization_level, "Q4_K_M");
+        assert!(vision_lock.general_vision_verified);
     }
 
     #[test]
@@ -482,6 +624,16 @@ mod tests {
         let input = VALID_MANIFEST.replace(
             "\"fallback_models_allowed\": false",
             "\"fallback_models_allowed\": true",
+        );
+        let manifest = ProjectManifest::from_json_str(&input).unwrap();
+        assert!(manifest.validate_v0_1_policy().is_err());
+    }
+
+    #[test]
+    fn rejects_disabling_the_separate_verified_visual_route() {
+        let input = VALID_MANIFEST.replace(
+            "\"separate_vision_model\": true",
+            "\"separate_vision_model\": false",
         );
         let manifest = ProjectManifest::from_json_str(&input).unwrap();
         assert!(manifest.validate_v0_1_policy().is_err());

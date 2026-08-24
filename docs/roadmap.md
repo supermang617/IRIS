@@ -12,13 +12,14 @@ Out of scope for this workspace:
 - remote model registries
 - fallback model behavior
 
-## Active Model
+## Active Models
 
 ```text
 huihui_ai/gemma-4-abliterated:e2b
+qwen3.5:4b (visual-only)
 ```
 
-The active model is vision-capable. Iris must use this same model for future image/vision work; do not add a separate vision model.
+Gemma remains the only companion, tool, and Hermes model. The exact locked Qwen model is a fixed camera/image/screen route, not a fallback or selectable assistant model.
 
 ## Next Slices
 
@@ -26,7 +27,7 @@ The active model is vision-capable. Iris must use this same model for future ima
 2. Stabilize native local ASR wake-word voice sessions, including the interruption word `Iris` while Iris is speaking.
 3. Tune native Whisper capture/transcription quality if manual tests show missed wake words, delayed turns, or bad transcripts.
 4. Stabilize Kokoro `af_heart` playback latency and interruption behavior in the manual test loop.
-5. Keep image, camera, and screen-area probes narrow, one-shot, and evidence-only for the same Gemma model.
+5. Keep image, camera, and screen-area probes narrow, one-shot, evidence-only, and bound to the verified visual lock.
 6. Keep the restricted Iris-owned memory broker and Hermes research/staging path enabled by default, fail-closed, and auditable.
 7. Improve public download and contribution flow through source-first docs, minimal CI, and conservative notices.
 8. Split `src-tauri/src/lib.rs` into behavior-preserving modules after the public baseline is stable.

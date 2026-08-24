@@ -14,6 +14,7 @@ $unrelatedCancellationFixture = Join-Path $testRoot "unrelated-cancellation.json
 $failedControlFixture = Join-Path $testRoot "failed-control.jsonl"
 $missingCompletionFixture = Join-Path $testRoot "missing-completion.jsonl"
 $terminalPlaybackFixture = Join-Path $testRoot "terminal-playback.jsonl"
+$aecAppliedFixture = Join-Path $testRoot "aec-applied.jsonl"
 $staleRecordFixture = Join-Path $testRoot "stale-record.jsonl"
 
 try {
@@ -50,6 +51,23 @@ try {
         $summary.acoustic_echo_cancellation -ne "not-enabled"
     ) {
         throw "Voice interruption diagnostics summary was inaccurate."
+    }
+
+    $aecAppliedRecords = @(
+        [ordered]@{ session_id = "aec-applied"; timestamp_ms = $now + 7; event = "speech_aec_prepared"; detail = "run=3; backend=windows_voice_capture_dsp; render_route=speakers; aec_applied=false" },
+        [ordered]@{ session_id = "aec-applied"; timestamp_ms = $now + 8; event = "speech_interruption_result"; detail = "600ms; capture_ms=600; stt_ms=0; backend=windows_voice_capture_dsp; aec=true; " },
+        [ordered]@{ session_id = "aec-applied"; timestamp_ms = $now + 9; event = "speech_finished"; detail = "run=3; chunks=1" }
+    )
+    $aecAppliedRecords | ForEach-Object { $_ | ConvertTo-Json -Compress } |
+        Set-Content -LiteralPath $aecAppliedFixture -Encoding utf8
+    $aecAppliedSummary = & $analyzer -Path $aecAppliedFixture -ExpectedInterruptions 0
+    if (
+        $aecAppliedSummary.vad_candidates -ne 0 -or
+        $aecAppliedSummary.aec_prepared_events -ne 1 -or
+        $aecAppliedSummary.aec_applied_evidence -ne 1 -or
+        $aecAppliedSummary.acoustic_echo_cancellation -ne "applied"
+    ) {
+        throw "Voice interruption analyzer did not prove applied AEC without a VAD candidate."
     }
 
     Set-Content -LiteralPath $silentFixture -Value (
