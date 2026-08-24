@@ -37,7 +37,7 @@ if ($SelfTest) {
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $manifest = Get-Content -LiteralPath (Join-Path $repoRoot "manifest.json") -Raw | ConvertFrom-Json
-$model = [string]$manifest.model_policy.model_id
+$model = [string]$manifest.vision_model_policy.model_id
 $imagePath = Join-Path ([System.IO.Path]::GetTempPath()) ("iris-raw-vision-canary-" + [System.Guid]::NewGuid().ToString("N") + ".png")
 
 try {
@@ -84,7 +84,7 @@ try {
         think = $false
         keep_alive = "10m"
         options = @{
-            num_ctx = [int]$manifest.model_policy.num_ctx_ceiling
+            num_ctx = [int]$manifest.vision_model_policy.num_ctx_ceiling
             num_predict = 32
             temperature = 0.0
             top_k = 1
@@ -105,14 +105,13 @@ try {
         Status = $status
         Model = $model
         Response = $responseText
-        UpstreamIssue = "https://github.com/ollama/ollama/issues/16597"
-        UpstreamFix = "https://github.com/ollama/ollama/pull/16879"
+        VisionRoute = "separate_locked_local_model"
     }
 
     if ($passed) {
         Write-Host "Raw Ollama vision canary: PASS ($responseText)"
     } else {
-        Write-Warning "Raw Ollama vision canary: BLOCKED by the known Windows Gemma 4 projector defect ($responseText)"
+        Write-Warning "Raw Ollama vision canary: BLOCKED because the exact locked visual runtime did not identify the canary ($responseText)"
         if ($RequirePass) {
             throw "Raw Ollama vision canary failed for $model`: $responseText"
         }

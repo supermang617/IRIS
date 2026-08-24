@@ -77,7 +77,7 @@ fn print_startup_banner() -> Result<(), String> {
         snapshot.platform, snapshot.model.id, snapshot.model.provider, snapshot.num_ctx_ceiling
     );
     println!(
-        "Model policy: single_model_only=true, fallback_models_allowed={}, runtime_external_network={}, loopback_only={}",
+        "Model policy: fixed_role_models=2, separate_vision_model=true, fallback_models_allowed={}, runtime_external_network={}, loopback_only={}",
         snapshot.model.fallback_models_allowed,
         snapshot.model.runtime_external_network,
         snapshot.model.loopback_only
@@ -109,6 +109,10 @@ fn run_live_self_check() -> Result<(), String> {
     validate_python_prerequisites(workspace_root)?;
     validate_agentic_prerequisites(workspace_root)?;
 
+    let vision_settings = iris_ollama::OllamaSettings::from_vision_manifest(&manifest)?;
+    iris_ollama::OllamaClient::new(vision_settings)?
+        .warm_visual_model()
+        .map_err(|error| format!("Ollama/vision-model health check failed: {error}"))?;
     let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
     let health_prompt = iris_ui::gate_typed_text("Reply with exactly: IRIS_SELF_CHECK_OK");
@@ -550,7 +554,7 @@ fn image_probe_response(
 ) -> Result<iris_core_types::AssistantResponse, String> {
     let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
     let manifest = iris_config::load_manifest_from_workspace(&cwd)?;
-    let settings = iris_ollama::OllamaSettings::from_manifest(&manifest)?;
+    let settings = iris_ollama::OllamaSettings::from_vision_manifest(&manifest)?;
     let client = iris_ollama::OllamaClient::new(settings)?;
     Ok(client.respond_to_image_probe(image_path, prompt))
 }

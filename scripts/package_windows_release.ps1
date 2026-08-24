@@ -56,7 +56,76 @@ function Copy-RequiredDirectory {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
+function New-IrisZipFromDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    Require-Directory -Path $SourceDirectory
+    $destinationDirectory = Split-Path -Parent $DestinationPath
+    New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+    try {
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    } catch {
+        throw "Unable to load .NET ZIP support: $($_.Exception.Message)"
+    }
+
+    $temporaryPath = Join-Path $destinationDirectory ([System.IO.Path]::GetRandomFileName())
+    try {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+        $sourceRoot = [System.IO.Path]::GetFullPath($SourceDirectory).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+        $files = @(Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force)
+        Write-Host "Adding $($files.Count) files to $DestinationPath"
+        $fileStream = [System.IO.File]::Open(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        $archive = [System.IO.Compression.ZipArchive]::new(
+            $fileStream,
+            [System.IO.Compression.ZipArchiveMode]::Create
+        )
+        try {
+            for ($index = 0; $index -lt $files.Count; $index++) {
+                $file = $files[$index]
+                $completed = $index + 1
+                if ($completed -eq 1 -or $completed -eq $files.Count -or $completed % 1000 -eq 0) {
+                    Write-Host "  zipped $completed / $($files.Count)"
+                }
+                $relativePath = $file.FullName.Substring($sourceRoot.Length).TrimStart([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar).Replace('\', '/')
+                $entry = $archive.CreateEntry($relativePath, [System.IO.Compression.CompressionLevel]::Fastest)
+                $entry.LastWriteTime = [DateTimeOffset]$file.LastWriteTime
+                $inputStream = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+                $entryStream = $entry.Open()
+                try {
+                    $inputStream.CopyTo($entryStream)
+                } finally {
+                    $entryStream.Dispose()
+                    $inputStream.Dispose()
+                }
+            }
+        } finally {
+            $archive.Dispose()
+            $fileStream.Dispose()
+        }
+        if (Test-Path -LiteralPath $DestinationPath -PathType Leaf) {
+            Remove-Item -LiteralPath $DestinationPath -Force
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $DestinationPath -Force
+    } catch {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
 Write-Host "Packaging Iris Windows portable release from $repoRoot"
+
+& (Join-Path $repoRoot "scripts\test_ollama_model_lock.ps1")
 
 $portableWhisperFlags = @{
     GGML_NATIVE = "OFF"
@@ -126,6 +195,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_document_ocr.ps1") 
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\install_iris_windows.ps1") -Destination (Join-Path $packageRoot "Install Iris.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\initialize_iris_data_root.ps1") -Destination (Join-Path $packageRoot "Initialize Iris Data Root.ps1")
 Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\update_iris_windows.ps1") -Destination (Join-Path $packageRoot "Update Iris.ps1")
+Copy-RequiredFile -Source (Join-Path $repoRoot "scripts\iris_ollama_model_lock.ps1") -Destination (Join-Path $packageRoot "scripts\iris_ollama_model_lock.ps1")
 
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "models") -Destination (Join-Path $packageRoot "models")
 Copy-RequiredDirectory -Source (Join-Path $repoRoot "profiles") -Destination (Join-Path $packageRoot "profiles")
@@ -228,6 +298,11 @@ $runtimeManifest = [ordered]@{
     agent_browser = [ordered]@{
         version = "0.33.2"
         platform = "windows-x64"
+        modified_controller = $true
+        upstream_pull_request = "https://github.com/vercel-labs/agent-browser/pull/1655"
+        upstream_commit = "c21c9b741a1eb23218c2bc9d165dc9c0af718604"
+        local_patch_sha256 = "b62c7599e3e185e92813f3e891b0e446da54ad1bdc7810f9c6e0bb5750e2a36f"
+        provisioning_archive_sha256 = "4b7e61f0c106b679f9451f146bdd6a3c7ef33f2287a490605e40ca049240a04f"
         binary_sha256 = $browserPrune.WindowsBinarySha256
         pruned_non_windows_binaries = $browserPrune.RemovedCount
         pruned_bytes = $browserPrune.BytesRemoved
@@ -266,6 +341,7 @@ $voiceSoundfileMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages
 $voiceNumpyMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\numpy-2.5.1.dist-info\METADATA"
 $voiceOnnxruntimeMetadata = Join-Path $root ".iris-runtime\voice\Lib\site-packages\onnxruntime-1.28.0.dist-info\METADATA"
 $agentBrowser = Join-Path $root ".iris-runtime\browser\node_modules\agent-browser\bin\agent-browser-win32-x64.exe"
+$ollamaModelLockHelper = Join-Path $root "scripts\iris_ollama_model_lock.ps1"
 
 function Require-File {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -288,6 +364,9 @@ Require-File -Path $voiceSoundfileMetadata
 Require-File -Path $voiceNumpyMetadata
 Require-File -Path $voiceOnnxruntimeMetadata
 Require-File -Path $agentBrowser
+Require-File -Path $ollamaModelLockHelper
+
+. $ollamaModelLockHelper
 
 & $dataRootInitializer -InstallRoot $root
 
@@ -328,7 +407,7 @@ function Set-IrisOllamaDefault {
 Set-IrisOllamaDefault -Name "OLLAMA_FLASH_ATTENTION" -Value "1" -PersistForCurrentUser
 Set-IrisOllamaDefault -Name "OLLAMA_KV_CACHE_TYPE" -Value "q8_0" -PersistForCurrentUser
 Set-IrisOllamaDefault -Name "OLLAMA_NUM_PARALLEL" -Value "1"
-Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "1"
+Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "2"
 
 Set-Location -LiteralPath $root
 
@@ -364,8 +443,15 @@ function Assert-IrisOllamaLoopbackOnly {
 
 function Get-IrisModelId {
     try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-        return [string]$manifest.model_policy.model_id
+        return [string](Get-IrisOllamaModelLock -Root $root).model_id
+    } catch {
+        return ""
+    }
+}
+
+function Get-IrisVisionModelId {
+    try {
+        return [string](Get-IrisOllamaModelLock -Root $root -Role Vision).model_id
     } catch {
         return ""
     }
@@ -380,45 +466,49 @@ function Get-IrisNumCtx {
     }
 }
 
-function Test-OllamaModelManifest {
-    param(
-        [Parameter(Mandatory = $true)][string]$ModelsRoot,
-        [Parameter(Mandatory = $true)][string]$ModelId
-    )
-    $parts = $ModelId.Split(":", 2)
-    if ($parts.Count -ne 2) {
-        return $false
-    }
-    $nameParts = $parts[0].Split("/", 2)
-    $namespace = if ($nameParts.Count -eq 2) { $nameParts[0] } else { "library" }
-    $name = if ($nameParts.Count -eq 2) { $nameParts[1] } else { $nameParts[0] }
-    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $namespace (Join-Path $name $parts[1])))
-    return Test-Path -LiteralPath $manifest -PathType Leaf
-}
-
 function Use-IrisOllamaModelStore {
-    $modelId = Get-IrisModelId
-    if (-not $modelId) {
-        return
+    $modelLocks = @(
+        (Get-IrisOllamaModelLock -Root $root -Role Primary),
+        (Get-IrisOllamaModelLock -Root $root -Role Vision)
+    )
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:OLLAMA_MODELS)) {
+        $candidates += $env:OLLAMA_MODELS
     }
-    $candidates = @($env:OLLAMA_MODELS, "C:\.ollama", (Join-Path $env:USERPROFILE ".ollama\models")) | Where-Object { $_ }
-    foreach ($candidate in $candidates) {
-        if (Test-OllamaModelManifest -ModelsRoot $candidate -ModelId $modelId) {
-            $env:OLLAMA_MODELS = $candidate
-            return
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $candidates += Join-Path $env:USERPROFILE ".ollama\models"
+    }
+    $candidates += "C:\.ollama"
+    $verifiedRoot = $null
+    foreach ($modelLock in $modelLocks) {
+        $modelId = [string]$modelLock.model_id
+        $verification = Find-IrisOllamaModelStore -Candidates $candidates -Lock $modelLock
+        if ($null -eq $verification) {
+            throw "Iris's digest-verified model is not installed. Run 'ollama pull $modelId' once to repair a missing or corrupt local model."
         }
+        if ($null -ne $verifiedRoot -and [string]$verification.ModelsRoot -ine [string]$verifiedRoot) {
+            throw "Iris's primary and vision models must be installed in the same verified Ollama model store."
+        }
+        $verifiedRoot = [string]$verification.ModelsRoot
+        Set-IrisOllamaModelStoreAttestation -Verification $verification -Lock $modelLock
     }
+    $env:OLLAMA_MODELS = $verifiedRoot
 }
 
 function Test-OllamaModelAvailable {
-    $modelId = Get-IrisModelId
-    if (-not $modelId) {
-        return $true
+    $modelIds = @((Get-IrisModelId), (Get-IrisVisionModelId)) | Where-Object { $_ }
+    if ($modelIds.Count -ne 2) {
+        return $false
     }
     try {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 2
         $tags = $response.Content | ConvertFrom-Json
-        return [bool](@($tags.models) | Where-Object { $_.name -eq $modelId } | Select-Object -First 1)
+        foreach ($modelId in $modelIds) {
+            if (-not [bool](@($tags.models) | Where-Object { $_.name -eq $modelId -or $_.model -eq $modelId } | Select-Object -First 1)) {
+                return $false
+            }
+        }
+        return $true
     } catch {
         return $false
     }
@@ -451,6 +541,12 @@ function Start-OllamaForIris {
 
     if (Test-OllamaReady) {
         Assert-IrisOllamaLoopbackOnly
+        try {
+            Assert-IrisOllamaModelIdentity -Root $root -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Primary | Out-Null
+            Assert-IrisOllamaModelIdentity -Root $root -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Vision | Out-Null
+        } catch {
+            throw "Iris refuses to use an Ollama model that differs from its immutable model lock. $($_.Exception.Message)"
+        }
         if ($script:irisOllamaServerDefaultsInitialized) {
             Write-Host "Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts."
         } elseif ((Test-OllamaModelAvailable) -and (Test-OllamaRuntimeCompatible)) {
@@ -469,6 +565,8 @@ function Start-OllamaForIris {
         Start-Sleep -Milliseconds 500
         if (Test-OllamaReady) {
             Assert-IrisOllamaLoopbackOnly
+            Assert-IrisOllamaModelIdentity -Root $root -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Primary | Out-Null
+            Assert-IrisOllamaModelIdentity -Root $root -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Vision | Out-Null
             return
         }
     }
@@ -572,7 +670,7 @@ Set-Content -LiteralPath (Join-Path $packageRoot "Install Iris.bat") -Value $ins
 Set-Content -LiteralPath (Join-Path $packageRoot "Update Iris.bat") -Value $updateBat -Encoding ascii
 
 Write-Host "Creating $zipPath"
-Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force
+New-IrisZipFromDirectory -SourceDirectory $packageRoot -DestinationPath $zipPath
 
 $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $shaPath -Value "$hash  iris-windows.zip" -Encoding ascii
@@ -618,7 +716,7 @@ Copy-RequiredFile -Source $shaPath -Destination (Join-Path $beginnerBundleRoot "
 Copy-RequiredFile -Source $installerPath -Destination (Join-Path $beginnerBundleRoot "install-iris-windows.ps1")
 Set-Content -LiteralPath (Join-Path $beginnerBundleRoot "Install Iris.bat") -Value $beginnerBat -Encoding ascii
 Set-Content -LiteralPath (Join-Path $beginnerBundleRoot "README.txt") -Value $beginnerReadme -Encoding ascii
-Compress-Archive -Path (Join-Path $beginnerBundleRoot "*") -DestinationPath $beginnerZipPath -Force
+New-IrisZipFromDirectory -SourceDirectory $beginnerBundleRoot -DestinationPath $beginnerZipPath
 $beginnerHash = (Get-FileHash -LiteralPath $beginnerZipPath -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath $beginnerShaPath -Value "$beginnerHash  iris-windows-installer.zip" -Encoding ascii
 

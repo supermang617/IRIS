@@ -14,17 +14,28 @@
     "num_ctx_ceiling": 8192,
     "num_gpu_layers": 1,
     "architecture": "gemma4",
-    "single_model_only": true,
+    "single_model_only": false,
     "fallback_models_allowed": false,
-    "unified_model": true,
+    "unified_model": false,
     "vision_capable": true,
     "image_input_capable": true,
     "audio_capable": true,
     "tool_capable": true,
     "thinking_capable": true,
-    "enabled_runtime_capabilities": ["completion", "vision"],
-    "separate_vision_model": false,
+    "enabled_runtime_capabilities": ["completion"],
+    "separate_vision_model": true,
     "rejected_architectures": ["moe", "omni"]
+  },
+  "vision_model_policy": {
+    "provider": "ollama_local",
+    "model_id": "qwen3.5:4b",
+    "model_display_name": "Qwen 3.5 4B",
+    "parameter_size": "4.7B",
+    "num_ctx_ceiling": 2048,
+    "num_gpu_layers": 1,
+    "architecture": "qwen35",
+    "image_input_capable": true,
+    "general_vision_verified": true
   },
   "resource_policy": {
     "reserved_system_memory_ratio": 0.35,
@@ -52,8 +63,8 @@
     "allowed_hosts": ["127.0.0.1", "localhost"]
   },
   "safety_invariant": {
-    "system_control": "agentic_session_only",
-    "executor": "agentic_session_only",
+    "system_control": "agentic_session_approved_tool_actions_only",
+    "executor": "no_arbitrary_shell_process",
     "input_simulation": "not_present",
     "clipboard_access": "not_present",
     "runtime_network": "disabled",

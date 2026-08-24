@@ -51,7 +51,15 @@ Local testing can use a self-signed certificate in the current user's
 certificate store. That removes the local build blocker, but it does not make
 the MSIX production-trusted for other users. Production distribution still needs
 Azure Artifact Signing, Microsoft Store signing, or a CA-issued code-signing
-certificate.
+certificate. The packager accepts such a local certificate only when
+`-AllowSelfSignedDevelopmentCertificate` is explicit; the resulting report is
+always `NOT READY` for production. Normal readiness performs an offline Windows
+chain build constrained to code signing. A valid private enterprise chain may
+be structurally ready for managed deployment, but the report identifies whether
+the root appears in this machine's Windows `AuthRoot` public-root inventory and
+never calls that fact overall production readiness. Overall readiness remains
+`NOT READY` until the exact signed artifact and clean-VM WACK/lifecycle evidence
+are verified.
 
 The release may include `iris-windows.msix`, `iris-windows.msix.sha256`,
 `iris-msix-signing.cer`, and `iris-msix-signing.cer.sha256` when a local test
@@ -69,9 +77,13 @@ Thumbprint signing searches `CurrentUser\My` first and then
 store, the packager passes the machine-store switch to `signtool`; current-user
 signing keeps the default store behavior. The selected certificate still needs
 an accessible private key and code-signing usage. Readiness also rejects a
-missing or expired private key, a subject that differs from the exact MSIX
-publisher, or a PFX that cannot be opened. A completed package is accepted only
-after Authenticode trust, the RFC 3161 timestamp, and `signtool verify` pass.
+missing or expired private key, a self-issued development certificate, a
+subject that differs from the exact MSIX publisher, or a PFX that cannot be
+opened. Pass exactly one explicit source, `-CertificateThumbprint` or
+`-PfxPath`; an explicit source takes precedence over ambient signing variables,
+and conflicting explicit or ambient sources fail closed. A completed package is
+accepted only after Authenticode trust, the RFC 3161 timestamp, exact signer
+thumbprint identity, and `signtool verify` pass.
 The semantic release remains a private draft until the clean-VM lifecycle
 gauntlet produces evidence tied to that exact MSIX hash and signer; the
 separate publisher verifies that evidence before making the release public.
@@ -86,8 +98,9 @@ This repository now includes:
 
 The MSIX script is guarded:
 
-- `-ReadinessOnly` reports tool/signing status and exits successfully for CI or
-  local diagnostics.
+- `-ReadinessOnly` reports tool/signing status and fails when required inputs are
+  not ready; add `-AllowIncompleteReadiness` only for a non-blocking CI or local
+  diagnostic.
 - A real MSIX build fails closed unless `makeappx.exe`, `signtool.exe`, the
   portable ZIP, its SHA256 file, and signing inputs are available.
 - Production signing uses an RFC 3161 SHA-256 timestamp so the signature can
@@ -127,8 +140,9 @@ The signed installer path must not change Iris runtime permissions:
 - no cloud model/API runtime;
 - no clipboard control;
 - no general window automation;
-- Agentic browser, shell, and process tools only through the reviewed,
+- Agentic browser, file, and patch/search tools only through the reviewed,
   approval-gated Hermes session;
+- no arbitrary shell or process tool exposure;
 - no model-output-driven high-risk action without separate confirmation;
 - no local memory exposure outside Iris-owned boundaries.
 

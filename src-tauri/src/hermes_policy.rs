@@ -233,7 +233,7 @@ impl HermesPolicyState {
             last_activity_ms: now_ms,
             expires_at_ms: now_ms + AGENTIC_INACTIVITY_TIMEOUT_MS,
             inactivity_timeout_ms: AGENTIC_INACTIVITY_TIMEOUT_MS,
-            workspace_boundary: "advisory_unrestricted_powershell".to_string(),
+            workspace_boundary: "selected_workspace_no_shell_process".to_string(),
         });
         self.mode = HermesMode::Agentic;
         Ok(())
@@ -367,7 +367,7 @@ mod tests {
             last_activity_ms: 1,
             expires_at_ms: 10,
             inactivity_timeout_ms: AGENTIC_INACTIVITY_TIMEOUT_MS,
-            workspace_boundary: "advisory_unrestricted_powershell".to_string(),
+            workspace_boundary: "selected_workspace_no_shell_process".to_string(),
         });
 
         state.expire_if_idle(10);

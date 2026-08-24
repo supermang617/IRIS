@@ -241,7 +241,7 @@ Documentations:
   - DocumentLabel: WinGet release and upgrade guide
     DocumentUrl: https://github.com/supermang617/IRIS/blob/main/docs/winget-release.md
 InstallationNotes: >-
-  For local text plus bounded image and OCR assistance, run `ollama pull huihui_ai/gemma-4-abliterated:e2b`, then launch Iris from the Windows Start menu. Iris refuses unverified general scene descriptions on affected Windows Gemma 4 projector builds instead of guessing. Iris includes its pinned Python voice packages; Google Chrome supplies the separately isolated browser engine, while WebView2 powers the Iris desktop shell. The Ollama model uses several gigabytes. Portable or legacy-install diagnostics use Start Iris.ps1 -SelfCheck.
+  For local companion text and visual assistance, run `ollama pull huihui_ai/gemma-4-abliterated:e2b` and `ollama pull qwen3.5:4b`, then launch Iris from the Windows Start menu. Iris verifies both immutable locks and a raw visual projector canary before use. Iris includes its pinned Python voice packages; Google Chrome supplies the separately isolated browser engine, while WebView2 powers the Iris desktop shell. The Ollama models use several gigabytes. Portable or legacy-install diagnostics use Start Iris.ps1 -SelfCheck.
 ManifestType: defaultLocale
 ManifestVersion: $manifestVersion
 "@

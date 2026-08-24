@@ -12,8 +12,9 @@ Iris includes two Windows setup tools for beginners:
 
 Both tools keep model inference local and do not add cloud model APIs,
 clipboard access, mouse/keyboard control, or general window automation. The
-installed package includes approval-gated Agentic file, PowerShell, process, and
-isolated browser capabilities; setup does not activate an Agentic Session.
+installed package includes approval-gated Agentic file, patch/search, and
+isolated browser capabilities; arbitrary shell and process tools are not
+exposed. Setup does not activate an Agentic Session.
 
 ## Recommended Beginner Flow
 
@@ -75,7 +76,11 @@ Run it from the portable release folder:
 - Installed RAM and free disk space.
 - Microsoft Edge WebView2 Runtime.
 - Ollama executable and local service model list.
-- Required model: `huihui_ai/gemma-4-abliterated:e2b`.
+- Required fixed-role models: `huihui_ai/gemma-4-abliterated:e2b` for companion text/tools/Hermes and `qwen3.5:4b` for camera/image/screen inference.
+- Exact Ollama model manifest digest, byte count, family, parameter size,
+  quantization, and required capabilities from
+  `profiles/iris_ollama_model.lock.json` and
+  `profiles/iris_ollama_vision_model.lock.json`, plus the raw visual-runtime canary.
 - Local Tesseract OCR for document-image text extraction.
 - Bundled Kokoro and Whisper assets.
 - Python availability and optional Kokoro TTS packages.
@@ -100,8 +105,10 @@ The interactive setup wizard can offer these repairs only:
 - Install Ollama for Windows through `winget`, or show Ollama's official Windows
   page.
 - Start the local Ollama service.
-- Download the configured local model with
-  `ollama pull huihui_ai/gemma-4-abliterated:e2b`.
+- Download the fixed companion and visual models with
+  `ollama pull huihui_ai/gemma-4-abliterated:e2b` and `ollama pull qwen3.5:4b`.
+  Preflight verifies both tags against their immutable model locks before
+  inference is allowed.
 - Install exact Python 3.13 through `winget`, or show Python's official Windows
   page.
 - Repair or upgrade Iris if its hash-locked Kokoro voice package layer is

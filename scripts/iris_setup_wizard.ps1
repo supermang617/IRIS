@@ -12,11 +12,19 @@ if ((Split-Path -Leaf $root) -ieq "scripts") {
 }
 Set-Location -LiteralPath $root
 
+$ollamaModelLockHelper = Join-Path $root "scripts\iris_ollama_model_lock.ps1"
+if (-not (Test-Path -LiteralPath $ollamaModelLockHelper -PathType Leaf)) {
+    throw "Missing Iris Ollama model-lock verifier: $ollamaModelLockHelper"
+}
+. $ollamaModelLockHelper
+
 $reportRoot = if ($env:IRIS_DATA_ROOT) { [System.IO.Path]::GetFullPath($env:IRIS_DATA_ROOT) } else { $root }
 $diagnosticsDir = Join-Path $reportRoot "diagnostics"
 $preflightJson = Join-Path $diagnosticsDir "preflight-report.json"
 $setupReport = Join-Path $diagnosticsDir "setup-wizard-report.txt"
-$modelId = "huihui_ai/gemma-4-abliterated:e2b"
+$modelId = [string](Get-IrisOllamaModelLock -Root $root).model_id
+$visionModelId = [string](Get-IrisOllamaModelLock -Root $root -Role Vision).model_id
+$modelIds = @($modelId, $visionModelId)
 
 function Write-Step {
     param(
@@ -100,7 +108,7 @@ function Get-RepairPlan {
         "^Ollama executable$" {
             return [pscustomobject]@{
                 Title = "Install Ollama for Windows"
-                Description = "Iris uses local Ollama for text and bounded image assistance. Clear OCR and simple diagram facts stay local; unverified Windows Gemma 4 scene descriptions fail closed while the upstream projector fix is pending. This does not add a cloud API."
+                Description = "Iris uses loopback-only Ollama with an exact companion model and an exact visual-only model. Startup verifies both locks and a raw visual projector canary. This does not add a cloud API."
                 Link = "https://ollama.com/download/windows"
                 Commands = @(
                     "winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements"
@@ -119,18 +127,19 @@ function Get-RepairPlan {
                 Action = "start:ollama"
             }
         }
-        "^Configured Ollama model$" {
+        "^Configured Ollama (vision )?model( identity)?$" {
             $description = if ($NonInteractive) {
                 "Open Iris after installation; the launcher self-check will verify the configured local model and report a clear error if it is unavailable."
             } else {
-                "This downloads $modelId into the local Ollama model store."
+                "This downloads Iris's exact companion and visual models into the local Ollama model store. If either locked digest still differs afterward, update Iris or restore its audited model store instead of bypassing verification."
             }
             return [pscustomobject]@{
-                Title = "Download the configured local model"
+                Title = "Download the configured local models"
                 Description = $description
                 Link = "https://ollama.com/library"
                 Commands = @(
-                    "ollama pull $modelId"
+                    "ollama pull $modelId",
+                    "ollama pull $visionModelId"
                 )
                 Action = "ollama:pull-model"
             }
@@ -276,8 +285,10 @@ function Invoke-Repair {
             if (-not (Test-CommandAvailable -Name "ollama")) {
                 throw "ollama is not available on PATH."
             }
-            & ollama pull $modelId
-            if ($LASTEXITCODE -ne 0) { throw "ollama pull failed with exit code $LASTEXITCODE" }
+            foreach ($requiredModelId in $modelIds) {
+                & ollama pull $requiredModelId
+                if ($LASTEXITCODE -ne 0) { throw "ollama pull $requiredModelId failed with exit code $LASTEXITCODE" }
+            }
         }
         default {
             if ($OpenLinks -and $Plan.Link) {

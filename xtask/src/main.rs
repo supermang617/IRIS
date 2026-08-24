@@ -20,6 +20,8 @@ fn run_audit() -> Result<(), String> {
     let root = workspace_root()?;
     assert_required_files(&root)?;
     assert_manifest_policy(&root)?;
+    assert_ollama_model_lock(&root)?;
+    assert_dependency_lock_invariants(&root)?;
     assert_capability_ledger(&root)?;
     assert_public_docs(&root)?;
     assert_local_diagnostics_are_parseable(&root)?;
@@ -419,10 +421,14 @@ fn assert_required_files(root: &Path) -> Result<(), String> {
         "docs/winget-release.md",
         "PRIVACY.md",
         "profiles/uv_windows_amd64.lock.txt",
+        "profiles/iris_ollama_model.lock.json",
+        "profiles/iris_ollama_vision_model.lock.json",
         "scripts/install_iris_windows.ps1",
         "scripts/iris_document_ocr.ps1",
         "scripts/iris_preflight_wizard.ps1",
         "scripts/iris_setup_wizard.ps1",
+        "scripts/iris_ollama_model_lock.ps1",
+        "scripts/test_ollama_model_lock.ps1",
         "scripts/diagnose_raw_ollama_vision.ps1",
         "scripts/package_windows_release.ps1",
         "scripts/package_windows_msix.ps1",
@@ -747,6 +753,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     let manual_end_user_test = read(root.join("docs/manual-end-user-test.md"))?;
     let launcher = read(root.join("Start Iris.ps1"))?;
     let package_script = read(root.join("scripts/package_windows_release.ps1"))?;
+    let msix_package_script = read(root.join("scripts/package_windows_msix.ps1"))?;
     let preflight_script = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
     let setup_script = read(root.join("scripts/iris_setup_wizard.ps1"))?;
     let windows_installer_script = read(root.join("scripts/install_iris_windows.ps1"))?;
@@ -940,6 +947,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     if !installer.contains("Iris Setup Wizard.bat")
         || !installer.contains("ollama pull huihui_ai/gemma-4-abliterated:e2b")
+        || !installer.contains("ollama pull qwen3.5:4b")
         || !installer.contains("never installs or downloads")
         || !installer.contains("Tesseract")
     {
@@ -1010,6 +1018,39 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
                 .to_string(),
         );
     }
+    for required in [
+        "[switch]$AllowSelfSignedDevelopmentCertificate",
+        "Self-signed development certificates are",
+        "production readiness remains NOT READY",
+        "-not $AllowSelfSignedDevelopmentCertificate",
+        "development_self_signed_opt_in=",
+        "offline system chain trust",
+        "Windows public root inventory",
+        "A system-trusted enterprise chain may still be eligible for managed deployment",
+        "Signing input readiness:",
+        "Overall production readiness: NOT READY",
+        "signed_artifact_verified=false",
+        "clean_vm_wack_lifecycle_verified=false",
+        "$PSBoundParameters.ContainsKey(\"CertificateThumbprint\")",
+        "$PSBoundParameters.ContainsKey(\"PfxPath\")",
+        "Provide exactly one explicit signing source",
+        "Both IRIS_SIGNING_CERT_THUMBPRINT and IRIS_SIGNING_PFX are set",
+        "Portable ZIP SHA-256 mismatch",
+        "$expectedSignerThumbprint",
+        "MSIX signer thumbprint does not match the exact certificate validated during readiness",
+    ] {
+        if !msix_package_script.contains(required) {
+            return Err(format!(
+                "MSIX packager missing self-signed development/production distinction `{required}`"
+            ));
+        }
+    }
+    if release.contains("-AllowSelfSignedDevelopmentCertificate") {
+        return Err(
+            "production release workflow must never opt into self-signed development signing"
+                .to_string(),
+        );
+    }
     if !runtime_orchestration
         .contains("The Iris desktop window opens first, then starts Ollama hidden")
         || !runtime_orchestration.contains("Ollama runs as the local model service")
@@ -1069,7 +1110,7 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
             "function Start-OllamaForIris",
             "function Assert-IrisOllamaLoopbackOnly",
             "function Test-OllamaRuntimeCompatible",
-            "{ \"library\" }",
+            "@($status.models)",
             "$env:OLLAMA_CONTEXT_LENGTH",
             "$env:OLLAMA_HOST = \"127.0.0.1:11434\"",
             "Get-NetTCPConnection -State Listen -LocalPort 11434",
@@ -1114,14 +1155,14 @@ fn assert_public_docs(root: &Path) -> Result<(), String> {
     }
     for required in [
         "This guide defines the Windows end-user acceptance checks",
-        "Ollama `/api/show` reports the configured model has `vision`",
+        "capability metadata and model bytes alone do not prove",
         "Hermes should not be opened separately",
         "Safe is the startup default",
         "Agentic Session is a separate, explicit, approval-gated mode",
         "file, PowerShell, process, and isolated browser tools",
         "require separate confirmation",
         "Tesseract document OCR",
-        "`BLOCKED` is the truthful current result",
+        "`PASS` with `red circle` is required",
         "do not certify acoustic interruption behavior",
     ] {
         if !manual_end_user_test.contains(required) {
@@ -1164,13 +1205,15 @@ fn assert_manifest_policy(root: &Path) -> Result<(), String> {
         "\"target_platform\": \"windows\"",
         "\"provider\": \"ollama_local\"",
         "\"model_id\": \"huihui_ai/gemma-4-abliterated:e2b\"",
-        "\"single_model_only\": true",
+        "\"single_model_only\": false",
         "\"fallback_models_allowed\": false",
         "\"num_ctx_ceiling\": 8192",
-        "\"unified_model\": true",
+        "\"unified_model\": false",
         "\"vision_capable\": true",
         "\"image_input_capable\": true",
-        "\"separate_vision_model\": false",
+        "\"separate_vision_model\": true",
+        "\"model_id\": \"qwen3.5:4b\"",
+        "\"num_ctx_ceiling\": 2048",
         "\"runtime_external_network\": \"disabled\"",
         "\"reserved_system_memory_ratio\": 0.35",
         "\"provider\": \"kokoro_onnx_python\"",
@@ -1179,6 +1222,99 @@ fn assert_manifest_policy(root: &Path) -> Result<(), String> {
         if !manifest.contains(required) {
             return Err(format!("manifest missing required policy: {required}"));
         }
+    }
+    Ok(())
+}
+
+fn assert_ollama_model_lock(root: &Path) -> Result<(), String> {
+    let lock = read(root.join("profiles/iris_ollama_model.lock.json"))?;
+    for required in [
+        "\"model_id\": \"huihui_ai/gemma-4-abliterated:e2b\"",
+        "\"manifest_digest\": \"7c4fbc4573d646fa7a2bcd940cd682a57c5717fcd1b48fd96ea45b1ef24d499f\"",
+        "\"model_layer_digest\": \"sha256:fd456de3e24d0a03164a636029339fbda0f4c5b1ae11616423006bbff6f2e81d\"",
+        "\"total_bytes\": 7162405953",
+        "\"family\": \"gemma4\"",
+        "\"parameter_size\": \"5.1B\"",
+        "\"quantization_level\": \"Q4_K_M\"",
+        "\"general_vision_verified\": false",
+    ] {
+        if !lock.contains(required) {
+            return Err(format!(
+                "Ollama model lock missing immutable identity: {required}"
+            ));
+        }
+    }
+    for capability in ["audio", "completion", "thinking", "tools", "vision"] {
+        if !lock.contains(&format!("\"{capability}\"")) {
+            return Err(format!(
+                "Ollama model lock missing required capability {capability}"
+            ));
+        }
+    }
+
+    let vision_lock = read(root.join("profiles/iris_ollama_vision_model.lock.json"))?;
+    for required in [
+        "\"model_id\": \"qwen3.5:4b\"",
+        "\"manifest_digest\": \"2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd\"",
+        "\"model_layer_digest\": \"sha256:81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490\"",
+        "\"total_bytes\": 3389983735",
+        "\"family\": \"qwen35\"",
+        "\"parameter_size\": \"4.7B\"",
+        "\"quantization_level\": \"Q4_K_M\"",
+        "\"general_vision_verified\": true",
+    ] {
+        if !vision_lock.contains(required) {
+            return Err(format!(
+                "Ollama vision model lock missing immutable identity: {required}"
+            ));
+        }
+    }
+    for capability in ["completion", "thinking", "tools", "vision"] {
+        if !vision_lock.contains(&format!("\"{capability}\"")) {
+            return Err(format!(
+                "Ollama vision model lock missing required capability {capability}"
+            ));
+        }
+    }
+
+    let helper = read(root.join("scripts/iris_ollama_model_lock.ps1"))?;
+    for required in [
+        "Assert-IrisOllamaModelIdentity",
+        "http://127.0.0.1:11434/api/tags",
+        "http://127.0.0.1:11434/api/show",
+        "digest mismatch",
+        "missing locked capabilities",
+    ] {
+        if !helper.contains(required) {
+            return Err(format!(
+                "Ollama model-lock verifier missing fail-closed check `{required}`"
+            ));
+        }
+    }
+
+    let launcher = read(root.join("Start Iris.ps1"))?;
+    let preflight = read(root.join("scripts/iris_preflight_wizard.ps1"))?;
+    let setup = read(root.join("scripts/iris_setup_wizard.ps1"))?;
+    let packager = read(root.join("scripts/package_windows_release.ps1"))?;
+    for (name, content) in [
+        ("launcher", launcher.as_str()),
+        ("preflight", preflight.as_str()),
+        ("setup", setup.as_str()),
+        ("packager", packager.as_str()),
+    ] {
+        if !content.contains("iris_ollama_model_lock.ps1") {
+            return Err(format!("{name} does not consume the Ollama model lock"));
+        }
+    }
+
+    let renderer = read(root.join("app/main.js"))?;
+    if renderer.contains("const feedbackModelId = \"huihui_ai/gemma-4-abliterated:e2b\"")
+        || !renderer.contains("feedbackModelId = String(snapshot.model.id")
+    {
+        return Err(
+            "feedback provenance must derive the model identity from the backend dashboard"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -1211,6 +1347,7 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
     for required in [
         "IRIS_HERMES_BROKER_URL",
         "IRIS_HERMES_BROKER_TOKEN",
+        "IRIS_OLLAMA_MODEL_LOCK_JSON",
         "Authorization",
         "def broker_token()",
         "def _consume_broker_access_from_environment()",
@@ -1232,10 +1369,13 @@ fn assert_hermes_phase2_profile(root: &Path) -> Result<(), String> {
         "PROMPT_INJECTION_PHRASES",
         "web_proposal_missing_evidence",
         "def inference_policy()",
+        "def configured_iris_model_lock()",
+        "def assert_iris_ollama_model_identity()",
+        "assert_iris_ollama_model_identity()",
         "\"modelAutoSelection\": False",
         "\"parallelInferenceStreams\": 1",
         "manifest.json",
-        "provider != \"ollama_local\"",
+        "lock.get(\"provider\") != \"ollama_local\"",
     ] {
         if !provider.contains(required) {
             return Err(format!("Hermes iris_broker provider missing `{required}`"));
@@ -1466,7 +1606,7 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
         "\"local_ollama_only\": true",
         "\"cloud_fallback\": false",
         "\"native_durable_memory\": false",
-        "\"boundary\": \"advisory_unrestricted_powershell\"",
+        "\"boundary\": \"selected_workspace_no_shell_process\"",
         "\"scope_expansion_requires_confirmation\": true",
         "\"authority\": \"iris\"",
         "\"direct_promotion\": false",
@@ -1484,8 +1624,6 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",
@@ -1512,8 +1650,6 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",
@@ -1538,8 +1674,6 @@ fn assert_hermes_agentic_profile(root: &Path) -> Result<(), String> {
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",
@@ -1916,6 +2050,9 @@ fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
         "\"cryptography\": \"50.0.0\"",
         "\"pillow\": \"12.3.0\"",
         "Hermes ACP exact dependency-set audit failed.",
+        "$ToolAudit.contextCompression -ne \"iris_locked_ollama\"",
+        "$ToolAudit.compressionMaxTokens -ne 1024",
+        "$ToolAudit.auxiliaryFallbackModels -ne $false",
     ] {
         if !provision.contains(required) {
             return Err(format!("Hermes ACP provisioner missing `{required}`"));
@@ -1949,6 +2086,11 @@ fn assert_hermes_acp_runtime(root: &Path) -> Result<(), String> {
         "\"mcpAllowed\": False",
         "Iris ACP bridge does not allow MCP servers",
         "IRIS_HERMES_OLLAMA_BASE_URL",
+        "class IrisLockedOllamaAgentMixin",
+        "def iris_locked_compression_call(",
+        "agent._compression_feasibility_checked = True",
+        "compressor.abort_on_summary_failure = True",
+        "\"contextCompression\": \"iris_locked_ollama\"",
     ] {
         if !launcher.contains(required) {
             return Err(format!("Iris Hermes ACP launcher missing `{required}`"));
@@ -2203,6 +2345,51 @@ fn is_release_semver(value: &str) -> bool {
         })
 }
 
+fn assert_dependency_lock_invariants(root: &Path) -> Result<(), String> {
+    let lock = read(root.join("Cargo.lock"))?;
+    validate_cpal_windows_lock(&lock)
+}
+
+fn validate_cpal_windows_lock(lock: &str) -> Result<(), String> {
+    let (windows, windows_core) = cpal_windows_dependencies(lock)?;
+    if windows != windows_core {
+        return Err(format!(
+            "cpal's Windows dependencies must resolve to the same version; found windows {windows} and windows-core {windows_core} (see RustAudio/cpal#1242)"
+        ));
+    }
+    if windows != "0.62.2" {
+        return Err(format!(
+            "cpal 0.18.1's audited Windows dependency version is 0.62.2; found {windows}"
+        ));
+    }
+    Ok(())
+}
+
+fn cpal_windows_dependencies(lock: &str) -> Result<(String, String), String> {
+    let cpal = lock
+        .split("[[package]]")
+        .find(|package| package.lines().any(|line| line.trim() == "name = \"cpal\""))
+        .ok_or_else(|| "Cargo.lock is missing the cpal package".to_string())?;
+
+    let dependency_version = |name: &str| {
+        let prefix = format!("\"{name} ");
+        cpal.lines().find_map(|line| {
+            let dependency = line.trim().trim_end_matches(',');
+            dependency
+                .strip_prefix(&prefix)
+                .and_then(|version| version.strip_suffix('"'))
+                .map(str::to_string)
+        })
+    };
+    let windows = dependency_version("windows").ok_or_else(|| {
+        "cpal's locked windows dependency is missing a resolved version".to_string()
+    })?;
+    let windows_core = dependency_version("windows-core").ok_or_else(|| {
+        "cpal's locked windows-core dependency is missing a resolved version".to_string()
+    })?;
+    Ok((windows, windows_core))
+}
+
 fn read(path: impl AsRef<Path>) -> Result<String, String> {
     fs::read_to_string(path.as_ref()).map_err(|err| format!("{}: {err}", path.as_ref().display()))
 }
@@ -2237,6 +2424,29 @@ mod tests {
         ] {
             assert!(!is_release_semver(rejected), "{rejected}");
         }
+    }
+
+    #[test]
+    fn cpal_windows_dependencies_must_stay_on_one_windows_core_line() {
+        let coherent = r#"
+[[package]]
+name = "cpal"
+version = "0.18.1"
+dependencies = [
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+"#;
+        assert_eq!(
+            cpal_windows_dependencies(coherent).unwrap(),
+            ("0.62.2".to_string(), "0.62.2".to_string())
+        );
+        validate_cpal_windows_lock(coherent).unwrap();
+
+        let mismatched = coherent.replacen("windows 0.62.2", "windows 0.61.3", 1);
+        let error = validate_cpal_windows_lock(&mismatched)
+            .expect_err("a split windows/windows-core resolution must fail the audit");
+        assert!(error.contains("same version"));
     }
 
     #[test]

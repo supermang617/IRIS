@@ -15,6 +15,12 @@ Project Iris is built on local-first, open tooling and local model infrastructur
 - Ollama for local model serving.
 - Kokoro ONNX TTS assets and the Python `kokoro-onnx` helper path.
 - Whisper local ASR model/runtime.
+- `agent-browser` 0.33.2 by Vercel Inc., licensed under Apache-2.0. Iris
+  packages a modified Windows x64 native controller built from upstream pull
+  request #1655 at commit `c21c9b741a1eb23218c2bc9d165dc9c0af718604`
+  plus the source patch and reproducible provenance recorded under
+  `third_party/agent-browser/`. The packaged npm directory retains the
+  upstream `agent-browser/LICENSE` file.
 - Rust crates listed in `Cargo.lock`.
 - JavaScript packages listed in `package-lock.json`.
 

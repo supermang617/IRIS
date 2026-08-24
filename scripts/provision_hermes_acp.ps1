@@ -157,7 +157,10 @@ if (
     $ToolAudit.requestOverrides.extraBody.think -ne $false -or
     $ToolAudit.requestOverrides.extraBody.options.numPredict -ne 512 -or
     $ToolAudit.nativeDurableMemory -ne $false -or
-    $ToolAudit.mcpAllowed -ne $false
+    $ToolAudit.mcpAllowed -ne $false -or
+    $ToolAudit.contextCompression -ne "iris_locked_ollama" -or
+    $ToolAudit.compressionMaxTokens -ne 1024 -or
+    $ToolAudit.auxiliaryFallbackModels -ne $false
 ) {
     throw "Hermes ACP Iris tool audit failed."
 }

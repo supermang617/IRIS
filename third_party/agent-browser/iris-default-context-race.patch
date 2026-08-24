@@ -1,0 +1,409 @@
+diff --git a/cli/src/native/actions.rs b/cli/src/native/actions.rs
+index 1688e4f..710dc5f 100644
+--- a/cli/src/native/actions.rs
++++ b/cli/src/native/actions.rs
+@@ -689,6 +689,9 @@ impl DaemonState {
+                                             &sid,
+                                             df.as_ref(),
+                                             has_proxy_creds,
++                                            target_info.as_ref().is_some_and(|target| {
++                                                initial_page_context_may_be_missing(&target.url)
++                                            }),
+                                         )
+                                         .await
+                                     }
+@@ -956,6 +959,7 @@ impl DaemonState {
+                             iframe_sid,
+                             filter.as_ref(),
+                             has_proxy_creds,
++                            false,
+                         )
+                         .await?;
+                     }
+@@ -991,6 +995,7 @@ impl DaemonState {
+                             page_sid,
+                             filter.as_ref(),
+                             has_proxy_creds,
++                            initial_page_context_may_be_missing(&target_info.url),
+                         )
+                         .await?;
+                     }
+@@ -1121,6 +1126,7 @@ impl DaemonState {
+                             &attach.session_id,
+                             filter.as_ref(),
+                             has_proxy_creds,
++                            initial_page_context_may_be_missing(&te.target_info.url),
+                         )
+                         .await?;
+                     }
+@@ -2932,6 +2938,7 @@ async fn install_network_controls_for_session(
+     session_id: &str,
+     filter: Option<&DomainFilter>,
+     handle_auth_requests: bool,
++    allow_missing_initial_context: bool,
+ ) -> Result<(), String> {
+     if let Some(filter) = filter {
+         network::install_domain_filter(
+@@ -2939,6 +2946,7 @@ async fn install_network_controls_for_session(
+             session_id,
+             &filter.allowed_domains,
+             handle_auth_requests,
++            allow_missing_initial_context,
+         )
+         .await?;
+     } else if handle_auth_requests {
+@@ -2952,6 +2960,10 @@ fn is_stale_cdp_session_error(error: &str) -> bool {
+     error.contains("Session with given id not found")
+ }
+ 
++fn initial_page_context_may_be_missing(url: &str) -> bool {
++    url.is_empty() || url == "about:blank"
++}
++
+ async fn install_worker_network_controls_for_session(
+     client: &CdpClient,
+     session_id: &str,
+@@ -3005,9 +3017,13 @@ async fn install_active_network_controls(
+         .browser
+         .as_ref()
+         .ok_or("Browser is not available for network control installation")?;
++    let pages = mgr.pages_list();
+     let session_ids = network_control_session_ids(mgr)?;
+ 
+     for session_id in session_ids {
++        let allow_missing_initial_context = pages.iter().any(|page| {
++            page.session_id == session_id && initial_page_context_may_be_missing(&page.url)
++        });
+         let result = async {
+             mgr.prepare_domains_pub(&session_id).await?;
+             install_network_controls_for_session(
+@@ -3015,6 +3031,7 @@ async fn install_active_network_controls(
+                 &session_id,
+                 filter.as_ref(),
+                 handle_auth_requests,
++                allow_missing_initial_context,
+             )
+             .await?;
+             mgr.resume_if_waiting_pub(&session_id).await
+diff --git a/cli/src/native/network.rs b/cli/src/native/network.rs
+index 98c2212..30d2bdd 100644
+--- a/cli/src/native/network.rs
++++ b/cli/src/native/network.rs
+@@ -1,8 +1,13 @@
+ use serde_json::{json, Value};
+ use std::collections::HashMap;
++use std::time::Duration;
+ 
+ use super::cdp::client::CdpClient;
+ 
++pub(super) const DOMAIN_FILTER_CONTEXT_RETRY_ATTEMPTS: usize = 4;
++const DOMAIN_FILTER_CONTEXT_ATTEMPT_TIMEOUT_MS: u64 = 250;
++const DOMAIN_FILTER_CONTEXT_RETRY_DELAY_MS: u64 = 50;
++
+ pub async fn set_extra_headers(
+     client: &CdpClient,
+     session_id: &str,
+@@ -162,6 +167,7 @@ pub async fn install_domain_filter_script(
+     client: &CdpClient,
+     session_id: &str,
+     allowed_domains: &[String],
++    allow_missing_initial_context: bool,
+ ) -> Result<(), String> {
+     if allowed_domains.is_empty() {
+         return Ok(());
+@@ -177,7 +183,13 @@ pub async fn install_domain_filter_script(
+         )
+         .await?;
+ 
+-    install_domain_filter_runtime_script(client, session_id, allowed_domains).await?;
++    install_domain_filter_runtime_script(
++        client,
++        session_id,
++        allowed_domains,
++        allow_missing_initial_context,
++    )
++    .await?;
+ 
+     Ok(())
+ }
+@@ -186,33 +198,71 @@ async fn install_domain_filter_runtime_script(
+     client: &CdpClient,
+     session_id: &str,
+     allowed_domains: &[String],
++    allow_missing_initial_context: bool,
+ ) -> Result<(), String> {
+     if allowed_domains.is_empty() {
+         return Ok(());
+     }
+ 
+     let script = domain_filter_script(allowed_domains);
+-    let evaluation = client
+-        .send_command(
+-            "Runtime.evaluate",
+-            Some(json!({ "expression": &script })),
+-            Some(session_id),
++    let mut transient_error = None;
++    for attempt in 0..DOMAIN_FILTER_CONTEXT_RETRY_ATTEMPTS {
++        let evaluation = tokio::time::timeout(
++            Duration::from_millis(DOMAIN_FILTER_CONTEXT_ATTEMPT_TIMEOUT_MS),
++            client.send_command(
++                "Runtime.evaluate",
++                Some(json!({ "expression": &script })),
++                Some(session_id),
++            ),
+         )
+-        .await?;
+-    if let Some(details) = evaluation.get("exceptionDetails") {
+-        let message = details
+-            .get("exception")
+-            .and_then(|exception| exception.get("description"))
+-            .and_then(Value::as_str)
+-            .or_else(|| details.get("text").and_then(Value::as_str))
+-            .unwrap_or("unknown JavaScript error");
+-        return Err(format!(
+-            "Failed to apply domain filter to the current execution context: {}",
+-            message
+-        ));
++        .await;
++        match evaluation {
++            Ok(Ok(evaluation)) => {
++                if let Some(details) = evaluation.get("exceptionDetails") {
++                    let message = details
++                        .get("exception")
++                        .and_then(|exception| exception.get("description"))
++                        .and_then(Value::as_str)
++                        .or_else(|| details.get("text").and_then(Value::as_str))
++                        .unwrap_or("unknown JavaScript error");
++                    return Err(format!(
++                        "Failed to apply domain filter to the current execution context: {}",
++                        message
++                    ));
++                }
++                return Ok(());
++            }
++            Ok(Err(error)) if is_missing_default_execution_context_error(&error) => {
++                transient_error = Some(error);
++            }
++            Ok(Err(error)) => return Err(error),
++            Err(_) => {
++                transient_error = Some(format!(
++                    "Timed out after {} ms waiting for a default execution context",
++                    DOMAIN_FILTER_CONTEXT_ATTEMPT_TIMEOUT_MS
++                ));
++            }
++        }
++        if attempt + 1 < DOMAIN_FILTER_CONTEXT_RETRY_ATTEMPTS {
++            tokio::time::sleep(Duration::from_millis(DOMAIN_FILTER_CONTEXT_RETRY_DELAY_MS)).await;
++        }
+     }
+ 
+-    Ok(())
++    if allow_missing_initial_context {
++        // Fetch interception and the new-document script are already installed.
++        // A startup about:blank target has no page script or network activity to
++        // guard, and its first real document receives the script before running.
++        return Ok(());
++    }
++
++    Err(format!(
++        "Failed to apply domain filter after bounded execution-context retry: {}",
++        transient_error.unwrap_or_else(|| "default execution context unavailable".to_string())
++    ))
++}
++
++fn is_missing_default_execution_context_error(error: &str) -> bool {
++    error.contains("Cannot find default execution context")
+ }
+ 
+ fn domain_filter_script(allowed_domains: &[String]) -> String {
+@@ -462,9 +512,16 @@ pub async fn install_domain_filter(
+     session_id: &str,
+     allowed_domains: &[String],
+     handle_auth_requests: bool,
++    allow_missing_initial_context: bool,
+ ) -> Result<(), String> {
+     install_domain_filter_fetch(client, session_id, handle_auth_requests).await?;
+-    install_domain_filter_script(client, session_id, allowed_domains).await?;
++    install_domain_filter_script(
++        client,
++        session_id,
++        allowed_domains,
++        allow_missing_initial_context,
++    )
++    .await?;
+     Ok(())
+ }
+ 
+@@ -662,6 +719,172 @@ impl EventTracker {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use futures_util::{SinkExt, StreamExt};
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    use std::sync::Arc;
++    use tokio_tungstenite::tungstenite::Message;
++
++    struct DomainFilterMockCounts {
++        fetch_enables: AtomicUsize,
++        init_scripts: AtomicUsize,
++        runtime_evaluations: AtomicUsize,
++    }
++
++    async fn start_mock_domain_filter_cdp(
++        runtime_failures_before_success: usize,
++    ) -> (String, Arc<DomainFilterMockCounts>) {
++        let counts = Arc::new(DomainFilterMockCounts {
++            fetch_enables: AtomicUsize::new(0),
++            init_scripts: AtomicUsize::new(0),
++            runtime_evaluations: AtomicUsize::new(0),
++        });
++        let task_counts = counts.clone();
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let url = format!(
++            "ws://127.0.0.1:{}/devtools/browser/domain-filter-test",
++            listener.local_addr().unwrap().port()
++        );
++
++        tokio::spawn(async move {
++            let (stream, _) = listener.accept().await.unwrap();
++            let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
++            let (mut tx, mut rx) = ws.split();
++
++            while let Some(Ok(message)) = rx.next().await {
++                let text = match message {
++                    Message::Text(text) => text,
++                    Message::Ping(payload) => {
++                        let _ = tx.send(Message::Pong(payload)).await;
++                        continue;
++                    }
++                    _ => continue,
++                };
++                let command: Value = match serde_json::from_str(&text) {
++                    Ok(command) => command,
++                    Err(_) => continue,
++                };
++                let Some(id) = command["id"].as_u64() else {
++                    continue;
++                };
++                let method = command["method"].as_str().unwrap_or("");
++                let result = |value: Value| json!({ "id": id, "result": value }).to_string();
++                let error = |message: &str| {
++                    json!({
++                        "id": id,
++                        "error": { "code": -32000, "message": message }
++                    })
++                    .to_string()
++                };
++
++                let reply = match method {
++                    "Fetch.enable" => {
++                        task_counts.fetch_enables.fetch_add(1, Ordering::SeqCst);
++                        result(json!({}))
++                    }
++                    "Page.addScriptToEvaluateOnNewDocument" => {
++                        task_counts.init_scripts.fetch_add(1, Ordering::SeqCst);
++                        result(json!({ "identifier": "domain-filter-test" }))
++                    }
++                    "Runtime.evaluate" => {
++                        let attempt = task_counts
++                            .runtime_evaluations
++                            .fetch_add(1, Ordering::SeqCst)
++                            + 1;
++                        if attempt <= runtime_failures_before_success {
++                            error("Cannot find default execution context")
++                        } else {
++                            result(json!({ "result": { "type": "boolean", "value": true } }))
++                        }
++                    }
++                    _ => result(json!({})),
++                };
++                let _ = tx.send(Message::Text(reply)).await;
++            }
++        });
++
++        (url, counts)
++    }
++
++    #[test]
++    fn missing_default_execution_context_classification_is_narrow() {
++        assert!(is_missing_default_execution_context_error(
++            "CDP error (Runtime.evaluate): Cannot find default execution context"
++        ));
++        assert!(!is_missing_default_execution_context_error(
++            "CDP error (Runtime.evaluate): Permission denied"
++        ));
++        assert!(!is_missing_default_execution_context_error(
++            "CDP error (Runtime.evaluate): Execution context was destroyed"
++        ));
++    }
++
++    #[tokio::test]
++    async fn domain_filter_retries_until_default_context_exists() {
++        let (url, counts) = start_mock_domain_filter_cdp(2).await;
++        let client = CdpClient::connect(&url).await.unwrap();
++
++        install_domain_filter(
++            &client,
++            "page-session",
++            &["example.com".to_string()],
++            false,
++            false,
++        )
++        .await
++        .expect("a transient startup race should recover before the retry bound");
++
++        assert_eq!(counts.fetch_enables.load(Ordering::SeqCst), 1);
++        assert_eq!(counts.init_scripts.load(Ordering::SeqCst), 1);
++        assert_eq!(counts.runtime_evaluations.load(Ordering::SeqCst), 3);
++    }
++
++    #[tokio::test]
++    async fn domain_filter_blank_startup_target_keeps_new_document_filter_when_context_stays_missing(
++    ) {
++        let (url, counts) = start_mock_domain_filter_cdp(usize::MAX).await;
++        let client = CdpClient::connect(&url).await.unwrap();
++
++        install_domain_filter(
++            &client,
++            "blank-page-session",
++            &["example.com".to_string()],
++            false,
++            true,
++        )
++        .await
++        .expect("an empty startup target is guarded by Fetch and the new-document script");
++
++        assert_eq!(counts.fetch_enables.load(Ordering::SeqCst), 1);
++        assert_eq!(counts.init_scripts.load(Ordering::SeqCst), 1);
++        assert_eq!(
++            counts.runtime_evaluations.load(Ordering::SeqCst),
++            DOMAIN_FILTER_CONTEXT_RETRY_ATTEMPTS
++        );
++    }
++
++    #[tokio::test]
++    async fn domain_filter_nonblank_target_fails_closed_when_default_context_never_appears() {
++        let (url, counts) = start_mock_domain_filter_cdp(usize::MAX).await;
++        let client = CdpClient::connect(&url).await.unwrap();
++
++        let error = install_domain_filter(
++            &client,
++            "live-page-session",
++            &["example.com".to_string()],
++            false,
++            false,
++        )
++        .await
++        .expect_err("a loaded page must never bypass current-context filtering");
++
++        assert!(error.contains("after bounded execution-context retry"));
++        assert_eq!(counts.fetch_enables.load(Ordering::SeqCst), 1);
++        assert_eq!(counts.init_scripts.load(Ordering::SeqCst), 1);
++        assert_eq!(
++            counts.runtime_evaluations.load(Ordering::SeqCst),
++            DOMAIN_FILTER_CONTEXT_RETRY_ATTEMPTS
++        );
++    }
+ 
+     #[test]
+     fn test_domain_filter_exact() {

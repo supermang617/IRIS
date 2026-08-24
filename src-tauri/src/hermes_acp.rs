@@ -1,5 +1,5 @@
 use crate::hermes_policy::{ApprovalRequest, BrowserPreview, HermesEvent, RiskClass};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
@@ -44,6 +44,8 @@ const KOKORO_ONNX_VERSION: &str = "0.5.0";
 const SOUNDFILE_VERSION: &str = "0.14.0";
 const HERMES_WHEEL_SHA256: &str =
     "bf75c02d59f7c464cd0d85026fb7ee2e6bb15f003beccab3442b572f1ae1fd37";
+pub(crate) const VERIFIED_MODEL_STORE_ENV: &str =
+    "IRIS_OLLAMA_VERIFIED_MODEL_STORE_ATTESTATION_JSON";
 
 static ACP_BRIDGE: OnceLock<Mutex<Option<Arc<HermesAcpBridge>>>> = OnceLock::new();
 static HERMES_PYTHON: OnceLock<Option<PythonLaunch>> = OnceLock::new();
@@ -156,6 +158,42 @@ struct PythonLaunch {
     prefix_args: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaStoredManifest {
+    config: OllamaStoredDescriptor,
+    layers: Vec<OllamaStoredDescriptor>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OllamaStoredDescriptor {
+    media_type: String,
+    digest: String,
+    size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ChildModelStoreAttestation {
+    schema_version: u32,
+    model_id: String,
+    models_root: String,
+    manifest_digest: String,
+    model_layer_digest: String,
+    descriptors: Vec<ChildModelStoreDescriptor>,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct ChildModelStoreDescriptor {
+    media_type: String,
+    digest: String,
+    size: u64,
+    modified_unix_ns: u64,
+    created_unix_ns: Option<u64>,
+}
+
 impl PythonLaunch {
     fn display(&self) -> String {
         std::iter::once(self.executable.to_string_lossy().to_string())
@@ -163,6 +201,115 @@ impl PythonLaunch {
             .collect::<Vec<_>>()
             .join(" ")
     }
+}
+
+fn unix_time_ns(value: SystemTime) -> Result<u64, String> {
+    value
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "Ollama model-store timestamp predates the Unix epoch".to_string())?
+        .as_nanos()
+        .try_into()
+        .map_err(|_| "Ollama model-store timestamp overflowed".to_string())
+}
+
+fn ollama_manifest_path(models_root: &Path, model_id: &str) -> Result<PathBuf, String> {
+    let (name, tag) = model_id
+        .split_once(':')
+        .ok_or_else(|| "Ollama model identity must include a tag".to_string())?;
+    let (namespace, model) = name.split_once('/').unwrap_or(("library", name));
+    let safe_segment = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    };
+    if name.matches('/').count() > 1
+        || ![namespace, model, tag]
+            .iter()
+            .all(|segment| safe_segment(segment))
+    {
+        return Err("Ollama model identity is not a safe registry tag".to_string());
+    }
+    Ok(models_root
+        .join("manifests")
+        .join("registry.ollama.ai")
+        .join(namespace)
+        .join(model)
+        .join(tag))
+}
+
+fn child_model_store_attestation_for_root(
+    models_root: &Path,
+    model_lock: &iris_config::OllamaModelLock,
+) -> Result<String, String> {
+    let manifest_path = ollama_manifest_path(models_root, &model_lock.model_id)?;
+    let manifest_bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
+    if manifest_bytes.len() > 1024 * 1024 {
+        return Err(
+            "Ollama model-store manifest exceeded the 1 MiB child-attestation limit".into(),
+        );
+    }
+    let manifest: OllamaStoredManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            format!(
+                "{}: invalid Ollama manifest: {error}",
+                manifest_path.display()
+            )
+        })?;
+    let mut descriptors = Vec::with_capacity(manifest.layers.len() + 1);
+    for descriptor in std::iter::once(manifest.config).chain(manifest.layers) {
+        let digest = descriptor
+            .digest
+            .strip_prefix("sha256:")
+            .filter(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            })
+            .ok_or_else(|| "Ollama model-store manifest contains an invalid digest".to_string())?;
+        let path = models_root.join("blobs").join(format!("sha256-{digest}"));
+        let metadata =
+            fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        if !metadata.is_file() || metadata.len() != descriptor.size {
+            return Err(format!("{} has a different byte count", path.display()));
+        }
+        descriptors.push(ChildModelStoreDescriptor {
+            media_type: descriptor.media_type,
+            digest: descriptor.digest,
+            size: descriptor.size,
+            modified_unix_ns: unix_time_ns(
+                metadata
+                    .modified()
+                    .map_err(|error| format!("{}: {error}", path.display()))?,
+            )?,
+            created_unix_ns: metadata.created().ok().map(unix_time_ns).transpose()?,
+        });
+    }
+    serde_json::to_string(&ChildModelStoreAttestation {
+        schema_version: 1,
+        model_id: model_lock.model_id.clone(),
+        models_root: models_root.to_string_lossy().into_owned(),
+        manifest_digest: model_lock.manifest_digest.clone(),
+        model_layer_digest: model_lock.model_layer_digest.clone(),
+        descriptors,
+    })
+    .map_err(|error| format!("failed to serialize Iris model-store attestation: {error}"))
+}
+
+pub(crate) fn verified_model_store_child_attestation(
+    model_lock: &iris_config::OllamaModelLock,
+) -> Result<String, String> {
+    let models_root = iris_ollama::verified_ollama_models_root(model_lock)?;
+    let attestation = child_model_store_attestation_for_root(&models_root, model_lock)?;
+    let rechecked_root = iris_ollama::verified_ollama_models_root(model_lock)?;
+    if rechecked_root != models_root {
+        return Err(
+            "Ollama model-store root changed while preparing child attestation".to_string(),
+        );
+    }
+    Ok(attestation)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -414,8 +561,6 @@ pub fn runtime_status(resource_root: &Path, state_root: &Path) -> HermesAcpRunti
             "write_file",
             "patch",
             "search_files",
-            "terminal",
-            "process",
             "browser_open",
             "browser_snapshot",
             "browser_click",
@@ -934,6 +1079,13 @@ fn ensure_bridge_guarded(
 impl HermesAcpBridge {
     fn start(resource_root: &Path, state_root: &Path, model: &str) -> Result<Self, String> {
         let paths = RuntimePaths::new(resource_root, state_root);
+        let model_lock = iris_config::locked_ollama_model()?;
+        if model != model_lock.model_id {
+            return Err("Hermes ACP model differs from Iris's embedded model lock".to_string());
+        }
+        let model_lock_json = serde_json::to_string(&model_lock)
+            .map_err(|error| format!("failed to serialize Iris model lock: {error}"))?;
+        let model_store_attestation_json = verified_model_store_child_attestation(&model_lock)?;
         for (label, path) in [
             ("Hermes ACP packages", &paths.site_packages),
             ("Iris Hermes ACP launcher", &paths.launcher),
@@ -961,6 +1113,8 @@ impl HermesAcpBridge {
                 &paths.browser_command_output,
             )
             .env("IRIS_HERMES_MODEL", model)
+            .env("IRIS_OLLAMA_MODEL_LOCK_JSON", model_lock_json)
+            .env(VERIFIED_MODEL_STORE_ENV, model_store_attestation_json)
             .env("IRIS_HERMES_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
             .env("HERMES_DISABLE_LAZY_INSTALLS", "1")
             .env("PYTHONUTF8", "1")
@@ -3250,6 +3404,67 @@ mod tests {
         assert!(paths.browser_command_output.starts_with(state));
         assert!(!paths.home.starts_with(resources));
         assert!(!paths.browser_command_output.starts_with(resources));
+    }
+
+    #[test]
+    fn child_model_store_attestation_binds_root_and_descriptor_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "iris-child-model-attestation-{}-{}",
+            std::process::id(),
+            unix_timestamp_ms()
+        ));
+        let mut lock = iris_config::locked_ollama_model().expect("embedded model lock");
+        let config_digest = format!("sha256:{}", "1".repeat(64));
+        let model_digest = format!("sha256:{}", "2".repeat(64));
+        let config = b"config";
+        let model = b"locked model";
+        lock.manifest_digest = "3".repeat(64);
+        lock.model_layer_digest = model_digest.clone();
+        lock.total_bytes = (config.len() + model.len()) as u64;
+        let manifest = serde_json::json!({
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "digest": config_digest.clone(),
+                "size": config.len(),
+            },
+            "layers": [{
+                "mediaType": "application/vnd.ollama.image.model",
+                "digest": model_digest.clone(),
+                "size": model.len(),
+            }],
+        });
+        let manifest_path = ollama_manifest_path(&root, &lock.model_id).expect("manifest path");
+        fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .expect("manifest directory");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&manifest).expect("manifest JSON"),
+        )
+        .expect("manifest fixture");
+        let blobs = root.join("blobs");
+        fs::create_dir_all(&blobs).expect("blob directory");
+        fs::write(blobs.join(config_digest.replace(':', "-")), config).expect("config blob");
+        fs::write(blobs.join(model_digest.replace(':', "-")), model).expect("model blob");
+
+        let attestation = child_model_store_attestation_for_root(&root, &lock)
+            .expect("child model-store attestation");
+        let payload: Value = serde_json::from_str(&attestation).expect("attestation JSON");
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["model_id"], lock.model_id);
+        assert_eq!(payload["models_root"], root.to_string_lossy().as_ref());
+        assert_eq!(payload["model_layer_digest"], lock.model_layer_digest);
+        assert_eq!(payload["descriptors"].as_array().map(Vec::len), Some(2));
+        assert!(
+            payload["descriptors"][1]["modified_unix_ns"]
+                .as_u64()
+                .is_some()
+        );
+        assert_eq!(
+            VERIFIED_MODEL_STORE_ENV,
+            "IRIS_OLLAMA_VERIFIED_MODEL_STORE_ATTESTATION_JSON"
+        );
+
+        fs::remove_dir_all(root).expect("remove attestation fixture");
     }
 
     #[test]

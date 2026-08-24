@@ -53,18 +53,18 @@ C:\Projects\IRIS\diagnostics\voice-events.jsonl
 11. While Iris is speaking, say `Iris`, `stop`, or `Iris stop`.
 12. Confirm Iris stops speaking and returns to listening.
 13. Click the attachment icon, paste, or drag a small png, jpg, jpeg, or webp image into the text bar.
-14. Confirm a small attachment preview appears above the text bar. For a simple PNG fixture, ask a narrow color/shape question; for an arbitrary scene, confirm the affected Windows Gemma 4 path names the projector limitation and refuses to guess.
+14. Confirm a small attachment preview appears above the text bar. For a simple PNG fixture, ask a narrow color/shape question; for an arbitrary scene, confirm the separately locked local visual model gives a grounded description without a projector-defect refusal.
 15. Drag the divider between the response pane and composer. Confirm the
     response pane grows and shrinks, then relaunch Iris and confirm the chosen
     height is retained.
 16. Drag the top Iris titlebar and confirm the window moves without disrupting
     typing, resizing, or tool buttons.
 17. Click the camera icon with an empty text bar.
-18. Confirm Iris takes a capped camera snapshot and does not guess at an unverified scene. On the affected Windows Gemma 4 path it must name the projector limitation, speak the response, and remain usable.
+18. Confirm Iris takes a capped camera snapshot, grounds its answer in the visible scene, speaks the response, and remains usable.
 19. Type a camera-specific question, then click the camera icon.
 20. Confirm Iris uses that typed question for the camera snapshot and returns only confidence-filtered visible text when available or the same explicit limitation.
 21. Move Iris over a visible app, document, or webpage, then click the screen icon.
-22. Confirm Iris briefly hides and captures the area underneath the Iris window. It may return confidence-filtered visible text, but it must refuse an unverified general scene description on the affected projector path and remain usable.
+22. Confirm Iris briefly hides and captures the area underneath the Iris window. It should preserve confidence-filtered visible text and give a grounded general description through the verified visual route.
 23. Type a screen-specific question, then click the screen icon.
 24. Confirm Iris uses that typed question for the screen-area capture without silently presenting an unverified scene guess.
 25. Click the attachment icon, paste, or drag a small mp4, webm, or mov video into the text bar.
@@ -93,6 +93,20 @@ their errors can numerically cancel each other:
 | Built-in speakers at 90% | 5 uninterrupted replies, 5 explicit interruptions, 2 non-command utterances |
 | Wired or USB headset | Same trials |
 | Bluetooth headset, if supported | Same trials |
+
+Before the speaker rows, close Iris and run the deterministic physical-path
+probe while the room is quiet:
+
+```powershell
+.\scripts\test_windows_aec_live.ps1 -RequireReduction
+```
+
+The probe plays a bounded deterministic reference through the selected default
+output, records a raw control from the selected default microphone, then records
+the same path through the Windows Voice Capture DSP. Its result must name the
+exact endpoint IDs, report `aec_applied=true`, return at least one second of
+processed PCM, and meet the residual-reduction assertion. A weak raw control is
+inconclusive rather than a pass.
 
 For each condition:
 
@@ -139,14 +153,21 @@ Release targets for each separate run are:
 - median VAD-to-pause at or below 150 ms; and
 - median confirmed-interruption resolution at or below 1,200 ms.
 
-Do not add or claim acoustic echo cancellation merely because a VAD candidate
-occurred. Evidence supports true AEC work only when silent speaker trials
-reproducibly create unexpected pauses/cancellations, the rate rises with speaker
-volume, and the same trials do not fail on a headset. If speaker and headset
-conditions both fail, investigate microphone input, ASR, device routing, or
-thresholds first. Any true AEC implementation must use the native microphone
-capture plus the actual playback reference signal and must rerun this entire
-matrix; a browser `echoCancellation` flag alone is not proof of AEC.
+For every speaker run, `acoustic_echo_cancellation` must be `applied`,
+`aec_unavailable_events` must be zero, and the endpoint IDs in
+`speech_aec_prepared` must match the selected Windows routes. The analyzer can
+prove applied AEC from a silent run with no VAD candidates because every
+interruption result records the actual capture backend and `aec=true`. A
+prepared COM object without processed DSP PCM is reported as
+`prepared-not-applied` and is not a pass. Headphone routes may use the explicit
+raw CPAL fallback and still report `aec=false`; speaker routes fail closed and
+must never speculative-pause without processed AEC PCM.
+
+Do not claim acoustic echo cancellation merely because the DSP prepared or a
+VAD candidate occurred. The native source-mode implementation must process the
+actual selected microphone and render endpoint, pass the physical-path probe,
+and pass this entire matrix before the release limitation is removed. A browser
+`echoCancellation` flag alone is not proof of AEC.
 
 ## Signed MSIX Certification Gate
 

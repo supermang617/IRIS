@@ -7,6 +7,12 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $repoRoot
 
+$ollamaModelLockHelper = Join-Path $repoRoot "scripts\iris_ollama_model_lock.ps1"
+if (-not (Test-Path -LiteralPath $ollamaModelLockHelper -PathType Leaf)) {
+    throw "Missing Iris Ollama model-lock verifier: $ollamaModelLockHelper"
+}
+. $ollamaModelLockHelper
+
 $dataRootInitializer = Join-Path $repoRoot "scripts\initialize_iris_data_root.ps1"
 if (-not (Test-Path -LiteralPath $dataRootInitializer -PathType Leaf)) {
     throw "Missing Iris data-root initializer: $dataRootInitializer"
@@ -58,7 +64,7 @@ function Set-IrisOllamaDefault {
 Set-IrisOllamaDefault -Name "OLLAMA_FLASH_ATTENTION" -Value "1" -PersistForCurrentUser
 Set-IrisOllamaDefault -Name "OLLAMA_KV_CACHE_TYPE" -Value "q8_0" -PersistForCurrentUser
 Set-IrisOllamaDefault -Name "OLLAMA_NUM_PARALLEL" -Value "1"
-Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "1"
+Set-IrisOllamaDefault -Name "OLLAMA_MAX_LOADED_MODELS" -Value "2"
 
 function Test-CommandAvailable {
     param([Parameter(Mandatory = $true)][string]$Name)
@@ -91,13 +97,16 @@ function Assert-IrisOllamaLoopbackOnly {
 }
 
 function Get-IrisModelId {
-    $manifestPath = Join-Path $repoRoot "manifest.json"
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+    try {
+        return [string](Get-IrisOllamaModelLock -Root $repoRoot).model_id
+    } catch {
         return ""
     }
+}
+
+function Get-IrisVisionModelId {
     try {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-        return [string]$manifest.model_policy.model_id
+        return [string](Get-IrisOllamaModelLock -Root $repoRoot -Role Vision).model_id
     } catch {
         return ""
     }
@@ -113,47 +122,51 @@ function Get-IrisNumCtx {
     }
 }
 
-function Test-OllamaModelManifest {
-    param(
-        [Parameter(Mandatory = $true)][string]$ModelsRoot,
-        [Parameter(Mandatory = $true)][string]$ModelId
-    )
-    $parts = $ModelId.Split(":", 2)
-    if ($parts.Count -ne 2) {
-        return $false
-    }
-    $nameParts = $parts[0].Split("/", 2)
-    $namespace = if ($nameParts.Count -eq 2) { $nameParts[0] } else { "library" }
-    $name = if ($nameParts.Count -eq 2) { $nameParts[1] } else { $nameParts[0] }
-    $manifest = Join-Path $ModelsRoot (Join-Path "manifests\registry.ollama.ai" (Join-Path $namespace (Join-Path $name $parts[1])))
-    return Test-Path -LiteralPath $manifest -PathType Leaf
-}
-
 function Use-IrisOllamaModelStore {
     param([Parameter(Mandatory = $true)][string]$LogPath)
-    $modelId = Get-IrisModelId
-    if (-not $modelId) {
-        return
+    $modelLocks = @(
+        (Get-IrisOllamaModelLock -Root $repoRoot -Role Primary),
+        (Get-IrisOllamaModelLock -Root $repoRoot -Role Vision)
+    )
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:OLLAMA_MODELS)) {
+        $candidates += $env:OLLAMA_MODELS
     }
-    $candidates = @($env:OLLAMA_MODELS, "C:\.ollama", (Join-Path $env:USERPROFILE ".ollama\models")) | Where-Object { $_ }
-    foreach ($candidate in $candidates) {
-        if (Test-OllamaModelManifest -ModelsRoot $candidate -ModelId $modelId) {
-            $env:OLLAMA_MODELS = $candidate
-            "[$(Get-Date -Format o)] Using Ollama model store $candidate for $modelId." | Out-File -FilePath $LogPath -Encoding utf8 -Append
-            return
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $candidates += Join-Path $env:USERPROFILE ".ollama\models"
+    }
+    $candidates += "C:\.ollama"
+    $verifiedRoot = $null
+    foreach ($modelLock in $modelLocks) {
+        $modelId = [string]$modelLock.model_id
+        $verification = Find-IrisOllamaModelStore -Candidates $candidates -Lock $modelLock
+        if ($null -eq $verification) {
+            throw "Iris's digest-verified model is not installed. Run 'ollama pull $modelId' once to repair a missing or corrupt local model."
         }
+        if ($null -ne $verifiedRoot -and [string]$verification.ModelsRoot -ine [string]$verifiedRoot) {
+            throw "Iris's primary and vision models must be installed in the same verified Ollama model store."
+        }
+        $verifiedRoot = [string]$verification.ModelsRoot
+        Set-IrisOllamaModelStoreAttestation -Verification $verification -Lock $modelLock
+        "[$(Get-Date -Format o)] Verified Ollama model $modelId in $verifiedRoot." | Out-File -FilePath $LogPath -Encoding utf8 -Append
     }
+    $env:OLLAMA_MODELS = $verifiedRoot
 }
 
 function Test-OllamaModelAvailable {
-    $modelId = Get-IrisModelId
-    if (-not $modelId) {
-        return $true
+    $modelIds = @((Get-IrisModelId), (Get-IrisVisionModelId)) | Where-Object { $_ }
+    if ($modelIds.Count -ne 2) {
+        return $false
     }
     try {
         $response = Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 2
         $tags = $response.Content | ConvertFrom-Json
-        return [bool](@($tags.models) | Where-Object { $_.name -eq $modelId } | Select-Object -First 1)
+        foreach ($modelId in $modelIds) {
+            if (-not [bool](@($tags.models) | Where-Object { $_.name -eq $modelId -or $_.model -eq $modelId } | Select-Object -First 1)) {
+                return $false
+            }
+        }
+        return $true
     } catch {
         return $false
     }
@@ -192,6 +205,12 @@ function Start-OllamaForIris {
 
     if (Test-OllamaReady) {
         Assert-IrisOllamaLoopbackOnly
+        try {
+            Assert-IrisOllamaModelIdentity -Root $repoRoot -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Primary | Out-Null
+            Assert-IrisOllamaModelIdentity -Root $repoRoot -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Vision | Out-Null
+        } catch {
+            throw "Iris refuses to use an Ollama model that differs from its immutable model lock. $($_.Exception.Message)"
+        }
         if ($script:irisOllamaServerDefaultsInitialized) {
             "[$(Get-Date -Format o)] Ollama is already listening. Iris will not terminate the shared server; newly initialized CurrentUser memory defaults apply the next time Ollama starts." |
                 Out-File -FilePath $LogPath -Encoding utf8 -Append
@@ -215,6 +234,8 @@ function Start-OllamaForIris {
         Start-Sleep -Milliseconds 500
         if (Test-OllamaReady) {
             Assert-IrisOllamaLoopbackOnly
+            Assert-IrisOllamaModelIdentity -Root $repoRoot -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Primary | Out-Null
+            Assert-IrisOllamaModelIdentity -Root $repoRoot -ModelsRoot $env:OLLAMA_MODELS -TimeoutSeconds 15 -Role Vision | Out-Null
             "[$(Get-Date -Format o)] Ollama is ready after $attempt checks." | Out-File -FilePath $LogPath -Encoding utf8 -Append
             return
         }

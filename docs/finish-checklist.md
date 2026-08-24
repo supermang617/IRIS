@@ -14,8 +14,8 @@ Implemented:
   memory, Dynamic System Context, Panic Stop, Safe Hermes, and approved Agentic
   Hermes flows.
 - Iris-owned RAG and staged memory accept/reject.
-- Isolated, domain-contained Agentic browser session and approval-gated file/PowerShell/process
-  tools.
+- Isolated, domain-contained Agentic browser session and approval-gated
+  file/patch/search tools, with no arbitrary shell/process exposure.
 - Portable ZIP, per-user installer, setup wizard, preflight, uninstall,
   upgrade-data preservation, CI, CodeQL, and release packaging.
 - Single-download beginner bundle generated as
@@ -73,6 +73,7 @@ cargo run --locked -p xtask
 cargo run --locked -p iris-runtime -- --self-check
 cargo run --locked -p iris-runtime -- --dashboard-json
 scripts\test_model_asset_lock.ps1
+scripts\test_ollama_model_lock.ps1
 scripts\test_release_model_e2e.ps1
 scripts\test_windows_release_download.ps1
 scripts\test_windows_beginner_installer.ps1

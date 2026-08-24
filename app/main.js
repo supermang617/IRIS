@@ -46,7 +46,17 @@ import { formatAgenticTaskResult } from "./hermes-agentic-result.js";
 import { formatHermesMode, parseHermesControlCommand } from "./hermes-mode.js";
 import { classifyHermesRoute } from "./hermes-routing.js";
 import { shouldClearInputOnSubmit } from "./input-state.js";
+import {
+  classifyMediaActionRoute,
+  classifySpotifyConnectRoute,
+  mediaActionStatusText,
+  spotifyConnectStatusText
+} from "./media-routing.js";
 import { canSubmitWhilePanicStopped, nextPanicState, panicStatusText } from "./panic-state.js";
+import {
+  classifyScreenProbeRoute,
+  screenProbeStatusText
+} from "./screen-routing.js";
 import {
   nativeSpeechPlaybackArguments,
   playWavBytes
@@ -73,6 +83,7 @@ import {
   interruptionCaptureAttemptAllowed,
   interruptionResumeRequiresCancellation,
   interruptionRetryDelayMs,
+  interruptionSignalAllowsSpeculativePause,
   interruptionSignalIsCurrent,
   nextVoiceListenMode,
   noSpeechStatusForMode,
@@ -80,6 +91,7 @@ import {
   shouldDisarmWakeFollowupAfterMisses,
   shouldContinueVoiceSession,
   shouldDisplayVoiceTranscript,
+  voiceSubmitKeepsSession,
   voiceButtonAction,
   voiceCaptureCanStart,
   voiceTranscriptStateForMode,
@@ -142,6 +154,7 @@ let listening = false;
 let speakReplies = true;
 let voiceLoop = false;
 let wakeWord = true;
+let sleepMode = false;
 let wakeCommandArmed = false;
 let wakeMissStreak = 0;
 let wakeCommandMissStreak = 0;
@@ -181,13 +194,14 @@ let lastFeedbackTurn = null;
 let selectedFeedbackRating = null;
 const conversationHistory = [];
 const maxHistoryTurns = 8;
-const feedbackModelId = "huihui_ai/gemma-4-abliterated:e2b";
-const feedbackProvider = "ollama_local";
+let feedbackModelId = "unavailable";
+let feedbackProvider = "unavailable";
 const cameraSnapshotWidth = 640;
 const cameraSnapshotHeight = 480;
 const cameraPermissionTimeoutMs = 12000;
 const defaultCameraPrompt = "Describe what you can see in this camera snapshot. Keep it brief and natural.";
 const defaultScreenPrompt = "Describe what is visible underneath the Iris window. Keep it brief and natural.";
+const speechGenerationFailedStatus = "Speech generation failed. Check diagnostics.";
 const trustedAttachmentObjectUrls = new Set();
 const responseHeightStorageKey = "iris.responseHeight";
 
@@ -337,6 +351,8 @@ function rememberTurn(role, text) {
 async function refreshDashboard() {
   try {
     const snapshot = await call("dashboard_snapshot");
+    feedbackModelId = String(snapshot.model.id || "unavailable");
+    feedbackProvider = String(snapshot.model.provider || "unavailable");
     logVoice(
       "system_snapshot",
       `model=${snapshot.model.parameter_size}; ram=${formatGb(snapshot.hardware.total_ram_gb)}; free=${formatGb(snapshot.hardware.available_ram_gb)}; usable=${formatGb(snapshot.hardware.usable_after_reserve_gb)}; cpu=${snapshot.hardware.cpu_cores}`
@@ -504,13 +520,36 @@ async function submitMessage(text, source = "typed") {
     elements.hudOutput.textContent = panicStatusText(true);
     return;
   }
+  const sleepDecision = classifyVoiceTranscript(text, {
+    sleeping: sleepMode,
+    voiceLoop: false,
+    wakeWord: true,
+    wakeCommandArmed: false,
+    interruptionOnly: false
+  });
+  if (sleepDecision.action === "sleep") {
+    enterSleepMode("typed-command");
+    return;
+  }
+  if (sleepDecision.action === "wake-from-sleep") {
+    exitSleepMode("typed-command");
+    return;
+  }
+  if (sleepDecision.action === "sleep-ignore") {
+    pendingVoiceLatency = null;
+    elements.hudOutput.textContent = "Sleeping.";
+    elements.voiceStatus.textContent = sleepDecision.status;
+    restartListeningIfReady(250);
+    return;
+  }
   if (thinking || speaking) {
     return;
   }
+  const continueVoiceSession = voiceSubmitKeepsSession(source);
   await cancelActiveAsr();
   wakeCommandArmed = false;
   wakeCommandMissStreak = 0;
-  voiceLoop = false;
+  voiceLoop = continueVoiceSession;
   if (shouldClearInputOnSubmit(text, thinking || speaking)) {
     elements.hudInput.value = "";
     resizeComposerInput();
@@ -534,8 +573,31 @@ async function submitMessage(text, source = "typed") {
     return;
   }
 
+  const spotifyConnectRoute = classifySpotifyConnectRoute(text);
+  if (spotifyConnectRoute.route !== "none") {
+    await submitSpotifyConnectMessage(spotifyConnectRoute, source, latencyTrace);
+    return;
+  }
+
   if (selectedVisionImage) {
     await submitImageMessage(text, latencyTrace);
+    return;
+  }
+
+  const screenRoute = classifyScreenProbeRoute(text);
+  if (screenRoute.route !== "none") {
+    await submitScreenAreaMessage({
+      prompt: screenRoute.prompt,
+      target: screenRoute.target,
+      source,
+      latencyTrace
+    });
+    return;
+  }
+
+  const mediaRoute = classifyMediaActionRoute(text);
+  if (mediaRoute.route !== "none") {
+    await submitMediaActionMessage(mediaRoute, source, latencyTrace);
     return;
   }
 
@@ -737,7 +799,7 @@ async function submitVisualProbeMessage(image, prompt, latencyTrace, options) {
   }
 }
 
-async function submitScreenAreaMessage() {
+async function submitScreenAreaMessage(options = {}) {
   if (!canSubmitWhilePanicStopped(panicStopActive)) {
     elements.hudOutput.textContent = panicStatusText(true);
     return;
@@ -745,22 +807,26 @@ async function submitScreenAreaMessage() {
   if (thinking || speaking) {
     return;
   }
+  const source = options.source || "screen-button";
+  const target = options.target || "under-iris";
+  const promptCandidate = options.prompt ?? elements.hudInput.value.trim();
+  const prompt = String(promptCandidate || defaultScreenPrompt).trim();
+  const latencyTrace = options.latencyTrace || new VoiceLatencyTrace();
+  const continueVoiceSession = voiceSubmitKeepsSession(source);
   await cancelActiveAsr();
   wakeCommandArmed = false;
   wakeCommandMissStreak = 0;
-  voiceLoop = false;
-  const latencyTrace = new VoiceLatencyTrace();
-  const prompt = elements.hudInput.value.trim() || defaultScreenPrompt;
+  voiceLoop = continueVoiceSession;
   const turnStarted = performance.now();
   thinking = true;
   hideFeedbackPanel();
-  logVoice("screen_probe_start", "area-under-iris");
+  logVoice("screen_probe_start", `target=${target}; source=${source}`);
   setInputsDisabled(true);
   elements.hudInput.value = "";
   resizeComposerInput();
-  elements.hudOutput.textContent = `Looking under Iris.\n\nThinking locally...`;
+  elements.hudOutput.textContent = screenProbeStatusText(target);
   try {
-    const response = await call("submit_screen_area_probe", { prompt });
+    const response = await call("submit_screen_area_probe", { prompt, target });
     latencyTrace.llmFullResponseMs = optionalTiming(response.model_elapsed_ms);
     elements.hudOutput.textContent = response.text;
     rememberTurn("user", `[screen] ${prompt}`);
@@ -771,7 +837,7 @@ async function submitScreenAreaMessage() {
       assistantText: response.text,
       modelId: feedbackModelId,
       provider: feedbackProvider,
-      tools: ["screen"],
+      tools: ["screen", target],
       latencyMs: response.model_elapsed_ms
     }));
     if (response.diagnostic_path) {
@@ -795,7 +861,124 @@ async function submitScreenAreaMessage() {
     await logVoiceLatencyReport(latencyTrace);
     thinking = false;
     setInputsDisabled(false);
-    logVoice("submit_end", "screen-probe");
+    logVoice("submit_end", `screen-probe:${source}`);
+    restartListeningIfReady();
+  }
+}
+
+async function submitMediaActionMessage(route, source, latencyTrace) {
+  const turnStarted = performance.now();
+  thinking = true;
+  hideFeedbackPanel();
+  logVoice(
+    "media_action_start",
+    `service=${route.service}; source=${source}; query_chars=${route.query.length}`
+  );
+  setInputsDisabled(true);
+  elements.hudInput.value = "";
+  resizeComposerInput();
+  elements.hudOutput.textContent = mediaActionStatusText(route);
+  try {
+    const response = await call("open_media_request", {
+      request: {
+        service: route.service,
+        query: route.query
+      }
+    });
+    const responseText = response?.text || mediaActionStatusText(route);
+    elements.hudOutput.textContent = responseText;
+    rememberTurn("user", route.prompt);
+    rememberTurn("iris", responseText);
+    showFeedbackForTurn(createFeedbackTurn({
+      source: `media-${route.service}`,
+      userText: route.prompt,
+      assistantText: responseText,
+      modelId: feedbackModelId,
+      provider: "local_action",
+      tools: ["media", route.service],
+      latencyMs: Math.round(performance.now() - turnStarted)
+    }));
+    logVoice(
+      "media_action_complete",
+      `service=${response?.service || route.service}; launch=${response?.launch || "unknown"}; total_ms=${Math.round(performance.now() - turnStarted)}`
+    );
+    await speak(responseText, latencyTrace);
+  } catch (error) {
+    const responseText = `I could not open ${route.service === "spotify" ? "Spotify" : "music"}: ${error}`;
+    elements.hudOutput.textContent = responseText;
+    logVoice(
+      "media_action_error",
+      `service=${route.service}; total_ms=${Math.round(performance.now() - turnStarted)}; ${String(error)}`
+    );
+    await speak(responseText, latencyTrace);
+  } finally {
+    latencyTrace.finishTotal();
+    await logVoiceLatencyReport(latencyTrace);
+    thinking = false;
+    setInputsDisabled(false);
+    logVoice("submit_end", `media-action:${source}`);
+    restartListeningIfReady();
+  }
+}
+
+async function submitSpotifyConnectMessage(route, source, latencyTrace) {
+  const turnStarted = performance.now();
+  thinking = true;
+  hideFeedbackPanel();
+  logVoice(
+    "spotify_connect_start",
+    `action=${route.action}; source=${source}; client_id_present=${Boolean(route.clientId)}`
+  );
+  setInputsDisabled(true);
+  elements.hudInput.value = "";
+  resizeComposerInput();
+  elements.hudOutput.textContent = spotifyConnectStatusText(route);
+  try {
+    const response = route.action === "status"
+      ? await call("spotify_connect_status")
+      : await call("spotify_connect_start", {
+          request: {
+            clientId: route.clientId
+          }
+        });
+    const details = [
+      response?.text || spotifyConnectStatusText(route),
+      response?.redirectUri ? `Redirect URI: ${response.redirectUri}` : "",
+      response?.scopes ? `Scopes: ${response.scopes}` : "",
+      response?.authorizeUrl ? `Authorization URL: ${response.authorizeUrl}` : ""
+    ].filter(Boolean).join("\n");
+    const spokenText = response?.text || spotifyConnectStatusText(route);
+    elements.hudOutput.textContent = details;
+    rememberTurn("user", route.prompt);
+    rememberTurn("iris", spokenText);
+    showFeedbackForTurn(createFeedbackTurn({
+      source: "spotify-connect",
+      userText: route.prompt,
+      assistantText: spokenText,
+      modelId: feedbackModelId,
+      provider: "local_action",
+      tools: ["media", "spotify"],
+      latencyMs: Math.round(performance.now() - turnStarted)
+    }));
+    logVoice(
+      "spotify_connect_complete",
+      `action=${route.action}; total_ms=${Math.round(performance.now() - turnStarted)}`
+    );
+    await speak(spokenText, latencyTrace);
+  } catch (error) {
+    const responseText = String(error);
+    elements.hudOutput.textContent = responseText;
+    logVoice(
+      "spotify_connect_error",
+      `action=${route.action}; total_ms=${Math.round(performance.now() - turnStarted)}; ${responseText}`
+    );
+    await speak(responseText, latencyTrace);
+  } finally {
+    latencyTrace.finishTotal();
+    await logVoiceLatencyReport(latencyTrace);
+    thinking = false;
+    setInputsDisabled(false);
+    logVoice("submit_end", `spotify-connect:${source}`);
     restartListeningIfReady();
   }
 }
@@ -985,12 +1168,17 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
     hideFeedbackPanel();
     setInputsDisabled(true);
     elements.hudOutput.textContent =
-      mode === "research"
+      route === "implicit"
+        ? mode === "research"
+          ? "Iris is checking current sources."
+          : "Iris is working on that."
+      : mode === "research"
         ? "Iris is checking current sources."
         : "Iris is working through Agentic Hermes.";
     try {
       const response = await runAgenticTaskWithApprovals(
-        formatAgenticHermesPrompt(mode, clean, route)
+        formatAgenticHermesPrompt(mode, clean, route),
+        route
       );
       let output = formatAgenticTaskResult(response);
       if (mode === "reason" && isAgenticMemoryStageRequest(clean)) {
@@ -1021,7 +1209,12 @@ async function runHermesTask(mode, text, explicitUserResearchRequest, route = "e
     return;
   }
   hideFeedbackPanel();
-  elements.hudOutput.textContent = route === "implicit" ? "Iris is checking current sources." : "Hermes thinking locally.";
+  elements.hudOutput.textContent =
+    route === "implicit"
+      ? mode === "research"
+        ? "Iris is checking current sources."
+        : "Iris is working on that."
+      : "Hermes thinking locally.";
   const response = await call("hermes_submit_task", {
     request: {
       mode,
@@ -1092,7 +1285,7 @@ async function runImageGeneration(text) {
   }
 }
 
-async function runAgenticTaskWithApprovals(text) {
+async function runAgenticTaskWithApprovals(text, route = "explicit") {
   let settled = false;
   let taskResult;
   let taskError;
@@ -1117,7 +1310,7 @@ async function runAgenticTaskWithApprovals(text) {
     if (!approval || elements.approvalPanel.dataset.requestId === approval.requestId) {
       continue;
     }
-    const approved = await showAgenticApproval(approval);
+    const approved = await showAgenticApproval(approval, { route });
     await call("hermes_respond_agentic_approval", {
       requestId: approval.requestId,
       approved
@@ -1130,13 +1323,16 @@ async function runAgenticTaskWithApprovals(text) {
   return taskResult;
 }
 
-function showAgenticApproval(approval) {
+function showAgenticApproval(approval, options = {}) {
   hideAgenticApproval(false);
   elements.approvalPanel.dataset.requestId = approval.requestId;
   elements.approvalRisk.textContent = formatRiskClass(approval.riskClass);
   elements.approvalSummary.textContent = approval.summary;
   elements.approvalPanel.hidden = false;
-  elements.hudOutput.textContent = "Hermes is waiting for your confirmation.";
+  elements.hudOutput.textContent =
+    options.route === "implicit"
+      ? "Iris needs your confirmation to continue."
+      : "Hermes is waiting for your confirmation.";
   return new Promise((resolve) => {
     activeApprovalResolver = resolve;
   });
@@ -1444,6 +1640,39 @@ function cancelSpeech(reason = "requested") {
   ]);
 }
 
+function enterSleepMode(reason = "requested") {
+  pendingVoiceLatency = null;
+  pendingInterruptionPrompt = "";
+  sleepMode = true;
+  voiceLoop = false;
+  wakeCommandArmed = false;
+  wakeMissStreak = 0;
+  wakeCommandMissStreak = 0;
+  stopListeningRequested = false;
+  elements.hudOutput.textContent = "Sleeping.";
+  elements.voiceStatus.textContent = "Sleeping. Say Iris wake up.";
+  logVoice("sleep_mode_entered", reason);
+  const asrCancellation = cancelActiveAsr();
+  const speechCancellation = cancelSpeech(`sleep:${reason}`);
+  restartListeningIfReady(250);
+  return Promise.allSettled([asrCancellation, speechCancellation]);
+}
+
+function exitSleepMode(reason = "requested") {
+  pendingVoiceLatency = null;
+  pendingInterruptionPrompt = "";
+  sleepMode = false;
+  voiceLoop = false;
+  wakeCommandArmed = false;
+  wakeMissStreak = 0;
+  wakeCommandMissStreak = 0;
+  stopListeningRequested = false;
+  elements.hudOutput.textContent = "Awake.";
+  elements.voiceStatus.textContent = "Wake word armed. Say Iris.";
+  logVoice("sleep_mode_exited", reason);
+  restartListeningIfReady(100);
+}
+
 async function cancelActiveModelGeneration(reason = "requested") {
   const stream = activeModelStream;
   if (!stream || stream.requestId <= 0 || stream.cancelRequested) {
@@ -1491,21 +1720,27 @@ async function beginSpeechSession(latencyTrace = null) {
   let totalTtsSynthesisMs = 0;
   let totalTtsPlaybackMs = 0;
   let queuedChunks = 0;
+  let playedChunks = 0;
   const queue = createPipelinedSpeechQueue({
     isCancelled: () => speechRunId !== runId || panicStopActive,
     synthesize: (text, index) => synthesizeSpeechChunk(text, runId, index === 0),
-    play: async ({ prepared, index }) => {
+    play: async ({ prepared }) => {
       if (!prepared) {
         return;
       }
       totalTtsSynthesisMs += optionalTiming(prepared.elapsedMs) || 0;
       const playbackStartedAt = performance.now();
+      const firstPlayableChunk = playedChunks === 0;
       await playPreparedSpeechChunk(
         prepared,
         runId,
         latencyTrace,
-        index === 0
+        firstPlayableChunk
       );
+      playedChunks += 1;
+      if (elements.voiceStatus.textContent === speechGenerationFailedStatus) {
+        elements.voiceStatus.textContent = "Speaking.";
+      }
       totalTtsPlaybackMs += Math.round(performance.now() - playbackStartedAt);
       if (latencyTrace) {
         latencyTrace.ttsSynthesisMs = totalTtsSynthesisMs;
@@ -1530,9 +1765,12 @@ async function beginSpeechSession(latencyTrace = null) {
     if (speechRunId === runId) {
       speaking = false;
       await cancelInterruptionMonitoring(reason);
+      if (reason === "speech_finished" && playedChunks > 0 && elements.voiceStatus.textContent === speechGenerationFailedStatus) {
+        elements.voiceStatus.textContent = wakeWord ? "Listening for Iris." : "Waiting for input.";
+      }
     }
     activeSpeechPlayback.clearRun(runId);
-    logVoice(reason, `run=${runId}; chunks=${queuedChunks}`);
+    logVoice(reason, `run=${runId}; chunks=${queuedChunks}; played=${playedChunks}`);
   }
 
   return {
@@ -1586,7 +1824,7 @@ async function synthesizeSpeechChunk(text, runId, firstChunk) {
       return null;
     }
     logVoice("kokoro_tts_error", String(error));
-    elements.voiceStatus.textContent = "Speech generation failed. Check diagnostics.";
+    elements.voiceStatus.textContent = speechGenerationFailedStatus;
     return null;
   }
 }
@@ -1730,6 +1968,19 @@ function handlePlaybackOnset(event) {
     "speech_native_onset",
     `run=${playbackId}; preroll_ms=${optionalTiming(payload?.prerollMs ?? payload?.preroll_ms) ?? "unknown"}`
   );
+  const aecPrepared = (payload?.aecPrepared ?? payload?.aec_prepared) === true;
+  const aecBackend = payload?.aecBackend ?? payload?.aec_backend ?? "unavailable";
+  const aecInputDevice = payload?.aecInputDevice ?? payload?.aec_input_device ?? "unknown";
+  const aecInputEndpointId =
+    payload?.aecInputEndpointId ?? payload?.aec_input_endpoint_id ?? "unknown";
+  const aecRenderEndpointId =
+    payload?.aecRenderEndpointId ?? payload?.aec_render_endpoint_id ?? "unknown";
+  const aecRenderRoute = payload?.aecRenderRoute ?? payload?.aec_render_route ?? "unknown";
+  const aecError = payload?.aecError ?? payload?.aec_error;
+  logVoice(
+    aecPrepared ? "speech_aec_prepared" : "speech_aec_unavailable",
+    `run=${playbackId}; backend=${aecBackend}; input_device=${aecInputDevice}; input_endpoint=${aecInputEndpointId}; render_endpoint=${aecRenderEndpointId}; render_route=${aecRenderRoute}; aec_applied=false${aecError ? `; error=${aecError}` : ""}`
+  );
 }
 
 async function initializePlaybackOnsetListener() {
@@ -1760,7 +2011,7 @@ async function resumePlaybackAfterRejectedInterruption(runId, requestId, reason)
   if (!interruptionCandidatePauseAllowed(rejectedInterruptionPauseCount)) {
     logVoice(
       "speech_interruption_pause_suppressed",
-      `run=${runId}; rejected_pauses=${rejectedInterruptionPauseCount}; aec=false`
+      `run=${runId}; rejected_pauses=${rejectedInterruptionPauseCount}`
     );
   }
   if (interruptionResumeRequiresCancellation(outcome)) {
@@ -1795,10 +2046,20 @@ async function handleInterruptionOnset(event) {
 
   const runId = Number(signal.runId ?? signal.run_id);
   const requestId = Number(signal.requestId ?? signal.request_id);
+  const aecApplied = (signal.aecApplied ?? signal.aec_applied) === true;
+  const rawFallbackAllowed =
+    (signal.rawFallbackAllowed ?? signal.raw_fallback_allowed) === true;
+  if (!interruptionSignalAllowsSpeculativePause(signal)) {
+    logVoice(
+      "speech_interruption_vad_candidate_suppressed",
+      `run=${runId}; request=${requestId}; reason=no-verified-aec; aec=${aecApplied}; raw_fallback_allowed=${rawFallbackAllowed}`
+    );
+    return;
+  }
   if (!interruptionCandidatePauseAllowed(rejectedInterruptionPauseCount)) {
     logVoice(
       "speech_interruption_vad_candidate_suppressed",
-      `run=${runId}; request=${requestId}; rejected_pauses=${rejectedInterruptionPauseCount}; aec=false`
+      `run=${runId}; request=${requestId}; rejected_pauses=${rejectedInterruptionPauseCount}; aec=${aecApplied}; raw_fallback_allowed=${rawFallbackAllowed}`
     );
     return;
   }
@@ -1810,7 +2071,7 @@ async function handleInterruptionOnset(event) {
   );
   logVoice(
     "speech_interruption_vad_candidate",
-    `run=${runId}; request=${requestId}; method=${playbackMethod}; capture_to_vad_ms=${captureToVadMs ?? "unknown"}; aec=false`
+    `run=${runId}; request=${requestId}; method=${playbackMethod}; capture_to_vad_ms=${captureToVadMs ?? "unknown"}; aec=${aecApplied}; raw_fallback_allowed=${rawFallbackAllowed}`
   );
   const paused = await interruptionPause.begin({
     runId,
@@ -1959,12 +2220,25 @@ async function monitorSpeechInterruption(runId) {
         "audio_input_device",
         result.inputDevice ?? result.input_device
       );
+      logAudioRoute(
+        "audio_output_device",
+        result.renderDevice ?? result.render_device
+      );
+      const aecApplied = (result.aecApplied ?? result.aec_applied) === true;
+      const captureBackend = result.captureBackend ?? result.capture_backend ?? "unknown";
       const captureElapsedMs = result.captureElapsedMs ?? result.capture_elapsed_ms;
       const sttElapsedMs = result.sttElapsedMs ?? result.stt_elapsed_ms;
+      const speechMs = result.speechMs ?? result.speech_ms;
+      const rms = result.rms;
+      const peak = result.peak;
       const resolutionMs = Math.round(performance.now() - activeInterruptionCaptureStartedAt);
       logVoice(
         "speech_interruption_result",
-        `${result.elapsed_ms}ms; capture_ms=${captureElapsedMs ?? "unknown"}; stt_ms=${sttElapsedMs ?? "unknown"}; ${transcript}`
+        `${result.elapsed_ms}ms; capture_ms=${captureElapsedMs ?? "unknown"}; stt_ms=${sttElapsedMs ?? "unknown"}; backend=${captureBackend}; aec=${aecApplied}; ${transcript}`
+      );
+      logVoice(
+        "audio_capture_metrics",
+        `speech_ms=${speechMs ?? "unknown"}; rms=${rms ?? "unknown"}; peak=${peak ?? "unknown"}; backend=${captureBackend}; interruption=true`
       );
       if (!isUsableTranscript(transcript)) {
         const playbackHealthy = await resumePlaybackAfterRejectedInterruption(
@@ -1988,12 +2262,21 @@ async function monitorSpeechInterruption(runId) {
         continue;
       }
       const decision = classifyVoiceTranscript(transcript, {
+        sleeping: sleepMode,
         voiceLoop,
         wakeWord,
         wakeCommandArmed,
         interruptionOnly: true
       });
       logVoice("speech_interruption_decision", `${decision.action}:${decision.source}:${decision.prompt}`);
+      if (decision.action === "sleep" && speaking && speechRunId === runId) {
+        logVoice(
+          "speech_interruption_sleep",
+          `${transcript}; resolution_ms=${resolutionMs}; request=${requestId}`
+        );
+        await enterSleepMode("speech-interruption");
+        return;
+      }
       if (decision.action === "interrupt" && speaking && speechRunId === runId) {
         logVoice(
           "speech_interruption_detected",
@@ -2179,7 +2462,7 @@ function restartListeningIfReady(delayMs = 650) {
   if (!voiceCaptureCanStart({
     runtimePreparing,
     panicStopped: panicStopActive,
-    enabled: voiceLoop || wakeWord,
+    enabled: sleepMode || voiceLoop || wakeWord,
     thinking,
     speaking,
     listening,
@@ -2194,7 +2477,7 @@ function restartListeningIfReady(delayMs = 650) {
     if (!voiceCaptureCanStart({
       runtimePreparing,
       panicStopped: panicStopActive,
-      enabled: voiceLoop || wakeWord,
+      enabled: sleepMode || voiceLoop || wakeWord,
       thinking,
       speaking,
       listening,
@@ -2203,13 +2486,13 @@ function restartListeningIfReady(delayMs = 650) {
     })) {
       return;
     }
-    if (pendingInterruptionPrompt) {
+    if (!sleepMode && pendingInterruptionPrompt) {
       const prompt = pendingInterruptionPrompt;
       pendingInterruptionPrompt = "";
       void submitMessage(prompt, "interruption-followup");
       return;
     }
-    const mode = nextVoiceListenMode({ wakeCommandArmed, wakeWord, voiceLoop });
+    const mode = nextVoiceListenMode({ sleeping: sleepMode, wakeCommandArmed, wakeWord, voiceLoop });
     if (mode) {
       listenOnce(mode);
     }
@@ -2241,7 +2524,9 @@ async function listenOnce(mode) {
   let restartDelayMs = 650;
   setListening(true);
   logVoice("native_asr_start_requested");
-  elements.voiceStatus.textContent = mode === "push" ? "Listening..." : "Listening for Iris.";
+  elements.voiceStatus.textContent = sleepMode
+    ? "Sleeping. Say Iris wake up."
+    : mode === "push" ? "Listening..." : "Listening for Iris.";
   try {
     const result = await call("native_asr_listen_once", { mode });
     if (generation !== listenGeneration) {
@@ -2259,9 +2544,17 @@ async function listenOnce(mode) {
     );
     const captureElapsedMs = result.captureElapsedMs ?? result.capture_elapsed_ms;
     const sttElapsedMs = result.sttElapsedMs ?? result.stt_elapsed_ms;
+    const speechMs = result.speechMs ?? result.speech_ms;
+    const rms = result.rms;
+    const peak = result.peak;
+    const captureBackend = result.captureBackend ?? result.capture_backend ?? "unknown";
     logVoice(
       "native_asr_result",
       `${result.elapsed_ms}ms; capture_ms=${captureElapsedMs ?? "unknown"}; stt_ms=${sttElapsedMs ?? "unknown"}; ${transcript}`
+    );
+    logVoice(
+      "audio_capture_metrics",
+      `speech_ms=${speechMs ?? "unknown"}; rms=${rms ?? "unknown"}; peak=${peak ?? "unknown"}; backend=${captureBackend}`
     );
     pendingVoiceLatency = {
       captureElapsedMs,
@@ -2285,6 +2578,9 @@ async function listenOnce(mode) {
       return;
     }
     const decision = handleVoiceTranscript(transcript, mode);
+    if (mode === "wake" && (decision?.action === "wait-for-wake" || decision?.action === "ignore")) {
+      logVoice("wake_miss_debug", transcript);
+    }
     if (shouldDisplayVoiceTranscript(decision)) {
       elements.hudOutput.textContent = transcript;
     }
@@ -2320,12 +2616,33 @@ function handleVoiceTranscript(transcript, mode = activeListenMode) {
     voiceTranscriptStateForMode(mode, {
       voiceLoop,
       wakeWord,
+      sleeping: sleepMode,
       wakeCommandArmed,
       interruptionOnly: false
     })
   );
   elements.voiceStatus.textContent = decision.status;
   logVoice("voice_decision", `${decision.action}:${decision.source}:${decision.prompt}`);
+
+  if (decision.action === "sleep") {
+    enterSleepMode("voice-command");
+    return decision;
+  }
+
+  if (decision.action === "wake-from-sleep") {
+    exitSleepMode("voice-command");
+    return decision;
+  }
+
+  if (decision.action === "sleep-ignore") {
+    pendingVoiceLatency = null;
+    wakeCommandArmed = false;
+    wakeCommandMissStreak = 0;
+    wakeMissStreak = 0;
+    voiceLoop = false;
+    restartListeningIfReady(250);
+    return decision;
+  }
 
   if (decision.action === "interrupt") {
     pendingVoiceLatency = null;

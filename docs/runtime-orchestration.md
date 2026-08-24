@@ -45,13 +45,18 @@ background when the executable is available.
 These are the safest universal settings for the current model and hardware
 target:
 
-- Ollama model: `huihui_ai/gemma-4-abliterated:e2b`
+- Companion/text/tools/Hermes model: `huihui_ai/gemma-4-abliterated:e2b`
+- Camera/image/screen model: `qwen3.5:4b`, fixed to a 2,048-token context and a 640-pixel longest-edge model input after full-resolution local OCR.
+- Immutable Ollama identities: `profiles/iris_ollama_model.lock.json` and `profiles/iris_ollama_vision_model.lock.json`; Iris checks
+  the exact manifest digest, byte count, family, parameter size, quantization,
+  and required capabilities before inference.
 - Ollama endpoint: `http://127.0.0.1:11434/api/generate`
 - Context ceiling: `8192`
 - Output cap per response: `192` tokens
 - Keep alive: `10m`
 - Thinking: disabled for Iris runtime calls
 - Parallel model streams: `1`
+- Resident-model default: `2`; the visual canary runs first and primary health runs last so a user-owned one-model Ollama service leaves the companion model warm.
 - Fallback models: disabled
 - Model auto-selection: disabled
 - Model pulling by runtime: disabled
@@ -68,14 +73,21 @@ target:
 - Agentic runtime: provenance-pinned Hermes Agent 0.18.0 over stdio ACP
 - Agentic memory tools: `iris_query_memory`, `iris_propose_memory`
 - Agentic action tools: `read_file`, `write_file`, `patch`, `search_files`,
-  `terminal`, `process`
+  `browser_open`, `browser_snapshot`, `browser_click`, `browser_fill`,
+  `browser_press`, `browser_screenshot`, `browser_get_url`, `browser_upload`,
+  `browser_download`, `browser_close`
+- Denied agentic action tools: `terminal`, `process`, unrestricted shell
+  execution, and arbitrary process launch remain unavailable to Iris/Hermes.
 - Agentic native durable memory, MCP, lazy installs, and cloud fallback: disabled
+- Agentic context compression: Iris-locked local Ollama only, with a 24,000-character
+  input cap, 1,024-token output cap, no auxiliary fallback route, and no message
+  deletion when model-identity validation or summary generation fails
 - Dynamic context: enabled by default, 30-day half-life, 64-observation cap,
   no raw text storage
 
 These settings intentionally favor reliability and privacy over maximum raw
-throughput. Iris, Hermes, and Ollama share one local model path so they do not
-fight for VRAM/RAM or create inconsistent answers.
+throughput. Iris and Hermes share only the primary companion model; Qwen is a
+fixed visual preprocessor and never participates in chat, tools, or model debate.
 
 ## Image Generation Provider
 
@@ -135,21 +147,23 @@ path.
 
 When all pieces are healthy:
 
-- `ollama list` shows `huihui_ai/gemma-4-abliterated:e2b`.
-- Ollama reports `vision` in the configured model capabilities before claiming
-  the image-probe milestone is ready.
+- `ollama list` shows `huihui_ai/gemma-4-abliterated:e2b` and `qwen3.5:4b`.
+- `scripts\test_ollama_model_lock.ps1 -Live` confirms the running tag matches
+  the immutable model lock. Capability metadata never overrides the explicit
+  `general_vision_verified` release-canary policy.
 - Iris preflight reports Ollama/model PASS.
 - Iris text ask returns a short local response.
-- Iris image probe identifies the bounded red-circle fixture. When the direct
-  Ollama raw-image canary is blocked, arbitrary scene descriptions must fail
-  closed rather than treating the local correction as model-vision proof.
+- Iris startup and the release probe require Qwen's direct raw-image canary to
+  identify the red-circle fixture. If it fails, arbitrary scene descriptions
+  fail closed rather than treating OCR or local geometry as model-vision proof.
 - Safe Hermes status reports `iris_query_memory`, `iris_propose_memory`, and `iris_web_research`.
 - Agentic Hermes status reports the Iris memory tools and the six reviewed
   action tools.
 - Hermes reports `parallelInferenceStreams: 1`.
 - An approved Agentic session can complete a local text task, query approved
   Iris memory, stage a memory proposal, and perform approved local file,
-  PowerShell, and process work through ACP with provenance and redacted audits.
+  patch/search, and isolated browser work through ACP with provenance and
+  redacted audits.
 - Ending the session, changing mode, Panic Stop, or Iris exit terminates ACP.
 - Natural online/research requests submitted to Iris route through Hermes.
 - Memory proposals remain staged until Iris/user approval.
@@ -163,7 +177,7 @@ Do not enable:
 - external runtime network;
 - browser or window automation;
 - clipboard access;
-- shell/process execution outside an explicitly approved Agentic Session;
+- arbitrary shell/process execution;
 - fallback models or model auto-selection;
 - parallel Hermes inference streams;
 - live memory databases inside cloud-sync folders.

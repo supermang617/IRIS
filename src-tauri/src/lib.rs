@@ -1,12 +1,18 @@
 mod feedback;
 mod hermes_acp;
 mod hermes_policy;
+#[cfg(windows)]
+mod windows_aec;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
+    any::Any,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
@@ -63,6 +69,7 @@ unsafe extern "system" {
 
 static KOKORO_WORKER: OnceLock<Mutex<Option<KokoroWorker>>> = OnceLock::new();
 static OLLAMA_CLIENT: OnceLock<iris_ollama::OllamaClient> = OnceLock::new();
+static VISION_OLLAMA_CLIENT: OnceLock<iris_ollama::OllamaClient> = OnceLock::new();
 static IMAGE_PROVIDER_CHILD: OnceLock<Mutex<Option<Arc<ImageProviderProcess>>>> = OnceLock::new();
 static IMAGE_PROVIDER_RUN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static HERMES_BROKER_ACCESS: OnceLock<Result<HermesBrokerAccess, String>> = OnceLock::new();
@@ -83,6 +90,11 @@ static TTS_PLAYBACK_PAUSED: AtomicBool = AtomicBool::new(false);
 static TTS_PAUSE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 static TTS_LAST_PAUSE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 static MEMORY_TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static SPOTIFY_AUTH_LISTENER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+const SPOTIFY_REDIRECT_PORT: u16 = 17987;
+const SPOTIFY_REDIRECT_PATH: &str = "/spotify/callback";
+const SPOTIFY_SCOPES: &str = "user-modify-playback-state user-read-playback-state";
 const MAX_MEMORY_ITEMS: usize = 40;
 const MAX_STAGING_ITEMS: usize = 80;
 const MAX_HERMES_MEMORY_QUERY_CHARS: usize = 120;
@@ -113,7 +125,8 @@ const HERMES_SIDECAR_TASK_TIMEOUT: Duration = Duration::from_secs(90);
 const DIAGNOSTIC_ARCHIVE_COUNT: usize = 5;
 const MAX_VOICE_EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_VOICE_LATENCY_LOG_BYTES: u64 = 1024 * 1024;
-const TTS_NATIVE_FIRST_CHUNK_PREROLL_MS: u64 = 80;
+const TTS_NATIVE_FIRST_CHUNK_PREROLL_MS: u64 = 520;
+const TTS_NATIVE_CONTINUATION_CHUNK_PREROLL_MS: u64 = 160;
 const TTS_NATIVE_CHUNK_TAIL_MS: u64 = 20;
 const TTS_NATIVE_PAUSE_ALLOWANCE_MS: u64 = 5_000;
 const INTERRUPTION_CAPTURE_MAX_MS: u64 = 1_200;
@@ -121,6 +134,9 @@ const INTERRUPTION_CAPTURE_START_TIMEOUT_MS: u64 = 600;
 const INTERRUPTION_TRAILING_SILENCE_MS: u64 = 160;
 const INTERRUPTION_MIN_SPEECH_MS: u64 = 120;
 const INTERRUPTION_TRANSCRIPTION_BUDGET_MS: u64 = 1_500;
+const WHISPER_AUDIO_CTX_SAMPLES_PER_UNIT: usize = 320;
+const WHISPER_AUDIO_CTX_GRANULARITY: usize = 64;
+const WHISPER_AUDIO_CTX_MINIMUM: usize = 64;
 const INTERRUPTION_EVENT_NAME: &str = "iris://voice/interruption-onset";
 const TTS_PLAYBACK_ONSET_EVENT_NAME: &str = "iris://voice/playback-onset";
 const MODEL_CHUNK_EVENT_NAME: &str = "iris://model/chunk";
@@ -132,7 +148,7 @@ const OLLAMA_SERVER_DEFAULTS: [(&str, &str); 4] = [
     ("OLLAMA_FLASH_ATTENTION", "1"),
     ("OLLAMA_KV_CACHE_TYPE", "q8_0"),
     ("OLLAMA_NUM_PARALLEL", "1"),
-    ("OLLAMA_MAX_LOADED_MODELS", "1"),
+    ("OLLAMA_MAX_LOADED_MODELS", "2"),
 ];
 const OLLAMA_LOOPBACK_HOST: &str = "127.0.0.1:11434";
 const OLLAMA_PERSISTED_DEFAULT_COUNT: usize = 2;
@@ -214,6 +230,140 @@ struct ImageProbeResponse {
     diagnostic_path: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaOpenRequest {
+    service: String,
+    query: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct MediaOpenResponse {
+    text: String,
+    service: String,
+    query: String,
+    launch: String,
+    fallback_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MediaOpenPlan {
+    service: String,
+    query: String,
+    primary_uri: String,
+    fallback_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpotifyConnectRequest {
+    #[serde(default)]
+    client_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpotifyConnectResponse {
+    text: String,
+    authorize_url: String,
+    redirect_uri: String,
+    scopes: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpotifyConnectStatusResponse {
+    connected: bool,
+    client_id_configured: bool,
+    redirect_uri: String,
+    scopes: String,
+    expires_at_ms: Option<u64>,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpotifyStoredAuth {
+    client_id: String,
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_at_ms: u64,
+    scope: String,
+    token_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpotifyPendingAuth {
+    client_id: String,
+    code_verifier: String,
+    state: String,
+    redirect_uri: String,
+    created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SpotifyTokenResponse {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+    #[serde(default)]
+    scope: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SpotifySearchResponse {
+    tracks: SpotifyTracks,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SpotifyTracks {
+    items: Vec<SpotifyTrack>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SpotifyTrack {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    uri: String,
+    #[serde(default)]
+    artists: Vec<SpotifyArtist>,
+    #[serde(default)]
+    external_urls: SpotifyExternalUrls,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SpotifyExternalUrls {
+    #[serde(default)]
+    spotify: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SpotifyArtist {
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpotifyPlaybackOutcome {
+    text: String,
+    launch: String,
+    fallback_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SpotifyPlaybackError {
+    NotConnected(String),
+    NoTrack(String),
+    PremiumOrDeviceRequired(String),
+    Api(String),
+}
+
 #[derive(Debug, Clone)]
 struct ScreenRegionCapture {
     png_bytes: Vec<u8>,
@@ -278,6 +428,7 @@ struct ScreenCaptureDiagnostic {
     virtual_screen_width: i32,
     virtual_screen_height: i32,
     scale_factor: f64,
+    target: String,
     mean_luma: f64,
     non_dark_pixel_count: usize,
     total_pixel_count: usize,
@@ -291,6 +442,31 @@ struct ScreenCaptureDiagnostic {
 struct ScreenAreaCapture {
     region: ScreenRegionCapture,
     diagnostic_path: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScreenCaptureDiagnosticRequest {
+    window_x: i32,
+    window_y: i32,
+    requested_width: u32,
+    requested_height: u32,
+    scale_factor: f64,
+    target: ScreenCaptureTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreenCaptureTarget {
+    UnderIris,
+    VirtualScreen,
+}
+
+impl ScreenCaptureTarget {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UnderIris => "under-iris",
+            Self::VirtualScreen => "virtual-screen",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -738,7 +914,15 @@ struct AsrCommandResponse {
     elapsed_ms: u128,
     capture_elapsed_ms: Option<u128>,
     stt_elapsed_ms: Option<u128>,
+    speech_ms: Option<u64>,
+    rms: Option<f32>,
+    peak: Option<f32>,
     input_device: String,
+    aec_applied: bool,
+    capture_backend: String,
+    render_device: Option<String>,
+    whisper_audio_ctx: Option<i32>,
+    whisper_model_audio_ctx: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -749,6 +933,11 @@ struct AsrCaptureProfile {
     min_ms: u64,
 }
 
+struct AsrInterruptionCapture<'a> {
+    run_id: u64,
+    on_likely_near_field_speech: &'a mut dyn FnMut(u64, bool, bool),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AsrTranscriptionProfile {
     budget_ms: Option<u64>,
@@ -756,6 +945,97 @@ struct AsrTranscriptionProfile {
     max_len: Option<i32>,
     max_tokens: Option<i32>,
     abort_is_empty: bool,
+}
+
+struct WhisperTranscription {
+    text: String,
+    audio_ctx: i32,
+    model_audio_ctx: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum AsrAbortCause {
+    CaptureCancelled = 1,
+    BudgetExceeded = 2,
+}
+
+impl AsrAbortCause {
+    fn from_usize(value: usize) -> Option<Self> {
+        match value {
+            value if value == Self::CaptureCancelled as usize => Some(Self::CaptureCancelled),
+            value if value == Self::BudgetExceeded as usize => Some(Self::BudgetExceeded),
+            _ => None,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::CaptureCancelled => "capture cancelled",
+            Self::BudgetExceeded => "time budget exceeded",
+        }
+    }
+}
+
+struct WhisperAbortContext {
+    started: Instant,
+    budget_ms: Option<u64>,
+    capture_epoch: u64,
+    active_capture_epoch: &'static AtomicU64,
+    cause: AtomicUsize,
+}
+
+impl WhisperAbortContext {
+    fn new(
+        started: Instant,
+        budget_ms: Option<u64>,
+        capture_epoch: u64,
+        active_capture_epoch: &'static AtomicU64,
+    ) -> Self {
+        Self {
+            started,
+            budget_ms,
+            capture_epoch,
+            active_capture_epoch,
+            cause: AtomicUsize::new(0),
+        }
+    }
+
+    fn should_abort(&self) -> bool {
+        let cause = if self.active_capture_epoch.load(Ordering::SeqCst) != self.capture_epoch {
+            Some(AsrAbortCause::CaptureCancelled)
+        } else if self
+            .budget_ms
+            .is_some_and(|budget_ms| self.started.elapsed() >= Duration::from_millis(budget_ms))
+        {
+            Some(AsrAbortCause::BudgetExceeded)
+        } else {
+            None
+        };
+        if let Some(cause) = cause {
+            let _ =
+                self.cause
+                    .compare_exchange(0, cause as usize, Ordering::SeqCst, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cause(&self) -> Option<AsrAbortCause> {
+        AsrAbortCause::from_usize(self.cause.load(Ordering::SeqCst))
+    }
+}
+
+unsafe extern "C" fn whisper_abort_callback(user_data: *mut std::ffi::c_void) -> bool {
+    if user_data.is_null() {
+        return false;
+    }
+    // SAFETY: transcribe_local_whisper passes a stable Box<WhisperAbortContext> that lives
+    // until the synchronous Whisper call returns. The callback only performs thread-safe reads
+    // and an atomic cause update.
+    let context = unsafe { &*(user_data as *const WhisperAbortContext) };
+    context.should_abort()
 }
 
 impl AsrTranscriptionProfile {
@@ -791,6 +1071,7 @@ struct InterruptionOnsetEvent {
     request_id: u64,
     capture_elapsed_ms: u64,
     aec_applied: bool,
+    raw_fallback_allowed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -799,6 +1080,13 @@ struct TtsPlaybackOnsetEvent {
     playback_id: u64,
     preroll_ms: u64,
     output_device: String,
+    aec_prepared: bool,
+    aec_backend: Option<String>,
+    aec_input_device: Option<String>,
+    aec_input_endpoint_id: Option<String>,
+    aec_render_endpoint_id: Option<String>,
+    aec_render_route: Option<String>,
+    aec_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1277,6 +1565,7 @@ async fn hermes_submit_agentic_task(
         let state = state_root_for(&resources)?;
         let manifest = iris_config::load_manifest_from_workspace(&resources)?;
         let _inference_permit = iris_ollama::acquire_inference_permit()?;
+        configured_ollama_client()?.verify_model_identity()?;
         let expected_session_id = session.session_id.clone();
         let result = hermes_acp::submit_task_with_start_guard(
             &resources,
@@ -1450,14 +1739,35 @@ async fn submit_image_probe(
 }
 
 #[tauri::command]
-async fn submit_screen_area_probe(window: IrisWindow, prompt: String) -> ImageProbeResponse {
-    tauri::async_runtime::spawn_blocking(move || submit_screen_area_probe_blocking(window, prompt))
-        .await
-        .unwrap_or_else(|err| ImageProbeResponse {
-            text: format!("Local screen probe unavailable: {err}"),
-            model_elapsed_ms: 0,
-            diagnostic_path: None,
-        })
+fn open_media_request(request: MediaOpenRequest) -> Result<MediaOpenResponse, String> {
+    open_media_request_blocking(request)
+}
+
+#[tauri::command]
+fn spotify_connect_start(request: SpotifyConnectRequest) -> Result<SpotifyConnectResponse, String> {
+    spotify_connect_start_blocking(request.client_id)
+}
+
+#[tauri::command]
+fn spotify_connect_status() -> Result<SpotifyConnectStatusResponse, String> {
+    spotify_connect_status_blocking()
+}
+
+#[tauri::command]
+async fn submit_screen_area_probe(
+    window: IrisWindow,
+    prompt: String,
+    target: Option<String>,
+) -> ImageProbeResponse {
+    tauri::async_runtime::spawn_blocking(move || {
+        submit_screen_area_probe_blocking(window, prompt, target)
+    })
+    .await
+    .unwrap_or_else(|err| ImageProbeResponse {
+        text: format!("Local screen probe unavailable: {err}"),
+        model_elapsed_ms: 0,
+        diagnostic_path: None,
+    })
 }
 
 fn submit_image_probe_blocking(
@@ -1487,20 +1797,823 @@ fn submit_image_probe_blocking(
     }
 }
 
-fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> ImageProbeResponse {
+fn open_media_request_blocking(request: MediaOpenRequest) -> Result<MediaOpenResponse, String> {
+    let plan = media_open_plan(&request.service, &request.query)?;
+    if plan.service == "spotify" {
+        match spotify_play_query(&plan.query) {
+            Ok(outcome) => {
+                return Ok(MediaOpenResponse {
+                    text: outcome.text,
+                    service: plan.service,
+                    query: plan.query,
+                    launch: outcome.launch,
+                    fallback_url: outcome.fallback_url,
+                });
+            }
+            Err(SpotifyPlaybackError::NotConnected(message)) => {
+                return open_spotify_search_fallback(&plan, &message, "spotify-connect-required");
+            }
+            Err(SpotifyPlaybackError::NoTrack(message)) => {
+                return open_spotify_search_fallback(&plan, &message, "spotify-no-track-fallback");
+            }
+            Err(SpotifyPlaybackError::PremiumOrDeviceRequired(message)) => {
+                return open_spotify_search_fallback(
+                    &plan,
+                    &message,
+                    "spotify-device-required-fallback",
+                );
+            }
+            Err(SpotifyPlaybackError::Api(message)) => {
+                return open_spotify_search_fallback(&plan, &message, "spotify-api-fallback");
+            }
+        }
+    }
+    open_spotify_search_fallback(
+        &plan,
+        &format!(
+            "Opening Spotify for \"{}\". If it shows results instead of starting playback, choose the first matching track.",
+            plan.query
+        ),
+        "spotify-uri",
+    )
+}
+
+fn open_spotify_search_fallback(
+    plan: &MediaOpenPlan,
+    text: &str,
+    launch: &str,
+) -> Result<MediaOpenResponse, String> {
+    match open_uri_with_os(&plan.fallback_url) {
+        Ok(()) => Ok(MediaOpenResponse {
+            text: text.to_string(),
+            service: plan.service.clone(),
+            query: plan.query.clone(),
+            launch: format!("{launch}-web-search"),
+            fallback_url: plan.fallback_url.clone(),
+        }),
+        Err(primary_error) => {
+            open_uri_with_os(&plan.primary_uri).map_err(|fallback_error| {
+                format!(
+                    "Spotify browser fallback failed ({primary_error}) and app fallback failed ({fallback_error})"
+                )
+            })?;
+            Ok(MediaOpenResponse {
+                text: text.to_string(),
+                service: plan.service.clone(),
+                query: plan.query.clone(),
+                launch: format!("{launch}-app-search"),
+                fallback_url: plan.fallback_url.clone(),
+            })
+        }
+    }
+}
+
+fn media_open_plan(service: &str, query: &str) -> Result<MediaOpenPlan, String> {
+    let clean_service = service.trim().to_ascii_lowercase();
+    if clean_service != "spotify" {
+        return Err("Only Spotify media actions are currently supported.".to_string());
+    }
+    let clean_query = normalize_media_query(query)?;
+    let encoded_query = percent_encode_uri_component(&clean_query);
+    Ok(MediaOpenPlan {
+        service: "spotify".to_string(),
+        query: clean_query,
+        primary_uri: format!("spotify:search:{encoded_query}"),
+        fallback_url: format!("https://open.spotify.com/search/{encoded_query}/tracks"),
+    })
+}
+
+fn normalize_media_query(query: &str) -> Result<String, String> {
+    let clean = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    if clean.is_empty() {
+        return Err(
+            "Spotify action requires a song, artist, album, playlist, or search phrase."
+                .to_string(),
+        );
+    }
+    if clean.chars().count() > 180 {
+        return Err("Spotify search phrase is too long.".to_string());
+    }
+    if clean.chars().any(|character| character.is_control()) {
+        return Err("Spotify search phrase contains unsupported control characters.".to_string());
+    }
+    if clean.contains("://") {
+        return Err("Spotify action accepts a search phrase, not a URL.".to_string());
+    }
+    Ok(clean)
+}
+
+fn spotify_connect_start_blocking(
+    client_id_input: String,
+) -> Result<SpotifyConnectResponse, String> {
+    let state_root = state_root()?;
+    let client_id = spotify_client_id(&client_id_input)?;
+    let redirect_uri = spotify_redirect_uri();
+    let code_verifier = random_urlsafe_token(64)?;
+    let state = random_urlsafe_token(24)?;
+    let code_challenge = spotify_code_challenge(&code_verifier);
+    let authorize_url = spotify_authorize_url(&client_id, &redirect_uri, &state, &code_challenge);
+    let listener = TcpListener::bind(("127.0.0.1", SPOTIFY_REDIRECT_PORT)).map_err(|error| {
+        format!(
+            "Spotify callback port {SPOTIFY_REDIRECT_PORT} is unavailable: {error}. Close the other listener or restart Iris."
+        )
+    })?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Spotify callback listener setup failed: {error}"))?;
+    if SPOTIFY_AUTH_LISTENER_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(
+            "Spotify connection is already waiting for browser authorization. Finish that browser prompt or restart Iris."
+                .to_string(),
+        );
+    }
+
+    write_spotify_pending_auth(
+        &state_root,
+        &SpotifyPendingAuth {
+            client_id,
+            code_verifier,
+            state,
+            redirect_uri: redirect_uri.clone(),
+            created_at_ms: timestamp_ms_u64()?,
+        },
+    )?;
+
+    let callback_state_root = state_root.clone();
+    thread::spawn(move || {
+        let _ = handle_spotify_oauth_callback(listener, callback_state_root);
+        SPOTIFY_AUTH_LISTENER_ACTIVE.store(false, Ordering::Release);
+    });
+
+    let open_result = open_uri_with_os(&authorize_url);
+    let text = if open_result.is_ok() {
+        "Spotify connection started. Authorize Iris in the browser.".to_string()
+    } else {
+        "Spotify connection is ready, but the browser did not open. Use the authorization URL shown on screen.".to_string()
+    };
+    Ok(SpotifyConnectResponse {
+        text,
+        authorize_url,
+        redirect_uri,
+        scopes: SPOTIFY_SCOPES.to_string(),
+    })
+}
+
+fn spotify_connect_status_blocking() -> Result<SpotifyConnectStatusResponse, String> {
+    let state_root = state_root()?;
+    let auth = read_spotify_auth(&state_root).ok();
+    let client_id_configured = auth
+        .as_ref()
+        .is_some_and(|stored| !stored.client_id.trim().is_empty())
+        || std::env::var("IRIS_SPOTIFY_CLIENT_ID")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty());
+    let connected = auth.is_some();
+    let expires_at_ms = auth.as_ref().map(|stored| stored.expires_at_ms);
+    let text = if connected {
+        "Spotify is connected.".to_string()
+    } else {
+        "Spotify is not connected. Type spotify connect with your client ID.".to_string()
+    };
+    Ok(SpotifyConnectStatusResponse {
+        connected,
+        client_id_configured,
+        redirect_uri: spotify_redirect_uri(),
+        scopes: SPOTIFY_SCOPES.to_string(),
+        expires_at_ms,
+        text,
+    })
+}
+
+fn spotify_play_query(query: &str) -> Result<SpotifyPlaybackOutcome, SpotifyPlaybackError> {
+    let state_root = state_root().map_err(SpotifyPlaybackError::Api)?;
+    let auth = spotify_fresh_auth(&state_root)?;
+    let client = spotify_http_client().map_err(SpotifyPlaybackError::Api)?;
+    let search = client
+        .get("https://api.spotify.com/v1/search")
+        .bearer_auth(&auth.access_token)
+        .query(&[("q", query), ("type", "track"), ("limit", "1")])
+        .send()
+        .map_err(|error| SpotifyPlaybackError::Api(format!("Spotify search failed: {error}")))?;
+    if search.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(SpotifyPlaybackError::NotConnected(
+            "Spotify authorization expired. Type: spotify connect <client id>".to_string(),
+        ));
+    }
+    if !search.status().is_success() {
+        let status = search.status();
+        let body = search.text().unwrap_or_default();
+        if status == reqwest::StatusCode::FORBIDDEN && spotify_error_mentions_premium(&body) {
+            return Err(SpotifyPlaybackError::PremiumOrDeviceRequired(format!(
+                "Opening Spotify tracks search for \"{query}\"."
+            )));
+        }
+        return Err(SpotifyPlaybackError::Api(format!(
+            "Spotify search returned {status}: {}",
+            json_capped(&body)
+        )));
+    }
+    let parsed: SpotifySearchResponse = search.json().map_err(|error| {
+        SpotifyPlaybackError::Api(format!("Spotify search parse failed: {error}"))
+    })?;
+    let track = parsed.tracks.items.into_iter().next().ok_or_else(|| {
+        SpotifyPlaybackError::NoTrack(format!(
+            "I could not find a Spotify track for \"{query}\". Opening Spotify search."
+        ))
+    })?;
+    let artist_text = track
+        .artists
+        .iter()
+        .map(|artist| artist.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let track_label = if artist_text.is_empty() {
+        track.name.clone()
+    } else {
+        format!("{} by {}", track.name, artist_text)
+    };
+    let playback = client
+        .put("https://api.spotify.com/v1/me/player/play")
+        .bearer_auth(&auth.access_token)
+        .json(&serde_json::json!({ "uris": [track.uri] }))
+        .send()
+        .map_err(|error| {
+            SpotifyPlaybackError::Api(format!("Spotify playback request failed: {error}"))
+        })?;
+    if playback.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(SpotifyPlaybackError::NotConnected(
+            "Spotify authorization expired. Type: spotify connect <client id>".to_string(),
+        ));
+    }
+    if playback.status() == reqwest::StatusCode::FORBIDDEN
+        || playback.status() == reqwest::StatusCode::NOT_FOUND
+    {
+        return open_spotify_exact_track_fallback(&track, &track_label, query);
+    }
+    if !playback.status().is_success() {
+        let status = playback.status();
+        let body = playback.text().unwrap_or_default();
+        if status == reqwest::StatusCode::FORBIDDEN && spotify_error_mentions_premium(&body) {
+            return open_spotify_exact_track_fallback(&track, &track_label, query);
+        }
+        return Err(SpotifyPlaybackError::Api(format!(
+            "Spotify playback returned {status}: {}",
+            json_capped(&body)
+        )));
+    }
+    thread::sleep(Duration::from_millis(650));
+    if !spotify_currently_playing_matches(&client, &auth, &track.uri)? {
+        return open_spotify_exact_track_fallback(&track, &track_label, query);
+    }
+    Ok(SpotifyPlaybackOutcome {
+        text: format!("Playing {track_label} on Spotify."),
+        launch: "spotify-web-api".to_string(),
+        fallback_url: spotify_track_web_url(&track).unwrap_or_else(|| {
+            format!(
+                "https://open.spotify.com/search/{}",
+                percent_encode_uri_component(query)
+            )
+        }),
+    })
+}
+
+fn open_spotify_exact_track_fallback(
+    track: &SpotifyTrack,
+    track_label: &str,
+    query: &str,
+) -> Result<SpotifyPlaybackOutcome, SpotifyPlaybackError> {
+    let track_uri = spotify_track_uri(track).ok_or_else(|| {
+        SpotifyPlaybackError::PremiumOrDeviceRequired(format!(
+            "Spotify could not expose an exact track link for \"{query}\". Opening Spotify search."
+        ))
+    })?;
+    let fallback_url = spotify_track_web_url(track).unwrap_or_else(|| {
+        format!(
+            "https://open.spotify.com/search/{}",
+            percent_encode_uri_component(query)
+        )
+    });
+    match open_uri_with_os(&track_uri) {
+        Ok(()) => Ok(SpotifyPlaybackOutcome {
+            text: format!("Opened {track_label} on Spotify."),
+            launch: "spotify-exact-track-uri".to_string(),
+            fallback_url,
+        }),
+        Err(uri_error) => {
+            open_uri_with_os(&fallback_url).map_err(|url_error| {
+                SpotifyPlaybackError::PremiumOrDeviceRequired(format!(
+                    "Spotify exact-track fallback failed ({uri_error}) and browser fallback failed ({url_error})."
+                ))
+            })?;
+            Ok(SpotifyPlaybackOutcome {
+                text: format!("Opened {track_label} in Spotify."),
+                launch: "spotify-exact-track-web".to_string(),
+                fallback_url,
+            })
+        }
+    }
+}
+
+fn spotify_track_uri(track: &SpotifyTrack) -> Option<String> {
+    let uri = track.uri.trim();
+    if uri.starts_with("spotify:track:") {
+        return Some(uri.to_string());
+    }
+    let id = track.id.trim();
+    if spotify_track_id_is_safe(id) {
+        return Some(format!("spotify:track:{id}"));
+    }
+    None
+}
+
+fn spotify_track_web_url(track: &SpotifyTrack) -> Option<String> {
+    let url = track.external_urls.spotify.trim();
+    if spotify_track_web_url_is_safe(url) {
+        return Some(url.to_string());
+    }
+    let id = track.id.trim();
+    if spotify_track_id_is_safe(id) {
+        return Some(format!("https://open.spotify.com/track/{id}"));
+    }
+    track
+        .uri
+        .strip_prefix("spotify:track:")
+        .filter(|id| spotify_track_id_is_safe(id))
+        .map(|id| format!("https://open.spotify.com/track/{id}"))
+}
+
+fn spotify_track_id_is_safe(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+}
+
+fn spotify_track_web_url_is_safe(url: &str) -> bool {
+    let prefix = "https://open.spotify.com/track/";
+    url.starts_with(prefix)
+        && url[prefix.len()..].chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '?' | '&' | '=' | '_' | '-' | '.')
+        })
+}
+
+fn spotify_currently_playing_matches(
+    client: &reqwest::blocking::Client,
+    auth: &SpotifyStoredAuth,
+    expected_uri: &str,
+) -> Result<bool, SpotifyPlaybackError> {
+    if expected_uri.trim().is_empty() {
+        return Ok(false);
+    }
+    let response = client
+        .get("https://api.spotify.com/v1/me/player/currently-playing")
+        .bearer_auth(&auth.access_token)
+        .send()
+        .map_err(|error| {
+            SpotifyPlaybackError::Api(format!("Spotify playback verification failed: {error}"))
+        })?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(false);
+    }
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(SpotifyPlaybackError::NotConnected(
+            "Spotify authorization expired. Type: spotify connect <client id>".to_string(),
+        ));
+    }
+    if !response.status().is_success() {
+        return Ok(false);
+    }
+    let body: serde_json::Value = response.json().map_err(|error| {
+        SpotifyPlaybackError::Api(format!(
+            "Spotify playback verification parse failed: {error}"
+        ))
+    })?;
+    Ok(body
+        .get("item")
+        .and_then(|item| item.get("uri"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|actual_uri| actual_uri == expected_uri))
+}
+
+fn spotify_fresh_auth(state_root: &Path) -> Result<SpotifyStoredAuth, SpotifyPlaybackError> {
+    let mut auth = read_spotify_auth(state_root).map_err(|_| {
+        SpotifyPlaybackError::NotConnected(format!(
+            "Opening Spotify for this request. For direct playback, create a Spotify app, add redirect URI {}, then type: spotify connect <client id>",
+            spotify_redirect_uri()
+        ))
+    })?;
+    let now = timestamp_ms_u64().map_err(SpotifyPlaybackError::Api)?;
+    if now.saturating_add(60_000) < auth.expires_at_ms {
+        return Ok(auth);
+    }
+    let refresh_token = auth.refresh_token.clone().ok_or_else(|| {
+        SpotifyPlaybackError::NotConnected(
+            "Spotify authorization cannot refresh. Type: spotify connect <client id>".to_string(),
+        )
+    })?;
+    let client = spotify_http_client().map_err(SpotifyPlaybackError::Api)?;
+    let response = client
+        .post("https://accounts.spotify.com/api/token")
+        .form(&[
+            ("client_id", auth.client_id.as_str()),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+        ])
+        .send()
+        .map_err(|error| {
+            SpotifyPlaybackError::Api(format!("Spotify token refresh failed: {error}"))
+        })?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(SpotifyPlaybackError::NotConnected(format!(
+            "Spotify authorization refresh returned {status}: {}. Type: spotify connect <client id>",
+            json_capped(&body)
+        )));
+    }
+    let token: SpotifyTokenResponse = response.json().map_err(|error| {
+        SpotifyPlaybackError::Api(format!("Spotify token parse failed: {error}"))
+    })?;
+    auth.access_token = token.access_token;
+    auth.token_type = token.token_type;
+    auth.scope = token.scope;
+    auth.expires_at_ms = now.saturating_add(token.expires_in.saturating_mul(1000));
+    if token.refresh_token.is_some() {
+        auth.refresh_token = token.refresh_token;
+    }
+    write_spotify_auth(state_root, &auth).map_err(SpotifyPlaybackError::Api)?;
+    Ok(auth)
+}
+
+fn spotify_exchange_authorization_code(
+    state_root: &Path,
+    pending: &SpotifyPendingAuth,
+    code: &str,
+) -> Result<(), String> {
+    let client = spotify_http_client()?;
+    let response = client
+        .post("https://accounts.spotify.com/api/token")
+        .form(&[
+            ("client_id", pending.client_id.as_str()),
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", pending.redirect_uri.as_str()),
+            ("code_verifier", pending.code_verifier.as_str()),
+        ])
+        .send()
+        .map_err(|error| format!("Spotify token exchange failed: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(format!(
+            "Spotify token exchange returned {status}: {}",
+            json_capped(&body)
+        ));
+    }
+    let token: SpotifyTokenResponse = response
+        .json()
+        .map_err(|error| format!("Spotify token response parse failed: {error}"))?;
+    let now = timestamp_ms_u64()?;
+    write_spotify_auth(
+        state_root,
+        &SpotifyStoredAuth {
+            client_id: pending.client_id.clone(),
+            access_token: token.access_token,
+            refresh_token: token.refresh_token,
+            expires_at_ms: now.saturating_add(token.expires_in.saturating_mul(1000)),
+            scope: token.scope,
+            token_type: token.token_type,
+        },
+    )?;
+    let _ = fs::remove_file(spotify_pending_auth_path(state_root));
+    Ok(())
+}
+
+fn handle_spotify_oauth_callback(listener: TcpListener, state_root: PathBuf) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _address)) => {
+                let result = handle_spotify_oauth_stream(&mut stream, &state_root);
+                let (status, body) = match &result {
+                    Ok(()) => (
+                        "200 OK",
+                        "Spotify connected. You can close this browser tab and return to Iris.",
+                    ),
+                    Err(error) => (
+                        "400 Bad Request",
+                        if error.is_empty() {
+                            "Spotify connection failed."
+                        } else {
+                            "Spotify connection failed. Return to Iris and retry setup."
+                        },
+                    ),
+                };
+                let _ = write_spotify_callback_response(&mut stream, status, body);
+                return result;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if started.elapsed() > Duration::from_secs(180) {
+                    return Err(
+                        "Spotify authorization timed out before browser callback.".to_string()
+                    );
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(format!("Spotify callback listener failed: {error}")),
+        }
+    }
+}
+
+fn handle_spotify_oauth_stream(stream: &mut TcpStream, state_root: &Path) -> Result<(), String> {
+    let cloned = stream
+        .try_clone()
+        .map_err(|error| format!("Spotify callback stream clone failed: {error}"))?;
+    let mut reader = BufReader::new(cloned);
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .map_err(|error| format!("Spotify callback read failed: {error}"))?;
+    let target = request_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| "Spotify callback request was malformed.".to_string())?;
+    if !target.starts_with(SPOTIFY_REDIRECT_PATH) {
+        return Err("Spotify callback path did not match Iris redirect URI.".to_string());
+    }
+    let query = target
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    if let Some(error) = query_parameter(query, "error")? {
+        return Err(format!("Spotify authorization denied: {error}"));
+    }
+    let code = query_parameter(query, "code")?
+        .ok_or_else(|| "Spotify callback did not include an authorization code.".to_string())?;
+    let received_state = query_parameter(query, "state")?
+        .ok_or_else(|| "Spotify callback did not include state.".to_string())?;
+    let pending = read_spotify_pending_auth(state_root)?;
+    if received_state != pending.state {
+        return Err("Spotify callback state did not match Iris pending authorization.".to_string());
+    }
+    spotify_exchange_authorization_code(state_root, &pending, &code)
+}
+
+fn write_spotify_callback_response(
+    stream: &mut TcpStream,
+    status: &str,
+    body: &str,
+) -> std::io::Result<()> {
+    let html = format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>Iris Spotify</title><body><p>{body}</p></body>"
+    );
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        html.len(),
+        html
+    )
+}
+
+fn spotify_authorize_url(
+    client_id: &str,
+    redirect_uri: &str,
+    state: &str,
+    code_challenge: &str,
+) -> String {
+    format!(
+        "https://accounts.spotify.com/authorize?response_type=code&client_id={}&scope={}&redirect_uri={}&state={}&code_challenge_method=S256&code_challenge={}",
+        percent_encode_uri_component(client_id),
+        percent_encode_uri_component(SPOTIFY_SCOPES),
+        percent_encode_uri_component(redirect_uri),
+        percent_encode_uri_component(state),
+        percent_encode_uri_component(code_challenge)
+    )
+}
+
+fn spotify_client_id(input: &str) -> Result<String, String> {
+    let candidate = if input.trim().is_empty() {
+        std::env::var("IRIS_SPOTIFY_CLIENT_ID").unwrap_or_default()
+    } else {
+        input.to_string()
+    };
+    let client_id = candidate.trim();
+    if client_id.is_empty() {
+        return Err(format!(
+            "Spotify client ID is required. In Spotify Developer Dashboard, create an app, add redirect URI {}, then type: spotify connect <client id>",
+            spotify_redirect_uri()
+        ));
+    }
+    if client_id.len() < 8
+        || client_id.len() > 128
+        || !client_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        return Err("Spotify client ID must be the alphanumeric Client ID from Spotify Developer Dashboard.".to_string());
+    }
+    Ok(client_id.to_string())
+}
+
+fn spotify_redirect_uri() -> String {
+    format!("http://127.0.0.1:{SPOTIFY_REDIRECT_PORT}{SPOTIFY_REDIRECT_PATH}")
+}
+
+fn spotify_code_challenge(code_verifier: &str) -> String {
+    let digest = Sha256::digest(code_verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn random_urlsafe_token(byte_count: usize) -> Result<String, String> {
+    let mut bytes = vec![0_u8; byte_count];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("secure random generation failed: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn spotify_http_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Spotify HTTP client setup failed: {error}"))
+}
+
+fn spotify_error_mentions_premium(body: &str) -> bool {
+    let normalized = body.to_ascii_lowercase();
+    normalized.contains("premium") || normalized.contains("subscription")
+}
+
+fn spotify_state_dir(state_root: &Path) -> PathBuf {
+    state_root.join(".iris-data").join("spotify")
+}
+
+fn spotify_auth_path(state_root: &Path) -> PathBuf {
+    spotify_state_dir(state_root).join("auth.json")
+}
+
+fn spotify_pending_auth_path(state_root: &Path) -> PathBuf {
+    spotify_state_dir(state_root).join("pending-auth.json")
+}
+
+fn read_spotify_auth(state_root: &Path) -> Result<SpotifyStoredAuth, String> {
+    let bytes = fs::read(spotify_auth_path(state_root))
+        .map_err(|error| format!("Spotify is not connected: {error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Spotify auth state is invalid: {error}"))
+}
+
+fn write_spotify_auth(state_root: &Path, auth: &SpotifyStoredAuth) -> Result<(), String> {
+    fs::create_dir_all(spotify_state_dir(state_root))
+        .map_err(|error| format!("Spotify state directory unavailable: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(auth)
+        .map_err(|error| format!("Spotify auth serialization failed: {error}"))?;
+    fs::write(spotify_auth_path(state_root), bytes)
+        .map_err(|error| format!("Spotify auth state write failed: {error}"))
+}
+
+fn read_spotify_pending_auth(state_root: &Path) -> Result<SpotifyPendingAuth, String> {
+    let bytes = fs::read(spotify_pending_auth_path(state_root))
+        .map_err(|error| format!("Spotify pending auth is unavailable: {error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Spotify pending auth state is invalid: {error}"))
+}
+
+fn write_spotify_pending_auth(
+    state_root: &Path,
+    pending: &SpotifyPendingAuth,
+) -> Result<(), String> {
+    fs::create_dir_all(spotify_state_dir(state_root))
+        .map_err(|error| format!("Spotify state directory unavailable: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(pending)
+        .map_err(|error| format!("Spotify pending auth serialization failed: {error}"))?;
+    fs::write(spotify_pending_auth_path(state_root), bytes)
+        .map_err(|error| format!("Spotify pending auth write failed: {error}"))
+}
+
+fn query_parameter(query: &str, key: &str) -> Result<Option<String>, String> {
+    for pair in query.split('&') {
+        let (pair_key, pair_value) = pair.split_once('=').unwrap_or((pair, ""));
+        if percent_decode_uri_component(pair_key)? == key {
+            return percent_decode_uri_component(pair_value).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn percent_decode_uri_component(value: &str) -> Result<String, String> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' => {
+                if index + 2 >= bytes.len() {
+                    return Err("percent-encoded value ended early".to_string());
+                }
+                let high = hex_value(bytes[index + 1])?;
+                let low = hex_value(bytes[index + 2])?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|error| format!("decoded value was not UTF-8: {error}"))
+}
+
+fn hex_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err("invalid percent-encoded hex digit".to_string()),
+    }
+}
+
+fn percent_encode_uri_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(*byte));
+            }
+            byte => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+#[cfg(windows)]
+fn wide_null(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(windows)]
+fn open_uri_with_os(uri: &str) -> Result<(), String> {
+    use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+    let operation = wide_null("open");
+    let target = wide_null(uri);
+    // SAFETY: `operation` and `target` are valid NUL-terminated UTF-16 strings and the optional
+    // parameters are omitted. ShellExecuteW only receives vetted Spotify URI/HTTPS values built by
+    // `media_open_plan`.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR(operation.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = result.0 as isize;
+    if code <= 32 {
+        return Err(format!("Windows ShellExecute returned code {code}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn open_uri_with_os(_uri: &str) -> Result<(), String> {
+    Err("media actions are currently available only on Windows".to_string())
+}
+
+fn submit_screen_area_probe_blocking(
+    window: IrisWindow,
+    prompt: String,
+    target: Option<String>,
+) -> ImageProbeResponse {
     let started = Instant::now();
     let now = timestamp_ms_u64().unwrap_or(0);
     let dynamic_context = dynamic_context_instruction(now);
-    let (response, diagnostic_path) =
-        match screen_area_probe_response(&window, &prompt, dynamic_context.as_deref()) {
-            Ok((response, diagnostic_path)) => (response, Some(diagnostic_path)),
-            Err(error) => (
-                iris_core_types::AssistantResponse::text_only(format!(
-                    "Local screen probe unavailable: {error}"
-                )),
-                None,
-            ),
-        };
+    let screen_target = screen_capture_target_from_request(target.as_deref());
+    let (response, diagnostic_path) = match screen_area_probe_response(
+        &window,
+        &prompt,
+        screen_target,
+        dynamic_context.as_deref(),
+    ) {
+        Ok((response, diagnostic_path)) => (response, Some(diagnostic_path)),
+        Err(error) => (
+            iris_core_types::AssistantResponse::text_only(format!(
+                "Local screen probe unavailable: {error}"
+            )),
+            None,
+        ),
+    };
     observe_dynamic_context_nonfatal(&prompt, now);
     ImageProbeResponse {
         text: response.text,
@@ -1513,25 +2626,27 @@ fn submit_screen_area_probe_blocking(window: IrisWindow, prompt: String) -> Imag
 async fn native_asr_listen_once(mode: Option<String>) -> Result<AsrCommandResponse, String> {
     let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let transcription_hint = whisper_initial_prompt(mode.as_deref());
-        let profile = asr_capture_profile(mode.as_deref());
-        native_asr_listen_for(
-            profile.duration_ms,
-            CaptureEndpoint::Speech {
-                min_ms: profile.min_ms,
-                trailing_silence_ms: profile.trailing_silence_ms,
-                start_timeout_ms: profile.start_timeout_ms,
-            },
-            capture_epoch,
-            transcription_hint,
-            mode.as_deref() == Some("wake"),
-            if mode.as_deref() == Some("wake") {
-                AsrTranscriptionProfile::WAKE
-            } else {
-                AsrTranscriptionProfile::DEFAULT
-            },
-            None,
-        )
+        run_native_asr_safely(|| {
+            let transcription_hint = whisper_initial_prompt(mode.as_deref());
+            let profile = asr_capture_profile(mode.as_deref());
+            native_asr_listen_for(
+                profile.duration_ms,
+                CaptureEndpoint::Speech {
+                    min_ms: profile.min_ms,
+                    trailing_silence_ms: profile.trailing_silence_ms,
+                    start_timeout_ms: profile.start_timeout_ms,
+                },
+                capture_epoch,
+                transcription_hint,
+                mode.as_deref() == Some("wake"),
+                if mode.as_deref() == Some("wake") {
+                    AsrTranscriptionProfile::WAKE
+                } else {
+                    AsrTranscriptionProfile::DEFAULT
+                },
+                None,
+            )
+        })
     })
     .await
     .map_err(|err| err.to_string())?
@@ -1545,38 +2660,77 @@ async fn native_asr_listen_interrupt(
 ) -> Result<AsrCommandResponse, String> {
     let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let mut emit_onset = move |capture_elapsed_ms| {
-            let _ = window.emit(
-                INTERRUPTION_EVENT_NAME,
-                InterruptionOnsetEvent {
-                    run_id,
-                    request_id,
-                    capture_elapsed_ms,
-                    aec_applied: false,
+        run_native_asr_safely(|| {
+            let mut emit_onset = move |capture_elapsed_ms, aec_applied, raw_fallback_allowed| {
+                let _ = window.emit(
+                    INTERRUPTION_EVENT_NAME,
+                    InterruptionOnsetEvent {
+                        run_id,
+                        request_id,
+                        capture_elapsed_ms,
+                        aec_applied,
+                        raw_fallback_allowed,
+                    },
+                );
+            };
+            native_asr_listen_for(
+                INTERRUPTION_CAPTURE_MAX_MS,
+                CaptureEndpoint::Speech {
+                    min_ms: INTERRUPTION_MIN_SPEECH_MS,
+                    trailing_silence_ms: INTERRUPTION_TRAILING_SILENCE_MS,
+                    start_timeout_ms: INTERRUPTION_CAPTURE_START_TIMEOUT_MS,
                 },
-            );
-        };
-        native_asr_listen_for(
-            INTERRUPTION_CAPTURE_MAX_MS,
-            CaptureEndpoint::Speech {
-                min_ms: INTERRUPTION_MIN_SPEECH_MS,
-                trailing_silence_ms: INTERRUPTION_TRAILING_SILENCE_MS,
-                start_timeout_ms: INTERRUPTION_CAPTURE_START_TIMEOUT_MS,
-            },
-            capture_epoch,
-            whisper_initial_prompt(Some("interrupt")),
-            false,
-            AsrTranscriptionProfile::INTERRUPTION,
-            Some(&mut emit_onset),
-        )
+                capture_epoch,
+                whisper_initial_prompt(Some("interrupt")),
+                false,
+                AsrTranscriptionProfile::INTERRUPTION,
+                Some(AsrInterruptionCapture {
+                    run_id,
+                    on_likely_near_field_speech: &mut emit_onset,
+                }),
+            )
+        })
     })
     .await
     .map_err(|err| err.to_string())?
 }
 
+fn run_native_asr_safely(
+    operation: impl FnOnce() -> Result<AsrCommandResponse, String>,
+) -> Result<AsrCommandResponse, String> {
+    match catch_unwind(AssertUnwindSafe(operation)) {
+        Ok(result) => result,
+        Err(payload) => Err(native_asr_panic_message(payload.as_ref())),
+    }
+}
+
+fn native_asr_panic_message(payload: &(dyn Any + Send)) -> String {
+    let message = panic_payload_to_string(payload);
+    let normalized = message.to_ascii_lowercase();
+    if normalized.contains("0x80070006") || normalized.contains("the handle is invalid") {
+        return "Native ASR capture failed because the Windows audio device handle became invalid. Iris will retry listening.".to_string();
+    }
+    format!(
+        "Native ASR capture failed unexpectedly: {}",
+        json_capped(&message)
+    )
+}
+
+fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    "unknown panic payload".to_string()
+}
+
 #[tauri::command]
 fn cancel_native_asr() {
     ASR_CAPTURE_EPOCH.fetch_add(1, Ordering::SeqCst);
+    #[cfg(windows)]
+    windows_aec::stop_active_session();
 }
 
 fn asr_capture_profile(mode: Option<&str>) -> AsrCaptureProfile {
@@ -1600,9 +2754,9 @@ fn asr_capture_profile(mode: Option<&str>) -> AsrCaptureProfile {
             min_ms: 250,
         },
         Some("wake") => AsrCaptureProfile {
-            duration_ms: 1_800,
-            start_timeout_ms: 900,
-            trailing_silence_ms: 220,
+            duration_ms: 3_200,
+            start_timeout_ms: 1_100,
+            trailing_silence_ms: 320,
             min_ms: 100,
         },
         _ => AsrCaptureProfile {
@@ -1621,16 +2775,44 @@ fn native_asr_listen_for(
     transcription_hint: Option<&'static str>,
     skip_low_confidence_wake: bool,
     transcription_profile: AsrTranscriptionProfile,
-    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
+    interruption: Option<AsrInterruptionCapture<'_>>,
 ) -> Result<AsrCommandResponse, String> {
     let started = Instant::now();
     let capture_started = Instant::now();
-    let audio = record_microphone_mono_16khz(
-        duration_ms,
-        endpoint,
-        capture_epoch,
-        on_likely_near_field_speech,
-    )?;
+    let audio = if let Some(interruption) = interruption {
+        #[cfg(windows)]
+        {
+            record_interruption_mono_16khz(
+                interruption.run_id,
+                duration_ms,
+                endpoint,
+                capture_epoch,
+                Some(interruption.on_likely_near_field_speech),
+            )?
+        }
+        #[cfg(not(windows))]
+        {
+            record_microphone_mono_16khz(
+                duration_ms,
+                endpoint,
+                capture_epoch,
+                Some(interruption.on_likely_near_field_speech),
+            )?
+        }
+    } else {
+        #[cfg(windows)]
+        {
+            if skip_low_confidence_wake {
+                record_wake_mono_16khz(duration_ms, endpoint, capture_epoch)?
+            } else {
+                record_microphone_mono_16khz(duration_ms, endpoint, capture_epoch, None)?
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            record_microphone_mono_16khz(duration_ms, endpoint, capture_epoch, None)?
+        }
+    };
     let capture_elapsed_ms = capture_started.elapsed().as_millis();
     if !audio.speech_detected {
         return Ok(AsrCommandResponse {
@@ -1638,7 +2820,15 @@ fn native_asr_listen_for(
             elapsed_ms: started.elapsed().as_millis(),
             capture_elapsed_ms: Some(capture_elapsed_ms),
             stt_elapsed_ms: Some(0),
+            speech_ms: Some(audio.speech_ms),
+            rms: Some(audio.rms),
+            peak: Some(audio.peak),
             input_device: audio.input_device.clone(),
+            aec_applied: audio.aec_applied,
+            capture_backend: audio.capture_backend.clone(),
+            render_device: audio.render_device.clone(),
+            whisper_audio_ctx: None,
+            whisper_model_audio_ctx: None,
         });
     }
     if skip_low_confidence_wake && !wake_audio_should_transcribe(&audio) {
@@ -1647,35 +2837,60 @@ fn native_asr_listen_for(
             elapsed_ms: started.elapsed().as_millis(),
             capture_elapsed_ms: Some(capture_elapsed_ms),
             stt_elapsed_ms: Some(0),
+            speech_ms: Some(audio.speech_ms),
+            rms: Some(audio.rms),
+            peak: Some(audio.peak),
             input_device: audio.input_device.clone(),
+            aec_applied: audio.aec_applied,
+            capture_backend: audio.capture_backend.clone(),
+            render_device: audio.render_device.clone(),
+            whisper_audio_ctx: None,
+            whisper_model_audio_ctx: None,
         });
     }
     let stt_started = Instant::now();
-    let text = match transcribe_local_whisper(
+    let transcription = match transcribe_local_whisper(
         &audio.samples,
         transcription_hint,
         capture_epoch,
         transcription_profile,
     ) {
-        Ok(text) => text,
-        Err(error) if transcription_profile.abort_is_empty && is_whisper_abort_error(&error) => {
-            String::new()
-        }
+        Ok(transcription) => Some(transcription),
         Err(error)
-            if ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) != capture_epoch
-                && is_whisper_abort_error(&error) =>
+            if asr_transcription_error_is_empty(
+                transcription_profile,
+                capture_epoch,
+                ASR_CAPTURE_EPOCH.load(Ordering::SeqCst),
+                &error,
+            ) =>
         {
-            String::new()
+            None
         }
         Err(error) => return Err(error),
     };
     let stt_elapsed_ms = stt_started.elapsed().as_millis();
+    let (text, whisper_audio_ctx, whisper_model_audio_ctx) = match transcription {
+        Some(transcription) => (
+            transcription.text,
+            Some(transcription.audio_ctx),
+            Some(transcription.model_audio_ctx),
+        ),
+        None => (String::new(), None, None),
+    };
     Ok(AsrCommandResponse {
         text,
         elapsed_ms: started.elapsed().as_millis(),
         capture_elapsed_ms: Some(capture_elapsed_ms),
         stt_elapsed_ms: Some(stt_elapsed_ms),
+        speech_ms: Some(audio.speech_ms),
+        rms: Some(audio.rms),
+        peak: Some(audio.peak),
         input_device: audio.input_device,
+        aec_applied: audio.aec_applied,
+        capture_backend: audio.capture_backend,
+        render_device: audio.render_device,
+        whisper_audio_ctx,
+        whisper_model_audio_ctx,
     })
 }
 
@@ -1713,16 +2928,54 @@ async fn play_tts_wav(
     TTS_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
     TTS_LAST_PAUSE_REQUEST_ID.store(0, Ordering::SeqCst);
     let result = tauri::async_runtime::spawn_blocking(move || {
-        play_tts_wav_blocking_with_onset(&wav_bytes, playback_epoch, first_chunk, |output_device| {
-            let _ = window.emit(
-                TTS_PLAYBACK_ONSET_EVENT_NAME,
-                TtsPlaybackOnsetEvent {
-                    playback_id,
-                    preroll_ms: padding.preroll_ms,
-                    output_device: output_device.to_string(),
-                },
-            );
-        })
+        play_tts_wav_blocking_with_onset(
+            &wav_bytes,
+            playback_epoch,
+            Some(playback_id),
+            first_chunk,
+            |output_device| {
+                #[cfg(windows)]
+                let aec = windows_aec::session_status(playback_id);
+                let _ = window.emit(
+                    TTS_PLAYBACK_ONSET_EVENT_NAME,
+                    TtsPlaybackOnsetEvent {
+                        playback_id,
+                        preroll_ms: padding.preroll_ms,
+                        output_device: output_device.to_string(),
+                        #[cfg(windows)]
+                        aec_prepared: aec.as_ref().is_some_and(|status| status.prepared),
+                        #[cfg(not(windows))]
+                        aec_prepared: false,
+                        #[cfg(windows)]
+                        aec_backend: aec.as_ref().map(|status| status.backend.to_string()),
+                        #[cfg(not(windows))]
+                        aec_backend: None,
+                        #[cfg(windows)]
+                        aec_input_device: aec.as_ref().map(|status| status.input.label.clone()),
+                        #[cfg(not(windows))]
+                        aec_input_device: None,
+                        #[cfg(windows)]
+                        aec_input_endpoint_id: aec.as_ref().map(|status| status.input.id.clone()),
+                        #[cfg(not(windows))]
+                        aec_input_endpoint_id: None,
+                        #[cfg(windows)]
+                        aec_render_endpoint_id: aec.as_ref().map(|status| status.render.id.clone()),
+                        #[cfg(not(windows))]
+                        aec_render_endpoint_id: None,
+                        #[cfg(windows)]
+                        aec_render_route: aec
+                            .as_ref()
+                            .map(|status| status.render_kind.label().to_string()),
+                        #[cfg(not(windows))]
+                        aec_render_route: None,
+                        #[cfg(windows)]
+                        aec_error: aec.as_ref().and_then(|status| status.error.clone()),
+                        #[cfg(not(windows))]
+                        aec_error: None,
+                    },
+                );
+            },
+        )
     })
     .await
     .map_err(|err| err.to_string())?;
@@ -1785,6 +3038,8 @@ fn cancel_tts_playback(playback_id: u64) -> bool {
         TTS_ACTIVE_SYNTHESIS_ID.store(0, Ordering::SeqCst);
         cancel_active_kokoro_process();
     }
+    #[cfg(windows)]
+    windows_aec::stop_active_session();
     true
 }
 
@@ -1833,31 +3088,50 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
     let started = Instant::now();
     let root = resource_root()?;
     let manifest = iris_config::load_manifest_from_workspace(&root)?;
+    let mut model_readiness_error = None;
     if ollama_loopback_ready() {
         require_loopback_only_ollama_listener()?;
         let model_ready = configured_ollama_model_ready(&manifest);
         require_loopback_only_ollama_listener()?;
-        if model_ready {
-            return Ok(LocalRuntimePreparation {
-                ready: true,
-                started_ollama: false,
-                elapsed_ms: started.elapsed().as_millis(),
-                message: "Local model service is ready.".to_string(),
-            });
+        match model_ready {
+            Ok(()) => {
+                return Ok(LocalRuntimePreparation {
+                    ready: true,
+                    started_ollama: false,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    message: "Local model service is ready.".to_string(),
+                });
+            }
+            Err(error) => model_readiness_error = Some(error),
         }
     }
-    let models_root =
-        find_ollama_models_root(&manifest.model_policy.model_id).ok_or_else(|| {
-            format!(
-                "Iris model is not installed. Run: ollama pull {}",
-                manifest.model_policy.model_id
-            )
-        })?;
+    let model_lock = iris_config::locked_ollama_model()?;
+    let vision_model_lock = iris_config::locked_ollama_vision_model()?;
+    let models_root = find_ollama_models_root(&model_lock).map_err(|error| {
+        format!(
+            "Iris's digest-verified model is not installed. Run: ollama pull {}. {error}",
+            manifest.model_policy.model_id
+        )
+    })?;
+    let vision_models_root = find_ollama_models_root(&vision_model_lock).map_err(|error| {
+        format!(
+            "Iris's digest-verified vision model is not installed. Run: ollama pull {}. {error}",
+            manifest.vision_model_policy.model_id
+        )
+    })?;
+    if models_root != vision_models_root {
+        return Err(
+            "Iris's primary and vision models must be installed in the same verified Ollama model store"
+                .to_string(),
+        );
+    }
     if ollama_loopback_ready() {
         require_loopback_only_ollama_listener()?;
         return Err(format!(
-            "Ollama is already running on 127.0.0.1:11434, but Iris could not use {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` and restart Ollama, then try again.",
-            manifest.model_policy.model_id, manifest.model_policy.model_id
+            "Ollama is already running on 127.0.0.1:11434, but Iris refused one of its locked local models: {}. Iris will not stop a user-owned Ollama service. Run `ollama pull {}` and `ollama pull {}` once to repair missing or corrupt model data. If either locked digest still differs, update Iris or restore the audited model store; do not bypass the identity check.",
+            model_readiness_error.unwrap_or_else(|| "model readiness check failed".to_string()),
+            manifest.model_policy.model_id,
+            manifest.vision_model_policy.model_id
         ));
     }
 
@@ -1887,29 +3161,31 @@ fn prepare_local_runtime_blocking() -> Result<LocalRuntimePreparation, String> {
             require_loopback_only_ollama_listener()?;
             let model_ready = configured_ollama_model_ready(&manifest);
             require_loopback_only_ollama_listener()?;
-            if model_ready {
-                return Ok(LocalRuntimePreparation {
-                    ready: true,
-                    started_ollama: true,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    message: "Local model service started.".to_string(),
-                });
+            match model_ready {
+                Ok(()) => {
+                    return Ok(LocalRuntimePreparation {
+                        ready: true,
+                        started_ollama: true,
+                        elapsed_ms: started.elapsed().as_millis(),
+                        message: "Local model service started.".to_string(),
+                    });
+                }
+                Err(error) => model_readiness_error = Some(error),
             }
         }
     }
-    Err("Ollama did not become ready within 10 seconds".to_string())
+    Err(format!(
+        "Ollama did not become ready during Iris's startup readiness window: {}",
+        model_readiness_error.unwrap_or_else(|| "the loopback service did not respond".to_string())
+    ))
 }
 
-fn configured_ollama_model_ready(manifest: &iris_config::ProjectManifest) -> bool {
-    let Ok(settings) = iris_ollama::OllamaSettings::from_manifest(manifest) else {
-        return false;
-    };
-    let Ok(client) = iris_ollama::OllamaClient::new(settings) else {
-        return false;
-    };
-    client
-        .health_check(&iris_ui::gate_typed_text("health check"))
-        .is_ok()
+fn configured_ollama_model_ready(manifest: &iris_config::ProjectManifest) -> Result<(), String> {
+    let vision_settings = iris_ollama::OllamaSettings::from_vision_manifest(manifest)?;
+    iris_ollama::OllamaClient::new(vision_settings)?.warm_visual_model()?;
+    let settings = iris_ollama::OllamaSettings::from_manifest(manifest)?;
+    let client = iris_ollama::OllamaClient::new(settings)?;
+    client.health_check(&iris_ui::gate_typed_text("health check"))
 }
 
 fn select_ollama_server_setting(current_value: Option<String>, default_value: &str) -> String {
@@ -2047,29 +3323,8 @@ fn find_ollama_executable() -> Result<PathBuf, String> {
     Ok(PathBuf::from("ollama"))
 }
 
-fn find_ollama_models_root(model_id: &str) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(configured) = std::env::var("OLLAMA_MODELS") {
-        candidates.push(PathBuf::from(configured));
-    }
-    candidates.push(PathBuf::from(r"C:\.ollama"));
-    if let Ok(profile) = std::env::var("USERPROFILE") {
-        candidates.push(PathBuf::from(profile).join(".ollama").join("models"));
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| ollama_model_manifest(candidate, model_id).is_file())
-}
-
-fn ollama_model_manifest(models_root: &Path, model_id: &str) -> PathBuf {
-    let (name, tag) = model_id.split_once(':').unwrap_or((model_id, "latest"));
-    let (namespace, model) = name.split_once('/').unwrap_or(("library", name));
-    models_root
-        .join("manifests")
-        .join("registry.ollama.ai")
-        .join(namespace)
-        .join(model)
-        .join(tag)
+fn find_ollama_models_root(model_lock: &iris_config::OllamaModelLock) -> Result<PathBuf, String> {
+    iris_ollama::verified_ollama_models_root(model_lock)
 }
 
 fn is_local_model_unavailable_response(text: &str) -> bool {
@@ -2668,6 +3923,9 @@ fn privacy_safe_diagnostic_detail(event: &str, detail: &str) -> String {
                 prompt.chars().count()
             )
         }
+        "wake_miss_debug" => {
+            privacy_safe_wake_miss_debug_detail(detail, wake_miss_debug_transcripts_enabled())
+        }
         _ => {
             let capped = json_capped(detail);
             match std::env::var("USERPROFILE") {
@@ -2676,6 +3934,26 @@ fn privacy_safe_diagnostic_detail(event: &str, detail: &str) -> String {
             }
         }
     }
+}
+
+fn privacy_safe_wake_miss_debug_detail(detail: &str, transcript_logging_enabled: bool) -> String {
+    let detail = detail.trim();
+    if transcript_logging_enabled {
+        format!("debug_transcript={}", json_capped(detail))
+    } else {
+        format!("transcript_chars={}", detail.chars().count())
+    }
+}
+
+fn wake_miss_debug_transcripts_enabled() -> bool {
+    std::env::var("IRIS_WAKE_DEBUG_TRANSCRIPTS")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 fn timestamp_ms() -> Result<u128, String> {
@@ -4014,8 +5292,6 @@ fn hermes_status_snapshot() -> Result<HermesStatusResponse, String> {
                 "write_file".to_string(),
                 "patch".to_string(),
                 "search_files".to_string(),
-                "terminal".to_string(),
-                "process".to_string(),
                 "browser_open".to_string(),
                 "browser_snapshot".to_string(),
                 "browser_click".to_string(),
@@ -4191,11 +5467,21 @@ fn start_hermes_sidecar_unserialized() -> Result<(), String> {
     let stderr_path = diagnostics.join("hermes-sidecar-stderr.log");
     hermes_acp::rotate_diagnostic_log(&stderr_path, hermes_acp::MAX_HERMES_STDERR_BYTES)?;
     let mut command = hermes_acp::python313_command_for_script(&resources, &script)?;
+    let model_lock = iris_config::locked_ollama_model()?;
+    let model_lock_json = serde_json::to_string(&model_lock)
+        .map_err(|error| format!("failed to serialize Iris model lock: {error}"))?;
+    let model_store_attestation_json =
+        hermes_acp::verified_model_store_child_attestation(&model_lock)?;
     command
         .current_dir(&resources)
         .env("IRIS_RESOURCE_ROOT", &resources)
         .env("IRIS_DATA_ROOT", &writable)
         .env("IRIS_HERMES_PROFILE", "iris_restricted")
+        .env("IRIS_OLLAMA_MODEL_LOCK_JSON", model_lock_json)
+        .env(
+            hermes_acp::VERIFIED_MODEL_STORE_ENV,
+            model_store_attestation_json,
+        )
         .env("IRIS_HERMES_BROKER_URL", &broker_access.url)
         .env(
             "IRIS_HERMES_BROKER_TOKEN",
@@ -4364,6 +5650,7 @@ fn submit_hermes_task(request: HermesTaskRequest) -> Result<HermesTaskResponse, 
     }
 
     let _inference_permit = iris_ollama::acquire_inference_permit()?;
+    configured_ollama_client()?.verify_model_identity()?;
 
     let payload = serde_json::to_string(&serde_json::json!({
         "type": "task",
@@ -5264,20 +6551,21 @@ fn image_probe_response(
         return Err("image probe supports png, jpg, jpeg, and webp files".to_string());
     }
 
-    let client = configured_ollama_client()?;
+    let client = configured_vision_ollama_client()?;
     Ok(client.respond_to_image_bytes_with_context(image_bytes, clean_prompt, dynamic_context))
 }
 
 fn screen_area_probe_response(
     window: &IrisWindow,
     prompt: &str,
+    target: ScreenCaptureTarget,
     dynamic_context: Option<&str>,
 ) -> Result<(iris_core_types::AssistantResponse, String), String> {
     let clean_prompt = prompt.trim();
     if clean_prompt.is_empty() {
         return Err("screen probe requires a direct user prompt".to_string());
     }
-    let capture = capture_screen_area_under_window(window)?;
+    let capture = capture_screen_area(window, target)?;
     if capture.region.is_effectively_blank() {
         return Ok((
             iris_core_types::AssistantResponse::text_only(format!(
@@ -5296,7 +6584,7 @@ fn screen_area_probe_response(
         ));
     }
 
-    let client = configured_ollama_client()?;
+    let client = configured_vision_ollama_client()?;
     Ok((
         client.respond_to_screen_area_bytes_with_context(
             &image_bytes,
@@ -5320,11 +6608,78 @@ fn configured_ollama_client() -> Result<iris_ollama::OllamaClient, String> {
     Ok(OLLAMA_CLIENT.get().cloned().unwrap_or(candidate))
 }
 
+fn configured_vision_ollama_client() -> Result<iris_ollama::OllamaClient, String> {
+    if let Some(client) = VISION_OLLAMA_CLIENT.get() {
+        return Ok(client.clone());
+    }
+
+    let resources = resource_root()?;
+    let manifest = iris_config::load_manifest_from_workspace(&resources)?;
+    let settings = iris_ollama::OllamaSettings::from_vision_manifest(&manifest)?;
+    let candidate = iris_ollama::OllamaClient::new(settings)?;
+    let _ = VISION_OLLAMA_CLIENT.set(candidate.clone());
+    Ok(VISION_OLLAMA_CLIENT.get().cloned().unwrap_or(candidate))
+}
+
+fn screen_capture_target_from_request(target: Option<&str>) -> ScreenCaptureTarget {
+    match target
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "virtual-screen" | "screen" | "full-screen" | "full" | "desktop" | "visible-desktop" => {
+            ScreenCaptureTarget::VirtualScreen
+        }
+        _ => ScreenCaptureTarget::UnderIris,
+    }
+}
+
+fn capture_screen_area(
+    window: &IrisWindow,
+    target: ScreenCaptureTarget,
+) -> Result<ScreenAreaCapture, String> {
+    match target {
+        ScreenCaptureTarget::UnderIris => capture_screen_area_under_window(window),
+        ScreenCaptureTarget::VirtualScreen => capture_virtual_screen(window),
+    }
+}
+
 fn capture_screen_area_under_window(window: &IrisWindow) -> Result<ScreenAreaCapture, String> {
     let position = window.outer_position().map_err(|err| err.to_string())?;
     let size = window.outer_size().map_err(|err| err.to_string())?;
     let width = size.width.max(1);
     let height = size.height.max(1);
+    capture_screen_region_with_hidden_iris(
+        window,
+        position.x,
+        position.y,
+        width,
+        height,
+        ScreenCaptureTarget::UnderIris,
+    )
+}
+
+fn capture_virtual_screen(window: &IrisWindow) -> Result<ScreenAreaCapture, String> {
+    let (x, y, width, height) = virtual_screen_bounds_from_monitors(window)?;
+    capture_screen_region_with_hidden_iris(
+        window,
+        x,
+        y,
+        width,
+        height,
+        ScreenCaptureTarget::VirtualScreen,
+    )
+}
+
+fn capture_screen_region_with_hidden_iris(
+    window: &IrisWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    target: ScreenCaptureTarget,
+) -> Result<ScreenAreaCapture, String> {
     let scale_factor = window.scale_factor().unwrap_or(1.0);
 
     window
@@ -5333,24 +6688,69 @@ fn capture_screen_area_under_window(window: &IrisWindow) -> Result<ScreenAreaCap
     thread::sleep(std::time::Duration::from_millis(
         SCREEN_CAPTURE_HIDE_SETTLE_MS,
     ));
-    let result = capture_screen_region_png(position.x, position.y, width, height);
+    let result = capture_screen_region_png(x, y, width.max(1), height.max(1));
     let _ = window.show();
     let _ = window.set_focus();
     let region = result?;
     let diagnostics_root = state_root()?.join("diagnostics");
     let diagnostic_path = write_screen_capture_diagnostic(
         &diagnostics_root,
-        position.x,
-        position.y,
-        width,
-        height,
-        scale_factor,
+        ScreenCaptureDiagnosticRequest {
+            window_x: x,
+            window_y: y,
+            requested_width: width,
+            requested_height: height,
+            scale_factor,
+            target,
+        },
         &region,
     )?;
     Ok(ScreenAreaCapture {
         region,
         diagnostic_path,
     })
+}
+
+fn virtual_screen_bounds_from_monitors(
+    window: &IrisWindow,
+) -> Result<(i32, i32, u32, u32), String> {
+    let monitors = window
+        .available_monitors()
+        .map_err(|err| format!("failed to inspect monitors for screen capture: {err}"))?;
+    let mut left = i64::MAX;
+    let mut top = i64::MAX;
+    let mut right = i64::MIN;
+    let mut bottom = i64::MIN;
+
+    for monitor in monitors {
+        let position = monitor.position();
+        let size = monitor.size();
+        if size.width == 0 || size.height == 0 {
+            continue;
+        }
+        let monitor_left = i64::from(position.x);
+        let monitor_top = i64::from(position.y);
+        let monitor_right = monitor_left + i64::from(size.width);
+        let monitor_bottom = monitor_top + i64::from(size.height);
+        left = left.min(monitor_left);
+        top = top.min(monitor_top);
+        right = right.max(monitor_right);
+        bottom = bottom.max(monitor_bottom);
+    }
+
+    if left == i64::MAX || right <= left || bottom <= top {
+        return Err("no usable monitors are available for screen capture".to_string());
+    }
+
+    let width = u32::try_from(right - left)
+        .map_err(|_| "virtual screen width is too large to capture".to_string())?;
+    let height = u32::try_from(bottom - top)
+        .map_err(|_| "virtual screen height is too large to capture".to_string())?;
+    let x = i32::try_from(left)
+        .map_err(|_| "virtual screen x origin is outside supported bounds".to_string())?;
+    let y = i32::try_from(top)
+        .map_err(|_| "virtual screen y origin is outside supported bounds".to_string())?;
+    Ok((x, y, width, height))
 }
 
 #[cfg(not(windows))]
@@ -5606,11 +7006,7 @@ fn screen_capture_pixel_stats(rgba: &[u8]) -> ScreenCapturePixelStats {
 
 fn write_screen_capture_diagnostic(
     diagnostics_root: &Path,
-    window_x: i32,
-    window_y: i32,
-    requested_width: u32,
-    requested_height: u32,
-    scale_factor: f64,
+    request: ScreenCaptureDiagnosticRequest,
     region: &ScreenRegionCapture,
 ) -> Result<String, String> {
     let screen_dir = diagnostics_root.join("screen");
@@ -5621,10 +7017,11 @@ fn write_screen_capture_diagnostic(
         .map_err(|err| format!("failed to write screen diagnostic image: {err}"))?;
     let diagnostic = ScreenCaptureDiagnostic {
         timestamp_ms: timestamp_ms()?,
-        window_x,
-        window_y,
-        requested_width,
-        requested_height,
+        window_x: request.window_x,
+        window_y: request.window_y,
+        requested_width: request.requested_width,
+        requested_height: request.requested_height,
+        target: request.target.as_str().to_string(),
         capture_x: region.capture_x,
         capture_y: region.capture_y,
         capture_width: region.capture_width,
@@ -5635,7 +7032,7 @@ fn write_screen_capture_diagnostic(
         virtual_screen_y: region.virtual_screen_y,
         virtual_screen_width: region.virtual_screen_width,
         virtual_screen_height: region.virtual_screen_height,
-        scale_factor,
+        scale_factor: request.scale_factor,
         mean_luma: region.mean_luma,
         non_dark_pixel_count: region.non_dark_pixel_count,
         total_pixel_count: region.total_pixel_count,
@@ -5674,6 +7071,9 @@ struct CapturedMicrophoneAudio {
     peak: f32,
     speech_ms: u64,
     input_device: String,
+    aec_applied: bool,
+    capture_backend: String,
+    render_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5687,7 +7087,7 @@ fn record_microphone_mono_16khz(
     duration_ms: u64,
     endpoint: CaptureEndpoint,
     capture_epoch: u64,
-    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64, bool, bool)>,
 ) -> Result<CapturedMicrophoneAudio, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
@@ -5786,6 +7186,194 @@ fn record_microphone_mono_16khz(
         peak: utterance_peak,
         speech_ms,
         input_device,
+        aec_applied: false,
+        capture_backend: "cpal_raw".to_string(),
+        render_device: None,
+    })
+}
+
+#[cfg(windows)]
+fn record_interruption_mono_16khz(
+    run_id: u64,
+    duration_ms: u64,
+    endpoint: CaptureEndpoint,
+    capture_epoch: u64,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64, bool, bool)>,
+) -> Result<CapturedMicrophoneAudio, String> {
+    let status = windows_aec::session_status(run_id).ok_or_else(|| {
+        "speaker interruption monitoring is fail-closed because no verified Windows AEC session exists"
+            .to_string()
+    })?;
+    if status.prepared {
+        return record_windows_aec_mono_16khz(
+            run_id,
+            duration_ms,
+            endpoint,
+            capture_epoch,
+            on_likely_near_field_speech,
+            &status,
+        )
+        .map_err(|error| {
+            format!("interruption monitoring disabled after Windows AEC failed: {error}")
+        });
+    }
+    if status.render_kind.allows_raw_interruption_fallback() {
+        return record_microphone_mono_16khz(
+            duration_ms,
+            endpoint,
+            capture_epoch,
+            on_likely_near_field_speech,
+        )
+        .map(|mut audio| {
+            audio.render_device = Some(status.render.label.clone());
+            audio
+        });
+    }
+    Err(format!(
+        "speaker interruption monitoring is fail-closed because Windows AEC is unavailable: {}",
+        status
+            .error
+            .as_deref()
+            .unwrap_or("unknown AEC preparation error")
+    ))
+}
+
+#[cfg(windows)]
+fn record_wake_mono_16khz(
+    duration_ms: u64,
+    endpoint: CaptureEndpoint,
+    capture_epoch: u64,
+) -> Result<CapturedMicrophoneAudio, String> {
+    use cpal::traits::HostTrait;
+
+    let host = cpal::default_host();
+    let input_device = host.default_input_device();
+    let render_device = host.default_output_device();
+    let input = cpal_aec_endpoint(input_device.as_ref(), "unknown default microphone");
+    let render = cpal_aec_endpoint(render_device.as_ref(), "unknown default output");
+    let status = windows_aec::prepare_session(capture_epoch, input, render);
+    if status.prepared
+        && let Ok(audio) = record_windows_aec_mono_16khz(
+            capture_epoch,
+            duration_ms,
+            endpoint,
+            capture_epoch,
+            None,
+            &status,
+        )
+    {
+        return Ok(audio);
+    }
+
+    record_microphone_mono_16khz(duration_ms, endpoint, capture_epoch, None).map(|mut audio| {
+        audio.capture_backend = if status.prepared {
+            "cpal_raw_after_wake_aec_failed".to_string()
+        } else {
+            "cpal_raw_after_wake_aec_unavailable".to_string()
+        };
+        audio.render_device = Some(status.render.label);
+        audio
+    })
+}
+
+#[cfg(windows)]
+fn record_windows_aec_mono_16khz(
+    run_id: u64,
+    duration_ms: u64,
+    endpoint: CaptureEndpoint,
+    capture_epoch: u64,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64, bool, bool)>,
+    status: &windows_aec::AecSessionStatus,
+) -> Result<CapturedMicrophoneAudio, String> {
+    let CaptureEndpoint::Speech {
+        min_ms,
+        trailing_silence_ms,
+        start_timeout_ms,
+    } = endpoint;
+    let started = Instant::now();
+    let sample_rate = 16_000;
+    let frame_samples = ((u128::from(sample_rate) * 30) / 1_000).max(1) as usize;
+    let pre_roll_samples = ((u128::from(sample_rate) * 420) / 1_000) as usize;
+    let mut tracker =
+        SpeechEndpointTracker::new(sample_rate, min_ms, trailing_silence_ms, start_timeout_ms);
+    let mut interruption_gate = InterruptionPauseGate::new();
+    let mut on_likely_near_field_speech = on_likely_near_field_speech;
+    let mut captured = Vec::<f32>::new();
+    let mut processed_samples = 0_usize;
+    let mut aec_applied = false;
+    let endpoint_result = 'capture: loop {
+        if ASR_CAPTURE_EPOCH.load(Ordering::SeqCst) != capture_epoch {
+            break SpeechEndpointResult {
+                speech_detected: false,
+                start_sample: 0,
+                end_sample: processed_samples,
+            };
+        }
+        if started.elapsed().as_millis() >= u128::from(duration_ms) {
+            break SpeechEndpointResult {
+                speech_detected: tracker.speech_start_sample.is_some(),
+                start_sample: tracker
+                    .speech_start_sample
+                    .unwrap_or(0)
+                    .saturating_sub(pre_roll_samples),
+                end_sample: tracker.last_voice_sample.unwrap_or(processed_samples),
+            };
+        }
+        let batch = windows_aec::pull_frames(run_id, Duration::from_millis(35))?;
+        if batch.aec_applied {
+            aec_applied = true;
+        }
+        captured.extend(batch.samples);
+        while processed_samples + frame_samples <= captured.len() {
+            let frame_end = processed_samples + frame_samples;
+            let frame = &captured[processed_samples..frame_end];
+            processed_samples = frame_end;
+            if interruption_gate.observe(frame)
+                && let Some(onset) = on_likely_near_field_speech.as_deref_mut()
+            {
+                onset(started.elapsed().as_millis() as u64, true, true);
+            }
+            if let Some(end_sample) = tracker.observe(frame, frame_end) {
+                break 'capture SpeechEndpointResult {
+                    speech_detected: true,
+                    start_sample: tracker
+                        .speech_start_sample
+                        .unwrap_or(0)
+                        .saturating_sub(pre_roll_samples),
+                    end_sample,
+                };
+            }
+        }
+        if tracker.start_timed_out(processed_samples) {
+            break SpeechEndpointResult {
+                speech_detected: false,
+                start_sample: 0,
+                end_sample: processed_samples,
+            };
+        }
+    };
+    if !aec_applied || captured.is_empty() {
+        return Err(
+            "Voice Capture DSP returned no processed PCM while the render stream was active"
+                .to_string(),
+        );
+    }
+    let start_sample = endpoint_result.start_sample.min(captured.len());
+    let end_sample = endpoint_result
+        .end_sample
+        .clamp(start_sample, captured.len());
+    let utterance = &captured[start_sample..end_sample];
+    let speech_ms = samples_to_ms(utterance.len(), sample_rate);
+    Ok(CapturedMicrophoneAudio {
+        samples: pad_audio_with_silence(utterance, sample_rate, 120),
+        speech_detected: endpoint_result.speech_detected,
+        rms: rms(utterance),
+        peak: peak_abs(utterance),
+        speech_ms,
+        input_device: status.input.label.clone(),
+        aec_applied,
+        capture_backend: status.backend.to_string(),
+        render_device: Some(status.render.label.clone()),
     })
 }
 
@@ -5810,6 +7398,24 @@ fn normalize_audio_device_label(label: Option<&str>) -> String {
     }
 }
 
+#[cfg(windows)]
+fn cpal_aec_endpoint(
+    device: Option<&cpal::Device>,
+    fallback_label: &str,
+) -> windows_aec::EndpointSelection {
+    use cpal::traits::DeviceTrait;
+
+    let id = device
+        .and_then(|device| device.id().ok())
+        .map(|id| id.id().to_string())
+        .unwrap_or_default();
+    let label = device
+        .and_then(|device| device.description().ok())
+        .map(|description| normalize_audio_device_label(Some(description.name())))
+        .unwrap_or_else(|| normalize_audio_device_label(Some(fallback_label)));
+    windows_aec::EndpointSelection { id, label }
+}
+
 fn sample_rate_hz_from_debug(sample_rate_debug: &str) -> Result<u32, String> {
     let digits = sample_rate_debug
         .chars()
@@ -5826,7 +7432,7 @@ fn wait_for_capture_endpoint(
     max_ms: u64,
     endpoint: CaptureEndpoint,
     capture_epoch: u64,
-    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64, bool, bool)>,
 ) -> SpeechEndpointResult {
     match endpoint {
         CaptureEndpoint::Speech {
@@ -5853,7 +7459,7 @@ fn wait_for_speech_endpoint(
     sample_rate: u32,
     profile: AsrCaptureProfile,
     capture_epoch: u64,
-    on_likely_near_field_speech: Option<&mut dyn FnMut(u64)>,
+    on_likely_near_field_speech: Option<&mut dyn FnMut(u64, bool, bool)>,
 ) -> SpeechEndpointResult {
     let started = Instant::now();
     let frame_samples = ((u128::from(sample_rate) * 30) / 1_000).max(1) as usize;
@@ -5889,7 +7495,7 @@ fn wait_for_speech_endpoint(
             if interruption_gate.observe(frame)
                 && let Some(onset) = on_likely_near_field_speech.as_deref_mut()
             {
-                onset(started.elapsed().as_millis() as u64);
+                onset(started.elapsed().as_millis() as u64, false, true);
             }
             if let Some(end_sample) = tracker.observe(frame, frame_end) {
                 return SpeechEndpointResult {
@@ -6130,6 +7736,7 @@ fn resample_linear(input: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32
 
 fn whisper_initial_prompt(mode: Option<&str>) -> Option<&'static str> {
     match mode {
+        Some("wake") => Some("Iris. Hey Iris. Iris wake up. Irish. Airis. I Reese."),
         Some("interrupt") => Some("Iris stop. Stop. Pause. Cancel."),
         _ => None,
     }
@@ -6183,7 +7790,7 @@ fn tts_playback_padding(first_chunk: bool) -> TtsPlaybackPadding {
         preroll_ms: if first_chunk {
             TTS_NATIVE_FIRST_CHUNK_PREROLL_MS
         } else {
-            0
+            TTS_NATIVE_CONTINUATION_CHUNK_PREROLL_MS
         },
         tail_ms: TTS_NATIVE_CHUNK_TAIL_MS,
     }
@@ -6191,12 +7798,13 @@ fn tts_playback_padding(first_chunk: bool) -> TtsPlaybackPadding {
 
 #[cfg(test)]
 fn play_tts_wav_blocking(wav_bytes: &[u8], playback_epoch: u64) -> Result<(), String> {
-    play_tts_wav_blocking_with_onset(wav_bytes, playback_epoch, true, |_| {})
+    play_tts_wav_blocking_with_onset(wav_bytes, playback_epoch, None, true, |_| {})
 }
 
 fn play_tts_wav_blocking_with_onset(
     wav_bytes: &[u8],
     playback_epoch: u64,
+    aec_run_id: Option<u64>,
     first_chunk: bool,
     on_first_non_silent_frame: impl FnOnce(&str),
 ) -> Result<(), String> {
@@ -6212,6 +7820,15 @@ fn play_tts_wav_blocking_with_onset(
         .ok()
         .map(|description| description.name().to_string());
     let output_device = normalize_audio_device_label(output_device_description.as_deref());
+    #[cfg(windows)]
+    if let Some(run_id) = aec_run_id {
+        let input_device = host.default_input_device();
+        let input = cpal_aec_endpoint(input_device.as_ref(), "unknown default microphone");
+        let render = cpal_aec_endpoint(Some(&device), &output_device);
+        let _ = windows_aec::prepare_session(run_id, input, render);
+    }
+    #[cfg(not(windows))]
+    let _ = aec_run_id;
     let supported_config = device
         .default_output_config()
         .map_err(|err| format!("failed to read output audio config: {err}"))?;
@@ -6592,7 +8209,7 @@ fn transcribe_local_whisper(
     initial_prompt: Option<&str>,
     capture_epoch: u64,
     profile: AsrTranscriptionProfile,
-) -> Result<String, String> {
+) -> Result<WhisperTranscription, String> {
     use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
     let model_path = resource_root()?.join("models/whisper/ggml-tiny.en.bin");
@@ -6633,6 +8250,8 @@ fn transcribe_local_whisper(
     let context = guard
         .as_ref()
         .ok_or_else(|| "ASR model did not initialize".to_string())?;
+    let model_audio_ctx = context.model_n_audio_ctx();
+    let audio_ctx = selected_whisper_audio_ctx(profile, audio.len(), model_audio_ctx);
     let mut state = context
         .create_state()
         .map_err(|err| format!("failed to create Whisper state: {err}"))?;
@@ -6648,9 +8267,7 @@ fn transcribe_local_whisper(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
     params.set_suppress_blank(true);
-    if let Some(audio_ctx) = profile.audio_ctx {
-        params.set_audio_ctx(audio_ctx);
-    }
+    params.set_audio_ctx(audio_ctx);
     if let Some(max_len) = profile.max_len {
         params.set_max_len(max_len);
     }
@@ -6660,13 +8277,29 @@ fn transcribe_local_whisper(
     if let Some(initial_prompt) = initial_prompt {
         params.set_initial_prompt(initial_prompt);
     }
-    params.set_abort_callback_safe(move || {
-        asr_transcription_should_abort(transcription_started, profile.budget_ms, capture_epoch)
-    });
+    let abort_context = Box::new(WhisperAbortContext::new(
+        transcription_started,
+        profile.budget_ms,
+        capture_epoch,
+        &ASR_CAPTURE_EPOCH,
+    ));
+    let abort_user_data = (&*abort_context as *const WhisperAbortContext)
+        .cast_mut()
+        .cast::<std::ffi::c_void>();
+    // whisper-rs 0.16's safe closure wrapper does not preserve a capturing closure's concrete
+    // pointer type for its trampoline. Use the raw callback API with an explicitly stable,
+    // synchronously scoped context instead.
+    unsafe {
+        params.set_abort_callback(Some(whisper_abort_callback));
+        params.set_abort_callback_user_data(abort_user_data);
+    }
 
-    state
-        .full(params, audio)
-        .map_err(|err| format!("Whisper transcription failed: {err}"))?;
+    if let Err(error) = state.full(params, audio) {
+        return Err(format_whisper_full_error(
+            &error.to_string(),
+            abort_context.cause(),
+        ));
+    }
     let text = state
         .as_iter()
         .map(|segment| segment.to_string())
@@ -6674,7 +8307,37 @@ fn transcribe_local_whisper(
         .join(" ")
         .trim()
         .to_string();
-    Ok(text)
+    Ok(WhisperTranscription {
+        text,
+        audio_ctx,
+        model_audio_ctx,
+    })
+}
+
+fn selected_whisper_audio_ctx(
+    profile: AsrTranscriptionProfile,
+    sample_count: usize,
+    model_audio_ctx: i32,
+) -> i32 {
+    profile
+        .audio_ctx
+        .unwrap_or_else(|| dynamic_whisper_audio_ctx(sample_count, model_audio_ctx))
+}
+
+fn dynamic_whisper_audio_ctx(sample_count: usize, model_audio_ctx: i32) -> i32 {
+    let model_maximum = usize::try_from(model_audio_ctx)
+        .unwrap_or(WHISPER_AUDIO_CTX_MINIMUM)
+        .max(WHISPER_AUDIO_CTX_MINIMUM);
+    let required = sample_count
+        .div_ceil(WHISPER_AUDIO_CTX_SAMPLES_PER_UNIT)
+        .max(1);
+    let rounded = required
+        .div_ceil(WHISPER_AUDIO_CTX_GRANULARITY)
+        .saturating_mul(WHISPER_AUDIO_CTX_GRANULARITY);
+    rounded
+        .clamp(WHISPER_AUDIO_CTX_MINIMUM, model_maximum)
+        .try_into()
+        .unwrap_or(model_audio_ctx)
 }
 
 fn asr_transcription_should_abort(
@@ -6687,7 +8350,27 @@ fn asr_transcription_should_abort(
 }
 
 fn is_whisper_abort_error(error: &str) -> bool {
-    error.to_ascii_lowercase().contains("abort")
+    error.starts_with("Whisper transcription aborted")
+}
+
+fn format_whisper_full_error(error: &str, abort_cause: Option<AsrAbortCause>) -> String {
+    match abort_cause {
+        Some(cause) => format!(
+            "Whisper transcription aborted ({}): {error}",
+            cause.message()
+        ),
+        None => format!("Whisper transcription failed: {error}"),
+    }
+}
+
+fn asr_transcription_error_is_empty(
+    profile: AsrTranscriptionProfile,
+    capture_epoch: u64,
+    active_capture_epoch: u64,
+    error: &str,
+) -> bool {
+    is_whisper_abort_error(error)
+        && (profile.abort_is_empty || active_capture_epoch != capture_epoch)
 }
 
 fn rect_intersection_area(window: WindowRect, monitor: MonitorRect) -> i64 {
@@ -6996,6 +8679,9 @@ pub fn run() {
             log_voice_latency_report,
             native_asr_listen_interrupt,
             native_asr_listen_once,
+            open_media_request,
+            spotify_connect_start,
+            spotify_connect_status,
             cancel_native_asr,
             prepare_local_runtime,
             record_feedback,
@@ -7424,6 +9110,30 @@ mod tests {
     }
 
     #[test]
+    fn wake_miss_debug_transcript_logging_is_opt_in() {
+        assert_eq!(
+            privacy_safe_wake_miss_debug_detail("Iris was misheard as heiress", false),
+            "transcript_chars=28"
+        );
+        assert_eq!(
+            privacy_safe_wake_miss_debug_detail("Iris was misheard as heiress", true),
+            "debug_transcript=Iris was misheard as heiress"
+        );
+    }
+
+    #[test]
+    fn native_asr_panic_message_maps_invalid_windows_handles_to_retryable_error() {
+        let payload =
+            "called `Result::unwrap()` on an `Err` value: HRESULT(0x80070006), The handle is invalid."
+                .to_string();
+
+        assert_eq!(
+            native_asr_panic_message(&payload),
+            "Native ASR capture failed because the Windows audio device handle became invalid. Iris will retry listening."
+        );
+    }
+
+    #[test]
     fn diagnostic_rotation_keeps_bounded_archives() {
         let root = std::env::temp_dir().join(format!(
             "iris-diagnostic-rotation-{}-{}",
@@ -7497,9 +9207,19 @@ mod tests {
             blank: false,
         };
 
-        let json_path =
-            write_screen_capture_diagnostic(&diagnostics_root, -1200, 50, 640, 360, 1.25, &region)
-                .expect("write screen diagnostic");
+        let json_path = write_screen_capture_diagnostic(
+            &diagnostics_root,
+            ScreenCaptureDiagnosticRequest {
+                window_x: -1200,
+                window_y: 50,
+                requested_width: 640,
+                requested_height: 360,
+                scale_factor: 1.25,
+                target: ScreenCaptureTarget::VirtualScreen,
+            },
+            &region,
+        )
+        .expect("write screen diagnostic");
 
         let image_path = diagnostics_root
             .join("screen")
@@ -7513,11 +9233,134 @@ mod tests {
         assert!(json.contains("\"submittedWidth\": 640"));
         assert!(json.contains("\"virtualScreenX\": -1920"));
         assert!(json.contains("\"scaleFactor\": 1.25"));
+        assert!(json.contains("\"target\": \"virtual-screen\""));
         assert!(json.contains("\"meanLuma\": 42.5"));
         assert!(json.contains("\"nonDarkPixelCount\": 300"));
         assert!(json.contains("\"blank\": false"));
 
         fs::remove_dir_all(root).expect("remove screen diagnostic test directory");
+    }
+
+    #[test]
+    fn screen_capture_target_defaults_to_under_iris_and_accepts_virtual_desktop() {
+        assert_eq!(
+            screen_capture_target_from_request(None),
+            ScreenCaptureTarget::UnderIris
+        );
+        assert_eq!(
+            screen_capture_target_from_request(Some("under-iris")),
+            ScreenCaptureTarget::UnderIris
+        );
+        assert_eq!(
+            screen_capture_target_from_request(Some("virtual-screen")),
+            ScreenCaptureTarget::VirtualScreen
+        );
+        assert_eq!(
+            screen_capture_target_from_request(Some("desktop")),
+            ScreenCaptureTarget::VirtualScreen
+        );
+    }
+
+    #[test]
+    fn spotify_media_open_plan_builds_vetted_search_targets() {
+        let plan = media_open_plan("spotify", "stars in the roof of my car by Riff-Raff")
+            .expect("media plan");
+
+        assert_eq!(plan.service, "spotify");
+        assert_eq!(plan.query, "stars in the roof of my car by Riff-Raff");
+        assert_eq!(
+            plan.primary_uri,
+            "spotify:search:stars%20in%20the%20roof%20of%20my%20car%20by%20Riff-Raff"
+        );
+        assert_eq!(
+            plan.fallback_url,
+            "https://open.spotify.com/search/stars%20in%20the%20roof%20of%20my%20car%20by%20Riff-Raff/tracks"
+        );
+    }
+
+    #[test]
+    fn spotify_exact_track_helpers_build_vetted_track_targets() {
+        let track = SpotifyTrack {
+            id: "0ABCdef123456789xyz".to_string(),
+            name: "Stars in the Roof of My Car".to_string(),
+            uri: "spotify:track:0ABCdef123456789xyz".to_string(),
+            artists: vec![SpotifyArtist {
+                name: "Riff-Raff".to_string(),
+            }],
+            external_urls: SpotifyExternalUrls {
+                spotify: "https://open.spotify.com/track/0ABCdef123456789xyz".to_string(),
+            },
+        };
+
+        assert_eq!(
+            spotify_track_uri(&track).as_deref(),
+            Some("spotify:track:0ABCdef123456789xyz")
+        );
+        assert_eq!(
+            spotify_track_web_url(&track).as_deref(),
+            Some("https://open.spotify.com/track/0ABCdef123456789xyz")
+        );
+        assert!(!spotify_track_id_is_safe("bad/id"));
+        assert!(!spotify_track_web_url_is_safe(
+            "https://example.com/track/0ABCdef"
+        ));
+    }
+
+    #[test]
+    fn media_open_plan_rejects_unsupported_or_unsafe_requests() {
+        assert!(media_open_plan("youtube", "stars").is_err());
+        assert!(media_open_plan("spotify", "").is_err());
+        assert!(media_open_plan("spotify", "https://example.com/song").is_err());
+        assert!(media_open_plan("spotify", "song\u{0000}name").is_err());
+    }
+
+    #[test]
+    fn spotify_connect_helpers_build_safe_pkce_and_redirect_values() {
+        assert_eq!(
+            spotify_redirect_uri(),
+            "http://127.0.0.1:17987/spotify/callback"
+        );
+        assert_eq!(
+            spotify_client_id("abc123DEF456").expect("valid client id"),
+            "abc123DEF456"
+        );
+        assert!(spotify_client_id("abc123/DEF456").is_err());
+
+        let challenge = spotify_code_challenge("abcdefghijklmnopqrstuvwxyz0123456789");
+        assert!(!challenge.contains('+'));
+        assert!(!challenge.contains('/'));
+        assert!(!challenge.contains('='));
+
+        let url =
+            spotify_authorize_url("abc123DEF456", &spotify_redirect_uri(), "state", &challenge);
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("client_id=abc123DEF456"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("user-modify-playback-state%20user-read-playback-state"));
+    }
+
+    #[test]
+    fn spotify_callback_query_decoding_handles_url_encoding() {
+        assert_eq!(
+            query_parameter("code=abc%20123&state=state+value", "code").expect("query parse"),
+            Some("abc 123".to_string())
+        );
+        assert_eq!(
+            query_parameter("code=abc%20123&state=state+value", "state").expect("query parse"),
+            Some("state value".to_string())
+        );
+        assert!(query_parameter("code=bad%2", "code").is_err());
+    }
+
+    #[test]
+    fn spotify_premium_gate_detection_matches_api_error_body() {
+        assert!(spotify_error_mentions_premium(
+            "Active premium subscription required for the owner of the app."
+        ));
+        assert!(spotify_error_mentions_premium(
+            "Subscription status is not active."
+        ));
+        assert!(!spotify_error_mentions_premium("rate limit exceeded"));
     }
 
     #[test]
@@ -7671,7 +9514,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tts_output_prerolls_only_the_first_chunk_and_keeps_a_short_tail() {
+    fn native_tts_output_prerolls_every_chunk_and_keeps_a_short_tail() {
         let wav = PcmWav {
             sample_rate: 1_000,
             channels: 1,
@@ -7680,6 +9523,8 @@ mod tests {
         let first = prepare_tts_output_samples(&wav, 1_000, 2, true);
         let continuation = prepare_tts_output_samples(&wav, 1_000, 2, false);
         let preroll_samples = frames_for_ms(1_000, TTS_NATIVE_FIRST_CHUNK_PREROLL_MS) * 2;
+        let continuation_preroll_samples =
+            frames_for_ms(1_000, TTS_NATIVE_CONTINUATION_CHUNK_PREROLL_MS) * 2;
         let tail_samples = frames_for_ms(1_000, TTS_NATIVE_CHUNK_TAIL_MS) * 2;
 
         assert!(first[..preroll_samples].iter().all(|sample| *sample == 0.0));
@@ -7695,28 +9540,227 @@ mod tests {
                 .all(|sample| *sample == 0.0)
         );
 
-        assert_eq!(first_non_silent_sample_index(&continuation), 0);
-        assert_eq!(&continuation[..4], &[0.5, 0.5, -0.25, -0.25]);
-        assert_eq!(continuation.len(), 4 + tail_samples);
+        assert!(
+            continuation[..continuation_preroll_samples]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert_eq!(
+            first_non_silent_sample_index(&continuation),
+            continuation_preroll_samples
+        );
+        assert_eq!(continuation[continuation_preroll_samples], 0.5);
+        assert_eq!(continuation[continuation_preroll_samples + 1], 0.5);
+        assert_eq!(continuation[continuation_preroll_samples + 2], -0.25);
+        assert_eq!(continuation[continuation_preroll_samples + 3], -0.25);
+        assert_eq!(
+            continuation.len(),
+            continuation_preroll_samples + 4 + tail_samples
+        );
         assert_eq!(
             tts_playback_padding(false),
             TtsPlaybackPadding {
-                preroll_ms: 0,
+                preroll_ms: 160,
                 tail_ms: 20,
             }
         );
-        assert_eq!(TTS_NATIVE_FIRST_CHUNK_PREROLL_MS, 80);
+        assert_eq!(TTS_NATIVE_FIRST_CHUNK_PREROLL_MS, 520);
+        assert_eq!(TTS_NATIVE_CONTINUATION_CHUNK_PREROLL_MS, 160);
     }
 
     #[test]
     fn whisper_prompts_bias_only_interruption_captures() {
-        assert_eq!(whisper_initial_prompt(Some("wake")), None);
+        assert_eq!(
+            whisper_initial_prompt(Some("wake")),
+            Some("Iris. Hey Iris. Iris wake up. Irish. Airis. I Reese.")
+        );
         assert_eq!(
             whisper_initial_prompt(Some("interrupt")),
             Some("Iris stop. Stop. Pause. Cancel.")
         );
         assert_eq!(whisper_initial_prompt(Some("command")), None);
         assert_eq!(whisper_initial_prompt(Some("push")), None);
+    }
+
+    #[test]
+    fn whisper_default_audio_context_tracks_padded_capture_length() {
+        let two_point_zero_four_seconds = 16_000 * 204 / 100;
+        let eight_point_five_six_seconds = 16_000 * 856 / 100;
+
+        assert_eq!(
+            selected_whisper_audio_ctx(
+                AsrTranscriptionProfile::DEFAULT,
+                two_point_zero_four_seconds,
+                1_500,
+            ),
+            128
+        );
+        assert_eq!(
+            selected_whisper_audio_ctx(
+                AsrTranscriptionProfile::DEFAULT,
+                eight_point_five_six_seconds,
+                1_500,
+            ),
+            448
+        );
+        assert_eq!(
+            dynamic_whisper_audio_ctx(0, 1_500),
+            WHISPER_AUDIO_CTX_MINIMUM as i32
+        );
+        assert_eq!(dynamic_whisper_audio_ctx(usize::MAX, 1_500), 1_500);
+    }
+
+    #[test]
+    fn whisper_explicit_wake_and_interruption_contexts_remain_exact() {
+        let long_capture = 16_000 * 856 / 100;
+
+        assert_eq!(
+            selected_whisper_audio_ctx(AsrTranscriptionProfile::WAKE, long_capture, 1_500),
+            128
+        );
+        assert_eq!(
+            selected_whisper_audio_ctx(AsrTranscriptionProfile::INTERRUPTION, long_capture, 1_500,),
+            64
+        );
+    }
+
+    #[test]
+    fn asr_response_exposes_numeric_whisper_context_diagnostics() {
+        let response = AsrCommandResponse {
+            text: String::new(),
+            elapsed_ms: 1_000,
+            capture_elapsed_ms: Some(500),
+            stt_elapsed_ms: Some(500),
+            speech_ms: Some(220),
+            rms: Some(0.018),
+            peak: Some(0.09),
+            input_device: "test microphone".to_string(),
+            aec_applied: false,
+            capture_backend: "test".to_string(),
+            render_device: None,
+            whisper_audio_ctx: Some(448),
+            whisper_model_audio_ctx: Some(1_500),
+        };
+        let json = serde_json::to_value(response).expect("serialize ASR response");
+
+        assert_eq!(json["whisper_audio_ctx"], 448);
+        assert_eq!(json["whisper_model_audio_ctx"], 1_500);
+        assert_eq!(json["speech_ms"], 220);
+        assert!((json["rms"].as_f64().expect("rms metric") - 0.018).abs() < 0.0001);
+        assert!((json["peak"].as_f64().expect("peak metric") - 0.09).abs() < 0.0001);
+    }
+
+    #[test]
+    #[ignore = "requires IRIS_WHISPER_EQUIVALENCE_FIXTURE and the bundled Whisper model"]
+    fn whisper_dynamic_context_matches_full_context_for_fixed_speech() {
+        let fixture_path = std::env::var_os("IRIS_WHISPER_EQUIVALENCE_FIXTURE")
+            .map(std::path::PathBuf::from)
+            .expect("IRIS_WHISPER_EQUIVALENCE_FIXTURE must name a fixed PCM WAV fixture");
+        let fixture_bytes = fs::read(&fixture_path).expect("read fixed Whisper fixture");
+        let fixture = parse_pcm_wav(&fixture_bytes).expect("parse fixed Whisper fixture");
+        let channels = usize::from(fixture.channels);
+        let mono = fixture
+            .samples
+            .chunks_exact(channels)
+            .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
+            .collect::<Vec<_>>();
+        let mono_16khz = resample_linear(&mono, fixture.sample_rate, 16_000);
+        let padded = pad_audio_with_silence(&mono_16khz, 16_000, 120);
+        let capture_epoch = ASR_CAPTURE_EPOCH.load(Ordering::SeqCst);
+        let full_context_profile = AsrTranscriptionProfile {
+            audio_ctx: Some(1_500),
+            ..AsrTranscriptionProfile::DEFAULT
+        };
+
+        let full = transcribe_local_whisper(&padded, None, capture_epoch, full_context_profile)
+            .expect("transcribe fixed speech with full Whisper context");
+        let dynamic = transcribe_local_whisper(
+            &padded,
+            None,
+            capture_epoch,
+            AsrTranscriptionProfile::DEFAULT,
+        )
+        .expect("transcribe fixed speech with dynamic Whisper context");
+
+        assert!(!full.text.is_empty());
+        assert_eq!(dynamic.text, full.text);
+        assert_eq!(full.audio_ctx, 1_500);
+        assert_eq!(dynamic.model_audio_ctx, full.model_audio_ctx);
+        assert_eq!(
+            dynamic.audio_ctx,
+            dynamic_whisper_audio_ctx(padded.len(), dynamic.model_audio_ctx)
+        );
+    }
+
+    #[test]
+    fn whisper_raw_abort_callback_records_only_a_proven_cause() {
+        let active_epoch = Box::leak(Box::new(AtomicU64::new(41)));
+        let no_abort = WhisperAbortContext::new(Instant::now(), None, 41, active_epoch);
+        let no_abort_ptr = (&no_abort as *const WhisperAbortContext)
+            .cast_mut()
+            .cast::<std::ffi::c_void>();
+
+        assert!(!unsafe { whisper_abort_callback(no_abort_ptr) });
+        assert_eq!(no_abort.cause(), None);
+
+        let budget_abort = WhisperAbortContext::new(
+            Instant::now() - Duration::from_millis(2),
+            Some(1),
+            41,
+            active_epoch,
+        );
+        let budget_abort_ptr = (&budget_abort as *const WhisperAbortContext)
+            .cast_mut()
+            .cast::<std::ffi::c_void>();
+        assert!(unsafe { whisper_abort_callback(budget_abort_ptr) });
+        assert_eq!(budget_abort.cause(), Some(AsrAbortCause::BudgetExceeded));
+
+        active_epoch.store(42, Ordering::SeqCst);
+        let epoch_abort = WhisperAbortContext::new(Instant::now(), None, 41, active_epoch);
+        let epoch_abort_ptr = (&epoch_abort as *const WhisperAbortContext)
+            .cast_mut()
+            .cast::<std::ffi::c_void>();
+        assert!(unsafe { whisper_abort_callback(epoch_abort_ptr) });
+        assert_eq!(epoch_abort.cause(), Some(AsrAbortCause::CaptureCancelled));
+    }
+
+    #[test]
+    fn whisper_abort_errors_become_empty_only_for_expected_profiles_or_cancelled_captures() {
+        let budget_error = format_whisper_full_error(
+            "Generic whisper error. Error code: -6",
+            Some(AsrAbortCause::BudgetExceeded),
+        );
+        let epoch_error = format_whisper_full_error(
+            "Generic whisper error. Error code: -6",
+            Some(AsrAbortCause::CaptureCancelled),
+        );
+        let unrelated_error =
+            format_whisper_full_error("Generic whisper error. Error code: -6", None);
+
+        assert!(asr_transcription_error_is_empty(
+            AsrTranscriptionProfile::WAKE,
+            41,
+            41,
+            &budget_error,
+        ));
+        assert!(asr_transcription_error_is_empty(
+            AsrTranscriptionProfile::DEFAULT,
+            41,
+            42,
+            &epoch_error,
+        ));
+        assert!(!asr_transcription_error_is_empty(
+            AsrTranscriptionProfile::DEFAULT,
+            41,
+            41,
+            &budget_error,
+        ));
+        assert!(!asr_transcription_error_is_empty(
+            AsrTranscriptionProfile::WAKE,
+            41,
+            41,
+            &unrelated_error,
+        ));
     }
 
     #[test]
@@ -7888,12 +9932,14 @@ mod tests {
             request_id: 17,
             capture_elapsed_ms: 93,
             aec_applied: false,
+            raw_fallback_allowed: false,
         };
         let json = serde_json::to_value(event).expect("serialize interruption onset");
         assert_eq!(json["runId"], 9);
         assert_eq!(json["requestId"], 17);
         assert_eq!(json["captureElapsedMs"], 93);
         assert_eq!(json["aecApplied"], false);
+        assert_eq!(json["rawFallbackAllowed"], false);
     }
 
     #[test]
@@ -8116,7 +10162,7 @@ mod tests {
             last_activity_ms: 1,
             expires_at_ms: 2,
             inactivity_timeout_ms: 1,
-            workspace_boundary: "advisory_unrestricted_powershell".to_string(),
+            workspace_boundary: "selected_workspace_no_shell_process".to_string(),
         };
         let active = hermes_policy::HermesPolicySnapshot {
             mode: hermes_policy::HermesMode::Agentic,
@@ -9334,9 +11380,9 @@ mod tests {
         assert_eq!(
             asr_capture_profile(Some("wake")),
             AsrCaptureProfile {
-                duration_ms: 1_800,
-                start_timeout_ms: 900,
-                trailing_silence_ms: 220,
+                duration_ms: 3_200,
+                start_timeout_ms: 1_100,
+                trailing_silence_ms: 320,
                 min_ms: 100,
             }
         );
@@ -9354,6 +11400,9 @@ mod tests {
             peak: 0.020,
             speech_ms: 600,
             input_device: "test microphone".to_string(),
+            aec_applied: false,
+            capture_backend: "test".to_string(),
+            render_device: None,
         };
 
         assert!(!wake_audio_should_transcribe(&audio));
@@ -9368,6 +11417,9 @@ mod tests {
             peak: 0.090,
             speech_ms: 220,
             input_device: "test microphone".to_string(),
+            aec_applied: false,
+            capture_backend: "test".to_string(),
+            render_device: None,
         };
 
         assert!(wake_audio_should_transcribe(&audio));

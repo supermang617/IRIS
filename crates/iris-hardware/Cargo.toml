@@ -4,4 +4,4 @@ version.workspace = true
 edition = "2024"
 
 [dependencies]
-sysinfo = { version = "0.39.3", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }

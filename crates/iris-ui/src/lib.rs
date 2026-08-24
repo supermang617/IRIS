@@ -95,8 +95,8 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("Safe mode unsupported"))
+                .any(|line| line.contains("Fixed Iris actions only"))
         );
-        assert!(lines.contains(&"Executor: Agentic Session only"));
+        assert!(lines.contains(&"Executor: No arbitrary shell or process tool"));
     }
 }

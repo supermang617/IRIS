@@ -53,12 +53,19 @@ only exposed tools are `iris_query_memory`, `iris_propose_memory`, and
 acting tools.
 
 Agentic Session is a separate, explicit, approval-gated mode. Start it only for
-an absolute user-selected workspace. It may use the reviewed file, PowerShell, process, and isolated browser tools through Iris supervision. Destructive,
+an absolute user-selected workspace. It may use reviewed file, patch/search, and
+isolated browser tools through Iris supervision. Arbitrary shell and process
+tools remain unavailable. Destructive,
 sensitive, credential, install/admin, payment, submission,
 executable-download, and scope-expanding actions require separate confirmation.
 The workspace boundary is advisory rather than an OS sandbox, and Panic Stop,
 session end, mode changes, inactivity expiry, or Iris exit must terminate the
 Agentic runtime.
+
+Current acceptance guidance for file, PowerShell, process, and isolated browser tools:
+file and patch/search access plus isolated browser actions are allowed only
+inside the explicit Agentic Session boundary; arbitrary PowerShell and process
+execution remain denied.
 
 Verify both modes independently:
 
@@ -67,9 +74,9 @@ Verify both modes independently:
 2. Safe can query approved Iris memory and create a staged proposal, but cannot
    access raw memory files or promote a proposal without user acceptance.
 3. Start an Agentic Session for a disposable workspace and confirm status names
-   the Iris memory tools plus the reviewed file, PowerShell, process, and
+   the Iris memory tools plus the reviewed file, patch/search, and
    isolated browser tools.
-4. Perform only harmless approved read/write and process checks in that
+4. Perform only harmless approved read/write and browser checks in that
    workspace. Confirm provenance and redacted audit records are retained.
 5. Attempt a scope-expanding or high-risk action and confirm Iris requests
    separate approval instead of executing it silently.
@@ -78,20 +85,17 @@ Verify both modes independently:
 
 ## Image and OCR Checks
 
-Ollama `/api/show` reports the configured model has `vision`, but capability
-metadata is not proof that the Windows image projector is correct. Run the raw
-model canary from a source checkout so Iris's bounded local correction cannot
-hide an upstream failure:
+Ollama `/api/show` capability metadata and model bytes alone do not prove that
+the Windows image projector works. Iris routes visual input only to the exact
+Qwen lock and runs the same raw canary used by startup:
 
 ```powershell
 .\scripts\diagnose_raw_ollama_vision.ps1
 ```
 
-`BLOCKED` is the truthful current result on the affected Windows Gemma 4 E2B
-path. Until the canary and wider image matrix pass, Iris must refuse unverified
-general scene descriptions instead of guessing. The installed bounded image
-path may identify the known red-circle fixture, but that result is not proof of
-general model vision.
+`PASS` with `red circle` is required. Any other result keeps camera, image, and
+broad screen inference fail-closed; OCR and local geometry cannot substitute
+for this raw projector proof.
 
 For a small document image containing large printed text, run:
 
